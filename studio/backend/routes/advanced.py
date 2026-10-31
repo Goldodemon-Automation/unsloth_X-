@@ -18,9 +18,10 @@ import uuid
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from auth.authentication import get_current_subject
 from core.advanced import (
     blending,
     curriculum,
@@ -37,7 +38,7 @@ from core.advanced import (
     tokenizer_check,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies = [Depends(get_current_subject)])
 
 _JOBS: dict[str, dict[str, Any]] = {}
 _JOBS_LOCK = threading.Lock()

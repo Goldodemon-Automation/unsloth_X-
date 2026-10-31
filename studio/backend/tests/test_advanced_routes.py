@@ -26,6 +26,7 @@ from routes import advanced  # noqa: E402
 def client() -> TestClient:
     app = fastapi.FastAPI()
     app.include_router(advanced.router, prefix = "/api/advanced")
+    app.dependency_overrides[advanced.get_current_subject] = lambda: "tester"
     return TestClient(app)
 
 
@@ -1010,3 +1011,22 @@ def test_start_job_publishes_merge_progress(client: TestClient):
     assert job["progress"]["done"] == 1
     assert job["progress"]["total"] == 4
     assert "updated_at" in job["progress"]
+
+
+def test_a_caller_from_another_site_is_refused():
+    app = fastapi.FastAPI()
+    app.include_router(advanced.router, prefix = "/api/advanced")
+    bare = TestClient(app)
+    headers = {"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"}
+    estimate = bare.post(
+        "/api/advanced/resources/estimate",
+        json = {"kind": "merge", "sources": []},
+        headers = headers,
+    )
+    acquire = bare.post(
+        "/api/advanced/jobs/acquire",
+        json = {"job_id": "attacker", "kind": "merge", "sources": [], "wait_seconds": 0},
+        headers = headers,
+    )
+    assert estimate.status_code in (401, 403)
+    assert acquire.status_code in (401, 403)
