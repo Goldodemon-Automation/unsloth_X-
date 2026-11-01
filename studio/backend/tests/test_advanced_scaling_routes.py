@@ -13,7 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from routes.advanced import router
+from routes.advanced import get_current_subject, router
 
 CONFIG = {
     "model_type": "llama",
@@ -31,6 +31,7 @@ CONFIG = {
 def client() -> TestClient:
     app = FastAPI()
     app.include_router(router, prefix = "/api/advanced")
+    app.dependency_overrides[get_current_subject] = lambda: "tester"
     return TestClient(app)
 
 

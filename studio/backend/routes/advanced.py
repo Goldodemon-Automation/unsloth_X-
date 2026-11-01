@@ -18,9 +18,10 @@ import uuid
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from auth.authentication import get_current_subject
 from core.advanced import (
     blending,
     curriculum,
@@ -37,7 +38,7 @@ from core.advanced import (
     tokenizer_check,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies = [Depends(get_current_subject)])
 
 _JOBS: dict[str, dict[str, Any]] = {}
 _JOBS_LOCK = threading.Lock()
@@ -402,6 +403,7 @@ def _start_job(
     output_dir: Optional[str] = None,
     sources: Optional[list[str]] = None,
     with_progress: bool = False,
+    growth_ratio: Optional[float] = None,
 ) -> dict[str, Any]:
     """Reserve resources, then run *work* on a thread.
 
@@ -411,7 +413,11 @@ def _start_job(
     """
     job_id = uuid.uuid4().hex
     lease = resources.acquire_for_job(
-        job_id, kind, sources = sources, output_dir = output_dir
+        job_id,
+        kind,
+        sources = sources,
+        output_dir = output_dir,
+        growth_ratio = growth_ratio,
     )
     if lease["status"] != "granted":
         raise HTTPException(status_code = 409, detail = lease["reason"])
@@ -1335,6 +1341,8 @@ def scale_run(request: ScaleRunRequest) -> dict[str, Any]:
         default_name = _scale_default_name(planned),
     )
     target = float(planned["target_params"])
+    planned_base = float(planned.get("base_params") or 0)
+    growth_ratio = target / planned_base if planned_base > 0 else None
 
     def work(report) -> dict[str, Any]:
         result = scaling.run(
@@ -1385,6 +1393,7 @@ def scale_run(request: ScaleRunRequest) -> dict[str, Any]:
         output_dir = str(output),
         sources = [request.source],
         with_progress = True,
+        growth_ratio = growth_ratio,
     )
 
 
