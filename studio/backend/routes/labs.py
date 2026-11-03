@@ -233,7 +233,7 @@ def run_lineage() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/pipelines/plan")
+@router.post("/pipelines/plan", dependencies = [Depends(_require_owner)])
 def plan_pipeline(request: PipelinePlanRequest) -> dict[str, Any]:
     """Validate and price a chain from configs only. Starts nothing."""
     _gate("pipelines")
@@ -250,7 +250,7 @@ def pipeline_presets() -> dict[str, Any]:
     return {"presets": [repair.describe_preset()]}
 
 
-@router.post("/pipelines/preset")
+@router.post("/pipelines/preset", dependencies = [Depends(_require_owner)])
 def plan_preset(request: RepairPresetRequest) -> dict[str, Any]:
     """Build the shrink repair chain and price it. Starts nothing."""
     _gate("pipelines")
@@ -281,7 +281,7 @@ def list_pipelines() -> dict[str, Any]:
         raise _translate(error) from error
 
 
-@router.post("/pipelines")
+@router.post("/pipelines", dependencies = [Depends(_require_owner)])
 def save_pipeline(request: PipelineSaveRequest) -> dict[str, Any]:
     """Validate a chain, then save it. A blocked chain still saves, with the block recorded."""
     _gate("pipelines")
@@ -291,7 +291,7 @@ def save_pipeline(request: PipelineSaveRequest) -> dict[str, Any]:
         raise _translate(error) from error
 
 
-@router.delete("/pipelines/{pipeline_id}")
+@router.delete("/pipelines/{pipeline_id}", dependencies = [Depends(_require_owner)])
 def delete_pipeline(pipeline_id: str) -> dict[str, Any]:
     """Delete one saved pipeline plan. The checkpoints it referenced are untouched."""
     _gate("pipelines")
@@ -323,7 +323,7 @@ def list_benchmarks(
     return {"records": records}
 
 
-@router.post("/benchmarks/run")
+@router.post("/benchmarks/run", dependencies = [Depends(_require_owner)])
 def run_benchmark(request: BenchmarkRunRequest) -> dict[str, Any]:
     """Score an artifact against a baseline and keep the report."""
     _gate("benchmarks")
@@ -429,7 +429,7 @@ def _cmt_output_dir(source: str, prefix: str = "cmt") -> Path:
     return outputs_root() / f"{prefix}-{safe[:80]}-{uuid.uuid4().hex[:6]}"
 
 
-@router.post("/cmt/plan")
+@router.post("/cmt/plan", dependencies = [Depends(_require_owner)])
 def plan_cmt(request: CmtPlanRequest) -> dict[str, Any]:
     """Size the expansion and split every dataset, without loading a weight."""
     _gate("cmt")
@@ -439,7 +439,7 @@ def plan_cmt(request: CmtPlanRequest) -> dict[str, Any]:
         raise _translate(error) from error
 
 
-@router.post("/cmt/run")
+@router.post("/cmt/run", dependencies = [Depends(_require_owner)])
 def run_cmt(request: CmtRunRequest) -> dict[str, Any]:
     """Run the whole experiment: split, expand, freeze, train the new blocks, score."""
     _gate("cmt")
@@ -481,7 +481,7 @@ def run_cmt(request: CmtRunRequest) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/auto-scale/plan")
+@router.post("/auto-scale/plan", dependencies = [Depends(_require_owner)])
 def plan_auto_scale(request: AutoScaleRequest) -> dict[str, Any]:
     """Size the growth the datasets justify. Loads no weight and starts nothing."""
     _gate("auto-scale")
@@ -491,7 +491,7 @@ def plan_auto_scale(request: AutoScaleRequest) -> dict[str, Any]:
         raise _translate(error) from error
 
 
-@router.post("/auto-scale/run")
+@router.post("/auto-scale/run", dependencies = [Depends(_require_owner)])
 def run_auto_scale(request: AutoScaleRequest) -> dict[str, Any]:
     """Expand the checkpoint and save it; the returned path is a Training model."""
     _gate("auto-scale")
