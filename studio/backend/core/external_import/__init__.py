@@ -226,9 +226,13 @@ def _pending_messages(source: Source, transcript: Transcript, existing: bool) ->
     stored = studio_db.list_chat_messages(transcript.thread_id)
     mark = studio_db.get_external_import_mark(source.key, transcript.session_id)
     if mark is None:
-        # No rows and no mark = shell thread from an interrupted import.
-        return [] if stored else list(transcript.messages)
-    turns, revision = mark
+        if not stored:
+            return list(transcript.messages)
+        # Rows with no checkpoint are a torn import: whatever the store already holds was written
+        # before the mark landed, so only the turns it does not hold are still pending.
+        turns, revision = 0, transcript.revision
+    else:
+        turns, revision = mark
     pending = transcript.messages[
         turns if revision == transcript.revision else transcript.inherited :
     ]
@@ -238,6 +242,8 @@ def _pending_messages(source: Source, transcript: Transcript, existing: bool) ->
     by_id = {message["id"]: message for message in transcript.messages}
     reseated = []
     for message in pending:
+        if message["id"] in present:
+            continue
         parent = message.get("parentId")
         while parent and parent not in present:
             parent = by_id.get(parent, {}).get("parentId")
@@ -296,11 +302,15 @@ def _import_session(source: Source, path: Path, project_id: str, summary: Import
     pending = _pending_messages(source, transcript, bool(existing))
     if existing:
         pending = _late_tool_results(transcript) + pending
+    mark = (source.key, session_id, len(transcript.messages), transcript.revision)
     if pending:
-        studio_db.sync_chat_messages(thread_id, pending, prune_missing = False)
-    studio_db.record_external_import_mark(
-        source.key, session_id, len(transcript.messages), transcript.revision
-    )
+        # Rows and the checkpoint describing them commit together: a mark that outlived a
+        # rolled-back write is what let a retry skip every turn appended since the failure.
+        studio_db.sync_chat_messages(
+            thread_id, pending, prune_missing = False, import_mark = mark
+        )
+    else:
+        studio_db.record_external_import_mark(*mark)
     summary.new_chats += 0 if existing else 1
     summary.messages += len(pending)
     return True

@@ -4292,6 +4292,7 @@ def sync_chat_messages(
     *,
     allow_research_update: bool = False,
     deleted_message_ids: Iterable[str] = (),
+    import_mark: Optional[tuple[str, str, int, str]] = None,
 ) -> list[dict]:
     conn = get_connection()
     try:
@@ -4451,6 +4452,8 @@ def sync_chat_messages(
                 thread_id,
                 max(int(m["createdAt"]) for m in reconciled_messages),
             )
+        if import_mark is not None:
+            _record_external_import_mark_on(conn, *import_mark)
         _mark_chat_attachment_inventory_clean(conn)
         conn.commit()
         return list_chat_messages(thread_id)
@@ -5818,6 +5821,21 @@ def get_external_import_mark(source: str, session_id: str) -> Optional[tuple[int
         conn.close()
 
 
+def _record_external_import_mark_on(conn, source: str, session_id: str, turns: int, revision: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO external_import_sessions (source, session_id, turns_imported, revision)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(source, session_id) DO UPDATE SET
+            turns_imported = CASE WHEN excluded.revision = external_import_sessions.revision
+                THEN MAX(excluded.turns_imported, external_import_sessions.turns_imported)
+                ELSE excluded.turns_imported END,
+            revision = excluded.revision
+        """,
+        (source, session_id, int(turns), revision),
+    )
+
+
 def record_external_import_mark(
     source: str,
     session_id: str,
@@ -5826,18 +5844,7 @@ def record_external_import_mark(
 ) -> None:
     conn = get_connection()
     try:
-        conn.execute(
-            """
-            INSERT INTO external_import_sessions (source, session_id, turns_imported, revision)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(source, session_id) DO UPDATE SET
-                turns_imported = CASE WHEN excluded.revision = external_import_sessions.revision
-                    THEN MAX(excluded.turns_imported, external_import_sessions.turns_imported)
-                    ELSE excluded.turns_imported END,
-                revision = excluded.revision
-            """,
-            (source, session_id, int(turns), revision),
-        )
+        _record_external_import_mark_on(conn, source, session_id, turns, revision)
         conn.commit()
     finally:
         conn.close()

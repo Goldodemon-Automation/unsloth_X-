@@ -3,6 +3,7 @@
 
 import gc
 import json
+import sqlite3
 import weakref
 from pathlib import Path
 
@@ -894,3 +895,58 @@ def test_an_empty_tool_output_still_completes_the_call(claude_home):
     )
     call = claude.read_transcript(path, "t", "s1").messages[1]["content"][0]
     assert call["result"] == ""
+
+
+def _drop_mark(source_key, session_id):
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM external_import_sessions WHERE source = ? AND session_id = ?",
+            (source_key, session_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_a_retry_after_a_lost_checkpoint_imports_the_appended_turn(claude_home):
+    path = _session(claude_home)
+    run_import(claude.SOURCE)
+    _drop_mark(claude.SOURCE.key, "s1")
+    _append(path, [c_user("u2", "More", parent = "a1", ts = "2026-08-01T10:00:02Z")])
+
+    summary = run_import(claude.SOURCE)
+
+    texts = [m["content"][0].get("text") for m in _messages(claude.SOURCE, "s1")]
+    assert "More" in texts
+    assert summary.messages == 1
+    assert studio_db.get_external_import_mark(claude.SOURCE.key, "s1")[0] == 3
+
+
+def test_a_failed_checkpoint_write_rolls_the_message_rows_back(claude_home):
+    _session(claude_home)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "CREATE TRIGGER block_import_mark BEFORE INSERT ON external_import_sessions"
+            " BEGIN SELECT RAISE(ABORT, 'simulated checkpoint failure'); END"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(sqlite3.IntegrityError):
+        run_import(claude.SOURCE)
+
+    assert _messages(claude.SOURCE, "s1") == []
+    assert studio_db.get_external_import_mark(claude.SOURCE.key, "s1") is None
+
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("DROP TRIGGER block_import_mark")
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert run_import(claude.SOURCE).messages == 2
+    assert len(_messages(claude.SOURCE, "s1")) == 2
