@@ -4999,3 +4999,117 @@ def test_gemini_3_pro_floor_is_low_not_minimal(monkeypatch):
         enable_thinking = False,
     )["body"]
     assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+
+
+def _gemini_row(name, *, methods = ("generateContent",)):
+    return {"name": f"models/{name}", "supportedGenerationMethods": list(methods)}
+
+
+def _paged_handler(pages, requests):
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json = pages[min(len(requests) - 1, len(pages) - 1)])
+
+    return handler
+
+
+def test_native_gemini_follows_next_page_token(monkeypatch):
+    requests: list[httpx.Request] = []
+    pages = [
+        {
+            "models": [_gemini_row("gemini-2.5-flash")],
+            "nextPageToken": "t2",
+        },
+        {
+            "models": [
+                _gemini_row("text-embedding-004", methods = ("embedContent",)),
+                _gemini_row("gemini-2.5-pro"),
+            ],
+            "nextPageToken": "t3",
+        },
+        {"models": [_gemini_row("gemini-3.5-flash")]},
+    ]
+    _mock_http(monkeypatch, _paged_handler(pages, requests))
+
+    models = _drive(_make_gemini_client().list_models())
+
+    assert [m["id"] for m in models] == [
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-3.5-flash",
+    ]
+    assert len(requests) == 3
+    for request in requests:
+        assert request.headers["x-goog-api-key"] == "AIza-test-key"
+    assert requests[0].url.params["pageSize"] == "1000"
+    assert "pageToken" not in requests[0].url.params
+    assert requests[1].url.params["pageToken"] == "t2"
+    assert requests[1].url.params["pageSize"] == "1000"
+
+
+def test_a_gateway_gets_a_page_token_but_no_page_size(monkeypatch):
+    requests: list[httpx.Request] = []
+    pages = [
+        {"models": [_gemini_row("gemini-2.5-flash")], "nextPageToken": "t2"},
+        {"models": [_gemini_row("gemini-2.5-pro")]},
+    ]
+    _mock_http(monkeypatch, _paged_handler(pages, requests))
+
+    models = _drive(
+        _make_gemini_client(base_url = "https://gateway.example.com/v1beta").list_models()
+    )
+
+    assert [m["id"] for m in models] == ["gemini-2.5-flash", "gemini-2.5-pro"]
+    assert "pageSize" not in requests[0].url.params
+    assert requests[1].url.params["pageToken"] == "t2"
+    assert "pageSize" not in requests[1].url.params
+
+
+def test_a_repeated_page_token_stops_after_two_requests(monkeypatch):
+    requests: list[httpx.Request] = []
+    pages = [{"models": [_gemini_row("gemini-2.5-flash")], "nextPageToken": "t2"}]
+    _mock_http(monkeypatch, _paged_handler(pages, requests))
+
+    models = _drive(_make_gemini_client().list_models())
+
+    assert {m["id"] for m in models} == {"gemini-2.5-flash"}
+    assert len(requests) == 2
+
+
+def test_a_never_ending_token_stops_at_the_page_cap(monkeypatch):
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json = {
+                "models": [_gemini_row(f"gemini-page-{len(requests)}")],
+                "nextPageToken": f"t{len(requests) + 1}",
+            },
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    models = _drive(_make_gemini_client().list_models())
+
+    assert len(requests) == 20
+    assert len(models) == 20
+
+
+def test_an_error_on_a_later_page_is_raised(monkeypatch):
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(
+                200, json = {"models": [_gemini_row("gemini-2.5-flash")], "nextPageToken": "t2"}
+            )
+        return httpx.Response(500, json = {"error": {"message": "boom"}})
+
+    _mock_http(monkeypatch, handler)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        _drive(_make_gemini_client().list_models())
+    assert len(requests) == 2

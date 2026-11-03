@@ -994,6 +994,10 @@ def _create_shared_http_client() -> httpx.AsyncClient:
         return httpx.AsyncClient(trust_env = False)
 
 
+_GEMINI_MODELS_HOST = "generativelanguage.googleapis.com"
+_GEMINI_MODELS_PAGE_SIZE = 1000
+_GEMINI_MODELS_MAX_PAGES = 20
+
 _http_client = _create_shared_http_client()
 # Studio's own loopback runtime: an env proxy would receive its key and prompts, or fail to reach it.
 _loopback_http_client = httpx.AsyncClient(trust_env = False)
@@ -7645,14 +7649,60 @@ class ExternalProviderClient:
             raise
 
     async def _models_payload(self, timeout: Any) -> tuple[Any, list[dict[str, Any]]]:
+        params = self._gemini_first_page_params()
         response = await _client().get(
-            f"{self.base_url}/models", headers = self._auth_headers(), timeout = timeout
+            f"{self.base_url}/models",
+            headers = self._auth_headers(),
+            params = params,
+            timeout = timeout,
         )
         response.raise_for_status()
         data = response.json()
+        if self.provider_type == "gemini":
+            data = await self._with_later_gemini_pages(data, params, timeout)
         # Ollama returns data: null when no models are installed.
         raw = data.get("data") if isinstance(data, dict) else None
         return data, [e for e in raw if isinstance(e, dict)] if isinstance(raw, list) else []
+
+    def _gemini_first_page_params(self) -> Optional[dict[str, Any]]:
+        """Ask Google for the largest page; a gateway keeps its own default and gets no pageSize."""
+        if self.provider_type != "gemini":
+            return None
+        if (urlparse(self.base_url).hostname or "").lower() != _GEMINI_MODELS_HOST:
+            return None
+        return {"pageSize": _GEMINI_MODELS_PAGE_SIZE}
+
+    async def _with_later_gemini_pages(
+        self, payload: Any, params: Optional[dict[str, Any]], timeout: Any
+    ) -> Any:
+        """Follow Gemini's nextPageToken so allowlisted models past page one are not lost."""
+        if not isinstance(payload, dict):
+            return payload
+        rows = payload.get("models")
+        token = payload.get("nextPageToken")
+        if not isinstance(rows, list) or not isinstance(token, str) or not token:
+            return payload
+        merged = list(rows)
+        seen = {token}
+        for _ in range(_GEMINI_MODELS_MAX_PAGES - 1):
+            page = await _client().get(
+                f"{self.base_url}/models",
+                headers = self._auth_headers(),
+                params = {**(params or {}), "pageToken": token},
+                timeout = timeout,
+            )
+            page.raise_for_status()
+            body = page.json()
+            if not isinstance(body, dict):
+                break
+            more = body.get("models")
+            if isinstance(more, list):
+                merged.extend(more)
+            token = body.get("nextPageToken")
+            if not isinstance(token, str) or not token or token in seen:
+                break
+            seen.add(token)
+        return {**payload, "models": merged}
 
     async def _read_served_window(self, model: str) -> Optional[int]:
         _, entries = await self._models_payload(_SERVED_WINDOW_TIMEOUT_S)
