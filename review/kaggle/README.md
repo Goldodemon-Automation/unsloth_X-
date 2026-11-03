@@ -13,7 +13,7 @@ time is not published.
 
 [`run.py`](run.py) is the whole test in one script:
 
-1. clones `x8-main` from `GoldodemonINC/unsloth_8X` (shallow) and prints the SHA,
+1. clones `x8-main` from `Goldodemon-Automation/unsloth_X-` (shallow) and prints the SHA,
 2. installs it with the repo's own installer, `studio/setup.sh --local`, minus the
    frontend build, llama.cpp prebuilt, whisper and audio.cpp, so it is the same
    Python stack Studio uses,

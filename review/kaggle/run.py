@@ -22,9 +22,9 @@ import subprocess
 import sys
 import time
 
-REPO_URL = "https://github.com/GoldodemonINC/unsloth_8X.git"
+REPO_URL = "https://github.com/Goldodemon-Automation/unsloth_X-.git"
 BRANCH = "x8-main"
-REPO = "/kaggle/working/unsloth_8X"
+REPO = "/kaggle/working/unsloth_X"
 BACKEND = os.path.join(REPO, "studio/backend")
 RESULT = "/kaggle/working/result.txt"
 WORK = "/kaggle/working"

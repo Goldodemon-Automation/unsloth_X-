@@ -33,15 +33,15 @@ Both directions plan from `config.json` alone, so the slider answers before any 
 
 ### Colab (free T4)
 
-[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/GoldodemonINC/unsloth_8X/blob/x8-main/studio/Unsloth_Studio_X8_Colab.ipynb)
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Goldodemon-Automation/unsloth_X-/blob/x8-main/studio/Unsloth_Studio_X8_Colab.ipynb)
 
 The notebook clones `x8-main`, installs this checkout editable over any PyPI wheel, verifies the import came from the checkout, and serves the UI through Colab's port proxy.
 
 ### Local
 
 ```bash
-git clone -b x8-main https://github.com/GoldodemonINC/unsloth_8X.git
-cd unsloth_8X
+git clone -b x8-main https://github.com/Goldodemon-Automation/unsloth_X-.git
+cd unsloth_X
 
 bash studio/setup.sh --local     # installs this checkout editable, plus prebuilt engines
 unsloth studio -p 8888           # http://127.0.0.1:8888
