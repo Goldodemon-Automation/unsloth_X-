@@ -265,6 +265,8 @@ def seed_unstructured_upload(account) -> dict[str, str]:
 
 FACTORIES = {
     "routes.training_history:DELETE:/runs/{run_id}": Factory("training", fragment = "deleted"),
+    "routes.training_history:GET:/runs/{run_id}/model-card/lint": Factory("training"),
+    "routes.training_history:POST:/runs/{run_id}/resume-check": Factory("training"),
     "routes.training:GET:/start-requests/{start_request_id}": Factory(
         "training-start-request", fragment = SENTINEL
     ),
