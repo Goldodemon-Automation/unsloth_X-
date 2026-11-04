@@ -289,7 +289,8 @@ FACTORIES = {
 SKIPPED = {
     "routes.rag:POST:/threads/{thread_id}/documents": _MULTIPART_UNSCOPED,
     "routes.rag:GET:/documents/{document_id}/file-signed": (
-        "signed document downloads resolve in the owner's store for every account, so the route "
-        "404s for the account that minted the token; product finding, see report"
+        "the token is minted per request for the acting account, so the matrix's static client "
+        "cannot build the URL; test_rag_signed_document.py mints one as a managed account and "
+        "shows it reads that account's store"
     ),
 }

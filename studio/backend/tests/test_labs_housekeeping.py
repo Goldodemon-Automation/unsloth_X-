@@ -105,8 +105,62 @@ def test_delete_refuses_a_running_jobs_output(tmp_path, monkeypatch):
 def test_protected_reason_never_offers_a_storage_root(tmp_path):
     root = tmp_path / "outputs"
     root.mkdir()
-    assert housekeeping._protected_reason(root, "outputs", root)
-    assert housekeeping._protected_reason(root / "labs-pipelines", "outputs", root)
+    resolve = housekeeping._resolving()
+    assert housekeeping._protected_reason(root, "outputs", root, resolve)
+    assert housekeeping._protected_reason(root / "labs-pipelines", "outputs", root, resolve)
     nested = root / "run" / "nested"
     nested.mkdir(parents = True)
-    assert housekeeping._protected_reason(nested, "outputs", root)
+    assert housekeeping._protected_reason(nested, "outputs", root, resolve)
+
+
+def test_a_scan_resolves_no_paths_at_all(tmp_path, monkeypatch):
+    """resolve() walks every path component on Windows; the scan must not need it.
+
+    A direct child of a root cannot be the root, so the scan answers that with a
+    file-id comparison and the listing it already has instead of a resolution.
+    """
+    from pathlib import Path
+
+    root = tmp_path / "outputs"
+    for name in ("run-a", "run-b"):
+        (root / name / "merged").mkdir(parents = True)
+    monkeypatch.setattr(housekeeping, "_paths", lambda: {"outputs": root})
+
+    def refuse(self, *args, **kwargs):
+        raise AssertionError(f"scan resolved {self}")
+
+    monkeypatch.setattr(Path, "resolve", refuse)
+    result = housekeeping.scan()
+
+    assert len(result["entries"]) == 2
+    assert all(entry["deletable"] for entry in result["entries"])
+
+
+def test_a_junction_inside_a_root_is_never_listed(tmp_path, monkeypatch):
+    """A junction is the same folder under a second name, and it is not a candidate.
+
+    The scan used to list one and then resolve it away; now the listing skips it
+    before the size walk, so a junction pointing at a huge folder cannot make the
+    page slow either.
+    """
+    import sys
+
+    if sys.platform != "win32":
+        pytest.skip("junctions are a Windows reparse point")
+    import _winapi
+
+    root = tmp_path / "outputs"
+    (root / "run-a").mkdir(parents = True)
+    outside = tmp_path / "elsewhere"
+    (outside / "keep").mkdir(parents = True)
+    _winapi.CreateJunction(str(root), str(root / "alias-of-root"))
+    _winapi.CreateJunction(str(outside), str(root / "alias-of-outside"))
+    monkeypatch.setattr(housekeeping, "_paths", lambda: {"outputs": root})
+
+    report = housekeeping.scan()
+    names = [entry["name"] for entry in report["entries"]]
+
+    assert names == ["run-a"]
+    assert report["total_bytes"] == 0
+    # The folder the junction points at is untouched, and still there.
+    assert (outside / "keep").is_dir()

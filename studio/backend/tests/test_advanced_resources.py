@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from core.advanced import resources
+from utils.account_context import OWNER_ACCOUNT_ID
 
 GB = 1024**3
 
@@ -100,11 +101,73 @@ def test_second_job_is_queued_with_a_reason_not_started():
     assert "eval" in second["reason"]
     assert broker.leases()
 
-    broker.release("job-1")
+    assert broker.release("job-1", account_id = OWNER_ACCOUNT_ID) == "released"
     third = broker.acquire(
         "job-2", "eval", {"vram_bytes": int(16 * GB), "ram_bytes": 0, "disk_bytes": 0}
     )
     assert third["status"] == "granted"
+
+
+def test_a_foreign_account_cannot_free_a_lease_it_does_not_hold():
+    """A job id is not a capability: naming another account's lease keeps it."""
+    from utils.account_context import AccountContext, run_as
+
+    alice = AccountContext("matrix-alice", "alice")
+    broker = resources.ResourceBroker(probe = lambda: _profile())
+    request = {"vram_bytes": int(16 * GB), "ram_bytes": 0, "disk_bytes": 0}
+    assert run_as(alice, broker.acquire, "job-1", "eval", request)["status"] == "granted"
+
+    assert broker.release("job-1", account_id = "matrix-bob") == "foreign"
+    assert broker.release("never-existed", account_id = "matrix-bob") == "missing"
+    # The reservation is still standing, so a second job of the same size waits.
+    assert broker.leases()[0]["account_id"] == "matrix-alice"
+    assert broker.acquire("job-2", "eval", request)["status"] == "queued"
+    assert broker.release("job-1", account_id = "matrix-alice") == "released"
+    assert broker.acquire("job-2", "eval", request)["status"] == "granted"
+
+
+def test_a_foreign_job_id_cannot_be_taken_over_by_an_empty_acquire():
+    """Naming someone else's job id must not hand you their reservation.
+
+    The zero-resource grant used to assign _leases[job_id] unconditionally, so an
+    empty request for a running job's id replaced its lease with an empty one and
+    released the resources behind it.
+    """
+    from utils.account_context import AccountContext, run_as
+
+    alice = AccountContext("matrix-alice", "alice")
+    bob = AccountContext("matrix-bob", "bob")
+    broker = resources.ResourceBroker(probe = lambda: _profile())
+    request = {"vram_bytes": int(16 * GB), "ram_bytes": 0, "disk_bytes": 0}
+    assert run_as(alice, broker.acquire, "job-1", "eval", request)["status"] == "granted"
+
+    takeover = run_as(bob, broker.acquire, "job-1", "eval", None)
+    assert takeover["status"] == "denied"
+    assert "already reserved" in takeover["reason"]
+    # Alice keeps her lease, and it still blocks a job of the same size.
+    assert broker.leases()[0]["account_id"] == "matrix-alice"
+    assert broker.acquire("job-2", "eval", request)["status"] == "queued"
+
+
+def test_a_queued_job_is_listed_only_for_its_own_account():
+    """The wait queue names jobs, so a snapshot has to trim it like the leases."""
+    from utils.account_context import AccountContext, run_as
+
+    alice = AccountContext("matrix-alice", "alice")
+    bob = AccountContext("matrix-bob", "bob")
+    broker = resources.ResourceBroker(probe = lambda: _profile())
+    request = {"vram_bytes": int(16 * GB), "ram_bytes": 0, "disk_bytes": 0}
+    assert run_as(alice, broker.acquire, "job-1", "eval", request)["status"] == "granted"
+    assert run_as(bob, broker.acquire, "job-2", "eval", request)["status"] == "queued"
+
+    assert broker.snapshot()["queued"] == ["job-2"]
+    alice_view = broker.snapshot(account_id = "matrix-alice")
+    bob_view = broker.snapshot(account_id = "matrix-bob")
+    assert alice_view["queued"] == [] and bob_view["queued"] == ["job-2"]
+    assert [lease["job_id"] for lease in alice_view["leases"]] == ["job-1"]
+    assert bob_view["leases"] == []
+    # Memory totals are about the host, not the caller, so they stay machine-wide.
+    assert alice_view["available"] == bob_view["available"]
 
 
 def test_impossible_request_is_denied_not_queued():

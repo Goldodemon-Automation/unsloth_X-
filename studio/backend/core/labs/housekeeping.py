@@ -77,11 +77,39 @@ def _within(base: Path, candidate: Path) -> bool:
     return True
 
 
-def _mtime(path: Path) -> float:
+def _resolving() -> Any:
+    """One ``resolve()`` per distinct path, for the duration of one scan or delete.
+
+    On Windows ``resolve()`` walks the filesystem for every component, and the
+    scan asks about the same handful of roots and parents once per entry, so a
+    cache turns five resolutions per folder into one. It is created per call so
+    a folder moved between requests is still seen fresh.
+    """
+    cache: dict[Path, Path] = {}
+
+    def resolve(path: Path) -> Path:
+        resolved = cache.get(path)
+        if resolved is None:
+            resolved = path.resolve()
+            cache[path] = resolved
+        return resolved
+
+    return resolve
+
+
+def _is_link(entry: os.DirEntry) -> bool:
+    """True for a symlink or a Windows junction.
+
+    ``is_symlink()`` is False for a junction, and that matters twice: a junction
+    inside a storage root is the same folder under a second name, and letting
+    ``_measure`` walk it would size (and later offer) whatever it points at.
+    """
+    if entry.is_symlink():
+        return True
     try:
-        return path.stat().st_mtime
+        return bool(entry.stat(follow_symlinks = False).st_reparse_tag)
     except OSError:
-        return 0.0
+        return False
 
 
 def _iso(stamp: float) -> str:
@@ -163,8 +191,16 @@ def _kind(path: Path, root_id: str) -> str:
     return "folder"
 
 
-def _protected_reason(path: Path, root_id: str, root: Path) -> Optional[str]:
-    if path.resolve() == root.resolve():
+def _protected_reason(
+    path: Path, root_id: str, root: Path, resolve: Any, *, top_level: bool = False
+) -> Optional[str]:
+    """Why *path* may not be offered for deletion, or None when it may.
+
+    ``top_level`` says the caller only hands over direct children of *root*, so
+    the depth rule is satisfied by construction and needs no resolution. The
+    scan sets it; delete takes an arbitrary path from the client and does not.
+    """
+    if not top_level and resolve(path) == resolve(root):
         return "This is a storage root, not a folder inside it."
     if path.is_symlink():
         return "This is a symlink; delete the folder it points at from its own location."
@@ -172,7 +208,7 @@ def _protected_reason(path: Path, root_id: str, root: Path) -> Optional[str]:
         return "Hidden folders are left alone."
     if path.name in _SKIP_DIRS:
         return "Labs keeps its own plans and benchmark records here."
-    if root_id in ("outputs", "exports") and path.parent.resolve() != root.resolve():
+    if not top_level and root_id in ("outputs", "exports") and resolve(path.parent) != resolve(root):
         # The Artifacts page only reads one level below outputs, so anything
         # deeper is some run's private working directory and is not offered.
         return "Only top-level Studio folders are listed for deletion."
@@ -210,14 +246,30 @@ def _running_outputs() -> list[str]:
         return []
 
 
-def _is_under_running_job(path: Path, running: Iterable[str]) -> bool:
-    resolved = path.resolve()
+def _resolved_running(running: Iterable[str], resolve: Any) -> list[Path]:
+    """The running jobs' output folders, resolved once per scan or delete.
+
+    They arrive as plain strings from the job registry, and resolving them inside
+    the per-folder comparison put a filesystem walk back into the loop that this
+    module exists to keep cheap.
+    """
+    resolved: list[Path] = []
     for output in running:
         try:
-            if resolved == Path(output).resolve() or _within(Path(output), resolved):
-                return True
+            resolved.append(resolve(Path(output)))
         except (OSError, ValueError):
             continue
+    return resolved
+
+
+def _is_under_running_job(path: Path, running: Iterable[Path], resolve: Any) -> bool:
+    """Whether *path* is a running job's output folder or sits inside one."""
+    if not running:
+        return False
+    resolved = resolve(path)
+    for output in running:
+        if resolved == output or output in resolved.parents:
+            return True
     return False
 
 
@@ -226,26 +278,38 @@ def _is_under_running_job(path: Path, running: Iterable[str]) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _entries_for(root_id: str, root: Path, running: list[str]) -> list[dict[str, Any]]:
+def _entries_for(
+    root_id: str, root: Path, running: list[str], resolve: Any
+) -> list[dict[str, Any]]:
     if not root.is_dir():
         return []
     records: list[dict[str, Any]] = []
     try:
-        children = sorted(root.iterdir(), key=lambda item: item.name.lower())
+        # scandir already knows each entry's type from the directory listing, so
+        # the is_dir/is_symlink questions below cost no extra syscall per folder.
+        with os.scandir(root) as scanned:
+            children = sorted(scanned, key = lambda entry: entry.name.lower())
     except OSError:
         return records
-    for child in children:
+    for entry in children:
+        child = Path(entry.path)
         try:
-            if not child.is_dir() or child.name.startswith("."):
+            if not entry.is_dir(follow_symlinks = False) or entry.name.startswith("."):
                 continue
-            if child.name in _SKIP_DIRS:
+            if entry.name in _SKIP_DIRS:
                 continue
-            if child.is_symlink():
+            # Links are never listed: a junction is the same folder under a
+            # second name, and every one of them is still refused by delete.
+            # Skipping them here is also why a listing needs no resolve().
+            if _is_link(entry):
                 continue
             size, files = _measure(child)
-            modified = _mtime(child)
-            reason = _protected_reason(child, root_id, root)
-            if _is_under_running_job(child, running):
+            try:
+                modified = entry.stat(follow_symlinks = False).st_mtime
+            except OSError:
+                modified = 0.0
+            reason = _protected_reason(child, root_id, root, resolve, top_level = True)
+            if _is_under_running_job(child, running, resolve):
                 reason = "A job is writing here right now."
             records.append(
                 {
@@ -271,7 +335,8 @@ def _entries_for(root_id: str, root: Path, running: list[str]) -> list[dict[str,
 def scan() -> dict[str, Any]:
     """Everything that is large, newest roots first, biggest entries first."""
     roots = _paths()
-    running = _running_outputs()
+    resolve = _resolving()
+    running = _resolved_running(_running_outputs(), resolve)
     entries: list[dict[str, Any]] = []
     root_records: list[dict[str, Any]] = []
     for root_id in _ROOT_IDS:
@@ -279,7 +344,7 @@ def scan() -> dict[str, Any]:
         if root is None:
             continue
         exists = root.is_dir()
-        root_entries = _entries_for(root_id, root, running) if exists else []
+        root_entries = _entries_for(root_id, root, running, resolve) if exists else []
         entries.extend(root_entries)
         root_records.append(
             {
@@ -331,7 +396,9 @@ def delete(paths: Iterable[str], *, confirm: bool) -> dict[str, Any]:
     if not confirm:
         raise ValueError("Deleting folders needs confirm=true.")
     roots = _paths()
-    running = _running_outputs()
+    resolve = _resolving()
+    running = _resolved_running(_running_outputs(), resolve)
+
     deleted: list[dict[str, Any]] = []
     refused: list[dict[str, Any]] = []
     for raw in paths:
@@ -344,7 +411,7 @@ def delete(paths: Iterable[str], *, confirm: bool) -> dict[str, Any]:
             refused.append({"path": str(path), "reason": "Outside the storage roots."})
             continue
         root = roots[root_id]
-        reason = _protected_reason(path, root_id, root)
+        reason = _protected_reason(path, root_id, root, resolve)
         if not path.exists():
             refused.append({"path": str(path), "reason": "No such folder."})
             continue
@@ -354,7 +421,7 @@ def delete(paths: Iterable[str], *, confirm: bool) -> dict[str, Any]:
         if reason is not None:
             refused.append({"path": str(path), "reason": reason})
             continue
-        if _is_under_running_job(path, running):
+        if _is_under_running_job(path, running, resolve):
             refused.append({"path": str(path), "reason": "A job is writing here right now."})
             continue
         size, files = _measure(path)

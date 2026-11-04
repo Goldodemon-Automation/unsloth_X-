@@ -222,42 +222,62 @@ def _is_checkpoint(directory: Path) -> bool:
     return (directory / "config.json").is_file()
 
 
-def candidates(base: Path) -> list[Path]:
-    """Checkpoint folders under outputs/, two levels deep, newest first."""
-    found: list[Path] = []
+def _entry_mtime(entry: os.DirEntry[str]) -> float:
     try:
-        children = sorted(base.iterdir(), key=lambda item: item.name)
+        return entry.stat().st_mtime
     except OSError:
-        return found
+        return 0.0
+
+
+def candidates(base: Path) -> list[Path]:
+    """Checkpoint folders under outputs/, two levels deep, newest first.
+
+    The walk uses ``scandir`` entries rather than fresh ``Path`` checks: a
+    directory entry already carries its type and timestamps, so one listing
+    replaces the two extra stat calls each candidate used to cost. The page
+    only describes ``limit`` folders but has to order all of them, so this walk
+    is paid in full on every load.
+    """
+    found: list[tuple[float, Path]] = []
+    try:
+        with os.scandir(base) as listing:
+            children = sorted(listing, key=lambda entry: entry.name)
+    except OSError:
+        return []
     for child in children:
         if len(found) >= _MAX_CANDIDATES:
             break
-        if not child.is_dir() or child.name.startswith("."):
-            continue
-        if child.name == "labs-pipelines":
-            continue
-        if _is_checkpoint(child):
-            found.append(child)
+        if child.name.startswith(".") or child.name == "labs-pipelines":
             continue
         try:
-            grandchildren = sorted(child.iterdir(), key=lambda item: item.name)
+            if not child.is_dir():
+                continue
+        except OSError:
+            continue
+        path = Path(child.path)
+        if _is_checkpoint(path):
+            found.append((_entry_mtime(child), path))
+            continue
+        try:
+            with os.scandir(child.path) as inner:
+                grandchildren = sorted(inner, key=lambda entry: entry.name)
         except OSError:
             continue
         for grandchild in grandchildren:
             if len(found) >= _MAX_CANDIDATES:
                 break
-            if grandchild.is_dir() and not grandchild.name.startswith("."):
-                if _is_checkpoint(grandchild):
-                    found.append(grandchild)
-    found.sort(key=lambda item: _mtime(item), reverse=True)
-    return found
-
-
-def _mtime(directory: Path) -> float:
-    try:
-        return directory.stat().st_mtime
-    except OSError:
-        return 0.0
+            if grandchild.name.startswith("."):
+                continue
+            try:
+                if not grandchild.is_dir():
+                    continue
+            except OSError:
+                continue
+            inner_path = Path(grandchild.path)
+            if _is_checkpoint(inner_path):
+                found.append((_entry_mtime(grandchild), inner_path))
+    found.sort(key=lambda item: item[0], reverse=True)
+    return [path for _, path in found]
 
 
 def scan(limit: int = 50) -> list[dict[str, Any]]:

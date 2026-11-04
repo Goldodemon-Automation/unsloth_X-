@@ -698,6 +698,26 @@ def test_start_job_records_the_lease_and_releases_it():
     )
 
 
+def test_a_job_belongs_to_the_account_that_started_it():
+    """A job id is not a read capability: another account gets 404, not the results."""
+    from utils.account_context import AccountContext, run_as
+
+    alice = AccountContext("matrix-alice", "alice")
+    bob = AccountContext("matrix-bob", "bob")
+    job = run_as(alice, advanced._start_job, "merge", lambda: {"status": "completed"})
+    try:
+        # The account that started it can read it back and still sees it listed.
+        run_as(alice, advanced._job, job["job_id"])
+        assert run_as(alice, advanced._owned_by_caller, job)
+        with pytest.raises(advanced.HTTPException) as refused:
+            run_as(bob, advanced._job, job["job_id"])
+        assert refused.value.status_code == 404
+        assert not run_as(bob, advanced._owned_by_caller, job)
+    finally:
+        with advanced._JOBS_LOCK:
+            advanced._JOBS.pop(job["job_id"], None)
+
+
 def test_a_finished_merge_carries_its_structural_report(
     client: TestClient, tmp_path: Path, started_jobs, monkeypatch
 ):
