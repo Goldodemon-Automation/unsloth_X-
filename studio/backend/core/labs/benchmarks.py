@@ -151,7 +151,12 @@ def save_record(
     directory = records_root()
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / f"{record['id']}.json"
-    target.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
+    # Same rule as pipelines.save_pipeline: a crash or a full disk must not leave a
+    # half-written record, because list_records skips invalid JSON and the eval
+    # result would be lost silently after the hours it took to produce.
+    from core.advanced.policy import atomic_write_text
+
+    atomic_write_text(target, json.dumps(record, indent = 2, sort_keys = True))
     _prune(directory)
     return record
 

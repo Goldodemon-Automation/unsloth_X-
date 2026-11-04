@@ -80,6 +80,10 @@ def scan(root: str | Path | None = None, *, limit: int = MAX_MANIFESTS) -> dict[
     base = Path(root).expanduser()
     nodes: list[dict[str, Any]] = []
     by_path: dict[str, dict[str, Any]] = {}
+    # The edge pass below needs the same manifests the node pass just parsed.
+    # Keeping them costs one small dict per node, bounded by ``limit``, and saves
+    # a second read plus a second JSON parse of every manifest on the page.
+    manifests: dict[str, dict[str, Any]] = {}
     seen_runs: set[str] = set()
     truncated = False
 
@@ -110,12 +114,13 @@ def scan(root: str | Path | None = None, *, limit: int = MAX_MANIFESTS) -> dict[
                 "problems": problems[:6],
             }
             nodes.append(node)
+            manifests[run_id] = manifest
             by_path[_normalized(directory)] = node
 
     edges: list[dict[str, str]] = []
     edge_keys: set[tuple[str, str, str]] = set()
     for node in nodes:
-        manifest = _read(Path(node["path"]) / run_manifest.MANIFEST_NAME)
+        manifest = manifests.get(node["id"])
         if manifest is None:
             continue
         for label, reference in _input_values(manifest.get("inputs")):

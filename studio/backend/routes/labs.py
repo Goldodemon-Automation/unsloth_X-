@@ -25,7 +25,11 @@ from core import labs
 from core.advanced import repair
 from core.labs import artifacts, autoscale, benchmarks, cmt, housekeeping, lineage, pipelines
 
-router = APIRouter()
+# Router-level, like routes.advanced: a hidden page is not a gate, and neither is a
+# GET that never asked who is calling. Every route below inherits this, so an
+# unauthenticated request cannot read artifact paths, run manifests or the disk
+# inventory even when the feature is switched on.
+router = APIRouter(dependencies = [Depends(get_current_subject)])
 
 
 async def _require_owner(current_subject: str = Depends(get_current_subject)) -> None:

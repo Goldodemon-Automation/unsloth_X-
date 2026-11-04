@@ -13,6 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from auth.authentication import get_current_subject
 from core import labs
 from core.labs import autoscale, cmt
 from routes import labs as labs_routes
@@ -107,6 +108,7 @@ def _client(monkeypatch, features: dict) -> TestClient:
     monkeypatch.setattr("storage.studio_db.get_app_setting", lambda key, default = None: {"enabled": True, "features": features})
     monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda values: values)
     app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "owner"
     app.dependency_overrides[labs_routes._require_owner] = lambda: None
     app.include_router(labs_routes.router, prefix = "/api/labs")
     return TestClient(app)
