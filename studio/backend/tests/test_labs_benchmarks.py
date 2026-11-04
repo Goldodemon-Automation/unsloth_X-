@@ -56,6 +56,35 @@ def test_save_and_list_a_record(tmp_path, monkeypatch):
     assert benchmarks.delete_record(record["id"]) is False
 
 
+def test_a_failed_write_leaves_no_half_written_record(tmp_path, monkeypatch):
+    """A full disk must not strand a truncated record that the list silently skips."""
+    monkeypatch.setattr(benchmarks, "outputs", lambda: tmp_path)
+    from core.advanced import policy as loading_policy
+
+    def no_space(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(loading_policy.os, "fsync", no_space)
+
+    with pytest.raises(loading_policy.DiskFullError):
+        benchmarks.save_record(
+            job_id = "run-1",
+            artifact = str(tmp_path / "merged"),
+            baseline = "org/base",
+            report = _report(),
+            suites = ["mmlu"],
+            limit = 50,
+            batch_size = 1,
+            duration_seconds = 1.0,
+            output_dir = str(tmp_path / "runs"),
+        )
+
+    directory = benchmarks.records_root()
+    assert directory.is_dir()
+    assert list(directory.glob("*.json")) == []
+    assert list(directory.glob(".*")) == []
+
+
 def test_save_rejects_a_report_without_scores(tmp_path, monkeypatch):
     monkeypatch.setattr(benchmarks, "outputs", lambda: tmp_path)
     with pytest.raises(ValueError):

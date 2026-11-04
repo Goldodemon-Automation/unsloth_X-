@@ -11,6 +11,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from auth.authentication import get_current_subject
 from core import labs
 from core.labs import lineage
 from routes import labs as labs_routes
@@ -99,6 +100,34 @@ def test_a_hub_reference_never_links_to_a_folder_that_merely_exists(tmp_path):
     assert set(report["roots"]) == {"train-one", "train-two"}
 
 
+def test_each_manifest_is_parsed_once(tmp_path, monkeypatch):
+    """The edge pass reuses the parsed node: one read and one JSON parse per manifest."""
+    for index in range(3):
+        _manifest(
+            tmp_path / f"run-{index}",
+            run_id = f"run-{index}",
+            stage = "train",
+            inputs = {} if index == 0 else {"source": str(tmp_path / f"run-{index - 1}")},
+            created = index + 1,
+        )
+    reads: list[str] = []
+    original = lineage._read
+
+    def counting(path):
+        reads.append(str(path))
+        return original(path)
+
+    monkeypatch.setattr(lineage, "_read", counting)
+
+    report = lineage.scan(tmp_path)
+
+    assert len(report["edges"]) == 2
+    expected = sorted(
+        str(tmp_path / f"run-{index}" / "run_manifest.json") for index in range(3)
+    )
+    assert sorted(reads) == expected
+
+
 def test_a_copied_run_folder_is_not_counted_twice(tmp_path):
     first = tmp_path / "a-first"
     _manifest(first, run_id = "same-run", stage = "train", inputs = {}, created = 1)
@@ -139,6 +168,7 @@ def test_the_route_is_closed_until_the_experiment_is_on(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(lineage, "scan", lambda root = None: {"nodes": [], "edges": []})
     app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "owner"
     app.dependency_overrides[labs_routes._require_owner] = lambda: None
     app.include_router(labs_routes.router, prefix = "/api/labs")
     client = TestClient(app)

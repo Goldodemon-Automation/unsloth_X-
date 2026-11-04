@@ -10,6 +10,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from auth.authentication import get_current_subject
 from core import labs
 from routes import labs as labs_routes
 
@@ -30,12 +31,50 @@ def _store(monkeypatch, state: dict | None = None) -> dict:
     return store
 
 
+def _refuse_credential():
+    from fastapi import HTTPException
+
+    raise HTTPException(status_code = 401, detail = "Invalid or expired token")
+
+
 def _client(monkeypatch, state: dict | None = None) -> tuple[TestClient, dict]:
     store = _store(monkeypatch, state)
     app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "owner"
     app.dependency_overrides[labs_routes._require_owner] = lambda: None
     app.include_router(labs_routes.router, prefix = "/api/labs")
     return TestClient(app), store
+
+
+def test_the_labs_router_carries_the_credential_check():
+    """Pinned at the router, not per route: a Labs route added later inherits the gate."""
+    dependencies = [
+        getattr(dependency.dependency, "__name__", "")
+        for dependency in labs_routes.router.dependencies
+    ]
+    assert "get_current_subject" in dependencies
+
+
+def test_every_labs_read_route_asks_who_is_calling(monkeypatch):
+    """A hidden Labs page is not a gate. Reads carry the credential check the writes do."""
+    _store(monkeypatch, {"enabled": True, "features": {}})
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = _refuse_credential
+    app.include_router(labs_routes.router, prefix = "/api/labs")
+    client = TestClient(app)
+
+    for path in (
+        "/api/labs",
+        "/api/labs/artifacts",
+        "/api/labs/artifacts/detail?path=/tmp/none",
+        "/api/labs/pipelines",
+        "/api/labs/pipelines/presets",
+        "/api/labs/benchmarks",
+        "/api/labs/lineage",
+        "/api/labs/housekeeping",
+    ):
+        response = client.get(path)
+        assert response.status_code == 401, (path, response.status_code)
 
 
 def test_labs_defaults_off_and_every_feature_on(monkeypatch):
