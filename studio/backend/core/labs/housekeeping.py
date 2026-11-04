@@ -18,6 +18,7 @@ skipped silently.
 
 from __future__ import annotations
 
+import calendar
 import json
 import os
 import shutil
@@ -28,6 +29,13 @@ from typing import Any, Iterable, Optional
 _MAX_FILES = 400_000
 _SKIP_DIRS = frozenset({"labs-pipelines", "labs-benchmarks"})
 _ROOT_IDS = ("outputs", "exports", "hf-hub", "hf-datasets")
+_RULES_NAME = "janitor-rules.json"
+_DEFAULT_RULES: dict[str, Any] = {
+    "enabled": True,
+    "keep_newest": 3,
+    "min_age_days": 7,
+    "roots": ["outputs", "exports"],
+}
 
 
 # ---------------------------------------------------------------------------
@@ -445,3 +453,183 @@ def delete(paths: Iterable[str], *, confirm: bool) -> dict[str, Any]:
         "freed_bytes": freed,
         "freed_label": _format_bytes(freed),
     }
+
+
+# ---------------------------------------------------------------------------
+# Janitor rules
+# ---------------------------------------------------------------------------
+#
+# The scan offers folders and the delete guard accepts paths; between them sat a
+# human deciding which of forty checkpoints still matter. A rule is that decision
+# written down once: keep the newest N per root, leave anything younger than D
+# days alone, and never touch a folder holding a pinned benchmark. Rules are a
+# dry run until someone presses apply, and apply is the same guarded delete --
+# a rule cannot remove what the scan would refuse.
+
+
+def rules_path() -> Path:
+    return _paths()["outputs"] / _RULES_NAME
+
+
+def _validated_rules(payload: Any) -> dict[str, Any]:
+    if payload is None:
+        return dict(_DEFAULT_RULES)
+    if not isinstance(payload, dict):
+        raise ValueError("Janitor rules must be an object.")
+    enabled = payload.get("enabled", _DEFAULT_RULES["enabled"])
+    if not isinstance(enabled, bool):
+        raise ValueError("enabled must be true or false.")
+    keep = payload.get("keep_newest", _DEFAULT_RULES["keep_newest"])
+    if isinstance(keep, bool) or not isinstance(keep, int) or not 0 <= keep <= 100:
+        raise ValueError("keep_newest must be a whole number from 0 to 100.")
+    days = payload.get("min_age_days", _DEFAULT_RULES["min_age_days"])
+    if isinstance(days, bool) or not isinstance(days, int) or not 0 <= days <= 3650:
+        raise ValueError("min_age_days must be a whole number from 0 to 3650.")
+    raw_roots = payload.get("roots", _DEFAULT_RULES["roots"])
+    if not isinstance(raw_roots, list) or not raw_roots:
+        raise ValueError("roots must be a non-empty list.")
+    roots: list[str] = []
+    for identifier in raw_roots:
+        if identifier not in _ROOT_IDS:
+            raise ValueError(f"Unknown storage root: {identifier!r}.")
+        if identifier not in roots:
+            roots.append(str(identifier))
+    return {
+        "enabled": enabled,
+        "keep_newest": keep,
+        "min_age_days": days,
+        "roots": roots,
+    }
+
+
+def read_rules() -> dict[str, Any]:
+    """The saved rules, or the defaults when nothing was saved yet."""
+    try:
+        payload = _read_json(rules_path())
+    except (OSError, KeyError):
+        payload = None
+    if payload is None:
+        return dict(_DEFAULT_RULES)
+    try:
+        return _validated_rules(payload)
+    except ValueError:
+        # A hand-edited file that no longer validates must not brick the page.
+        return dict(_DEFAULT_RULES)
+
+
+def save_rules(payload: Any) -> dict[str, Any]:
+    from core.advanced.policy import atomic_write_text
+
+    rules = _validated_rules(payload)
+    target = rules_path()
+    target.parent.mkdir(parents = True, exist_ok = True)
+    atomic_write_text(target, json.dumps(rules, indent = 2, sort_keys = True))
+    return rules
+
+
+def _epoch(iso: str) -> float:
+    try:
+        return float(calendar.timegm(time.strptime(iso, "%Y-%m-%dT%H:%M:%SZ")))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _normalized(path: str) -> str:
+    return os.path.normcase(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def _holds_a_pin(path: str, pins: set[str]) -> bool:
+    """Whether *path* is a pinned checkpoint or a folder that contains one."""
+    if not pins:
+        return False
+    key = _normalized(path)
+    if key in pins:
+        return True
+    prefix = key.rstrip("\\/")
+    return any(pin.startswith(prefix + os.sep) or pin.startswith(prefix + "/") for pin in pins)
+
+
+def preview_rules(custom: Any = None) -> dict[str, Any]:
+    """What the rules would remove right now. Nothing is deleted."""
+    rules = _validated_rules(custom) if custom is not None else read_rules()
+    report = scan()
+    try:
+        from core.labs import benchmarks
+
+        pins = benchmarks.pinned_artifacts()
+    except Exception:  # noqa: BLE001 - no pins means nothing extra to protect
+        pins = set()
+    now = time.time()
+    minimum_age = rules["min_age_days"] * 86_400
+    kept: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
+    protected: list[dict[str, Any]] = []
+    for root_id in rules["roots"]:
+        entries = [entry for entry in report["entries"] if entry["root"] == root_id]
+        entries.sort(key = lambda entry: entry["modified"], reverse = True)
+        for index, entry in enumerate(entries):
+            slim = {
+                "path": entry["path"],
+                "name": entry["name"],
+                "root": entry["root"],
+                "kind": entry["kind"],
+                "bytes": entry["bytes"],
+                "bytes_label": entry["bytes_label"],
+                "modified": entry["modified"],
+            }
+            if index < rules["keep_newest"]:
+                kept.append(slim)
+                continue
+            if not entry["deletable"]:
+                protected.append(
+                    {"path": entry["path"], "reason": entry["protected_reason"]}
+                )
+                continue
+            if _holds_a_pin(entry["path"], pins):
+                protected.append(
+                    {
+                        "path": entry["path"],
+                        "reason": "A pinned benchmark points at this checkpoint.",
+                    }
+                )
+                continue
+            age = now - _epoch(entry["modified"])
+            if age < minimum_age:
+                protected.append(
+                    {"path": entry["path"], "reason": "Younger than the minimum age."}
+                )
+                continue
+            candidates.append(slim)
+    candidates.sort(key = lambda entry: entry["bytes"], reverse = True)
+    total = sum(entry["bytes"] for entry in candidates)
+    return {
+        "rules": rules,
+        "candidates": candidates,
+        "kept": kept,
+        "protected": protected,
+        "total_bytes": total,
+        "total_label": _format_bytes(total),
+        "notes": [
+            "The newest "
+            f"{rules['keep_newest']} folders in each root are kept whatever their age.",
+            f"Nothing younger than {rules['min_age_days']} days is offered.",
+            "A checkpoint with a pinned benchmark is never offered.",
+            "Preview only: applying this uses the same delete guard as the folder list.",
+        ],
+    }
+
+
+def apply_rules(custom: Any = None) -> dict[str, Any]:
+    """Remove exactly what :func:`preview_rules` offered."""
+    rules = _validated_rules(custom) if custom is not None else read_rules()
+    if not rules["enabled"]:
+        raise ValueError("The janitor rules are switched off.")
+    preview = preview_rules(rules)
+    paths = [entry["path"] for entry in preview["candidates"]]
+    result = delete(paths, confirm = True) if paths else {
+        "deleted": [],
+        "refused": [],
+        "freed_bytes": 0,
+        "freed_label": _format_bytes(0),
+    }
+    return {"rules": rules, "preview": preview, "result": result}

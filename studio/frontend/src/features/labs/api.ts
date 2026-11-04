@@ -182,6 +182,102 @@ export async function loadArtifactDetail(
   return readJson<Artifact>(response, "Artifact");
 }
 
+export interface ArtifactDiffFact {
+  field: string;
+  label: string;
+  left: unknown;
+  right: unknown;
+  changed: boolean;
+}
+
+export interface ArtifactDiffChange {
+  field: string;
+  group: string;
+  left: unknown;
+  right: unknown;
+}
+
+export interface ArtifactDiffSide {
+  path: string;
+  name: string;
+  modified: string;
+  has_manifest: boolean;
+}
+
+export type PinnedStatus =
+  | "pinned"
+  | "regressed"
+  | "improved"
+  | "mixed"
+  | "flat"
+  | "unscored"
+  | "missing"
+  | "unpinned";
+
+export interface PinnedVerdict {
+  status: PinnedStatus;
+  pinned_record_id?: string;
+  pinned_at?: string | null;
+  aggregate_delta?: number | null;
+  tolerance?: number | null;
+  suites?: Array<{
+    suite: string;
+    pinned: number;
+    candidate: number;
+    delta: number;
+    tolerance: number;
+    verdict: "regressed" | "improved" | "flat";
+  }>;
+  regressions?: string[];
+  improved?: string[];
+  flat?: string[];
+}
+
+export interface ArtifactDiffBenchmarkSide {
+  id: string;
+  created_at: string | null;
+  suites: string[];
+  candidate_scores: Record<string, number>;
+  baseline_scores: Record<string, number>;
+  verdict: string | null;
+  vs_pinned: PinnedVerdict;
+}
+
+export interface ArtifactDiff {
+  left: ArtifactDiffSide;
+  right: ArtifactDiffSide;
+  facts: ArtifactDiffFact[];
+  changes: ArtifactDiffChange[];
+  changed_count: number;
+  same_count: number;
+  truncated: boolean;
+  benchmark: {
+    left: ArtifactDiffBenchmarkSide | null;
+    right: ArtifactDiffBenchmarkSide | null;
+    delta: Array<{
+      suite: string;
+      left: number | null;
+      right: number | null;
+      delta: number | null;
+    }> | null;
+    aggregate_delta: number | null;
+  };
+  notes: string[];
+}
+
+export async function loadArtifactDiff(
+  left: string,
+  right: string,
+  signal?: AbortSignal,
+): Promise<ArtifactDiff> {
+  const query = new URLSearchParams({ left, right });
+  const response = await authFetch(`${BASE}/artifacts/diff?${query}`, {
+    method: "GET",
+    signal,
+  });
+  return readJson<ArtifactDiff>(response, "diff");
+}
+
 export async function planPipeline(
   spec: PipelineSpec,
   signal?: AbortSignal,
@@ -278,6 +374,12 @@ export interface BenchmarkRecord {
   duration_seconds: number | null;
   candidate_scores: Record<string, number>;
   baseline_scores: Record<string, number>;
+  pin?: {
+    record_id: string;
+    pinned_at: string | null;
+    is_self: boolean;
+  } | null;
+  vs_pinned?: PinnedVerdict;
   verdict: string;
   comparison: {
     entries: Array<{
@@ -350,6 +452,26 @@ export async function runBenchmark(body: BenchmarkRunBody): Promise<LabsJob> {
 export async function deleteBenchmark(id: string): Promise<void> {
   const response = await authFetch(
     `${BASE}/benchmarks/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) {
+    throw new Error(await readFastApiError(response));
+  }
+}
+
+export async function pinBenchmark(id: string): Promise<void> {
+  const response = await authFetch(
+    `${BASE}/benchmarks/${encodeURIComponent(id)}/pin`,
+    { method: "POST" },
+  );
+  if (!response.ok) {
+    throw new Error(await readFastApiError(response));
+  }
+}
+
+export async function unpinBenchmark(id: string): Promise<void> {
+  const response = await authFetch(
+    `${BASE}/benchmarks/${encodeURIComponent(id)}/pin`,
     { method: "DELETE" },
   );
   if (!response.ok) {
@@ -430,6 +552,84 @@ export async function deleteHousekeeping(
     ...jsonRequest({ paths, confirm: true }, "POST"),
   });
   return readJson<HousekeepingDeleteResult>(response, "delete");
+}
+
+export interface JanitorRules {
+  enabled: boolean;
+  keep_newest: number;
+  min_age_days: number;
+  roots: string[];
+}
+
+export interface JanitorCandidate {
+  path: string;
+  name: string;
+  root: string;
+  kind: string;
+  bytes: number;
+  bytes_label: string;
+  modified: string;
+}
+
+export interface JanitorPreview {
+  rules: JanitorRules;
+  candidates: JanitorCandidate[];
+  kept: JanitorCandidate[];
+  protected: Array<{ path: string; reason: string }>;
+  total_bytes: number;
+  total_label: string;
+  notes: string[];
+}
+
+export interface JanitorApplyResult {
+  rules: JanitorRules;
+  preview: JanitorPreview;
+  result: HousekeepingDeleteResult;
+}
+
+export async function loadJanitorRules(
+  signal?: AbortSignal,
+): Promise<JanitorRules> {
+  const response = await authFetch(`${BASE}/housekeeping/rules`, {
+    method: "GET",
+    signal,
+  });
+  const body = await readJson<{ rules: JanitorRules }>(
+    response,
+    "janitor rules",
+  );
+  return body.rules;
+}
+
+export async function saveJanitorRules(
+  rules: Partial<JanitorRules>,
+): Promise<JanitorRules> {
+  const response = await authFetch(`${BASE}/housekeeping/rules`, {
+    ...jsonRequest(rules, "PUT"),
+  });
+  const body = await readJson<{ rules: JanitorRules }>(
+    response,
+    "janitor rules",
+  );
+  return body.rules;
+}
+
+export async function previewJanitorRules(
+  rules: Partial<JanitorRules>,
+): Promise<JanitorPreview> {
+  const response = await authFetch(`${BASE}/housekeeping/rules/preview`, {
+    ...jsonRequest(rules, "POST"),
+  });
+  return readJson<JanitorPreview>(response, "rules preview");
+}
+
+export async function applyJanitorRules(
+  rules: Partial<JanitorRules>,
+): Promise<JanitorApplyResult> {
+  const response = await authFetch(`${BASE}/housekeeping/rules/apply`, {
+    ...jsonRequest(rules, "POST"),
+  });
+  return readJson<JanitorApplyResult>(response, "rules apply");
 }
 
 export interface CmtDataset {
@@ -644,4 +844,167 @@ export async function runAutoScale(spec: AutoScaleSpec): Promise<LabsJob> {
     ...jsonRequest({ spec }, "POST"),
   });
   return readJson<LabsJob>(response, "scale run");
+}
+
+export interface SurgerySpec {
+  /** A local checkpoint folder: surgery rewrites weights on disk. */
+  model: string;
+  drop_layers?: number;
+  layer_strategy?: "last" | "uniform";
+  /** Query heads to remove. Whole KV groups go, so the real count can be higher. */
+  drop_heads?: number;
+  ffn_keep?: number;
+  experts?: number;
+  top_k?: number;
+}
+
+export interface SurgeryPlan {
+  model: string;
+  architecture: string;
+  moe_architecture: string | null;
+  runnable: boolean;
+  blocked_reason: string | null;
+  base: {
+    layers: number;
+    layer_indices: number[];
+    hidden_size: number;
+    num_heads: number;
+    num_kv_heads: number;
+    head_dim: number;
+    ffn_width: number;
+    params: number;
+    params_label: string;
+    bytes: number;
+    bytes_label: string;
+  };
+  prune: {
+    layers: {
+      drop: number;
+      keep: number;
+      strategy: string;
+      dropped_indices: number[];
+    };
+    heads: {
+      requested: number;
+      removed: number;
+      keep: number;
+      kv_keep: number;
+      group_size: number;
+    };
+    ffn: { keep_ratio: number; keep: number; drop: number };
+  };
+  moe: {
+    experts: number;
+    top_k: number;
+    architecture: string;
+    router: string;
+    ffn_width: number;
+  } | null;
+  projection: {
+    params: number;
+    params_label: string;
+    bytes: number;
+    bytes_label: string;
+    ratio: number;
+  };
+  warnings: string[];
+  notes: string[];
+}
+
+export interface SurgeryResult {
+  output_dir: string;
+  checkpoint: string;
+  manifest_path: string;
+  params: number;
+  params_label: string;
+  weight_bytes: number;
+  written_tensors: number;
+  architecture: string;
+  warnings?: string[];
+}
+
+export async function planSurgery(
+  spec: SurgerySpec,
+  signal?: AbortSignal,
+): Promise<SurgeryPlan> {
+  const response = await authFetch(`${BASE}/surgery/plan`, {
+    ...jsonRequest({ spec }, "POST"),
+    signal,
+  });
+  return readJson<SurgeryPlan>(response, "surgery plan");
+}
+
+export async function runSurgery(spec: SurgerySpec): Promise<LabsJob> {
+  const response = await authFetch(`${BASE}/surgery/run`, {
+    ...jsonRequest({ spec }, "POST"),
+  });
+  return readJson<LabsJob>(response, "surgery run");
+}
+
+export interface ArchSwapSpec {
+  source: string;
+  target: string;
+  extra_layers?: "repeat" | "zeros";
+}
+
+export interface ArchSwapMapping {
+  target: string;
+  role: string;
+  layer: number | null;
+  from: string[];
+  action: string;
+  note: string;
+}
+
+export interface ArchSwapPlan {
+  source: string;
+  target: string;
+  source_family: string;
+  target_family: string;
+  source_layers: number;
+  target_layers: number;
+  extra_layers: string;
+  runnable: boolean;
+  blocked_reason: string | null;
+  mapping: ArchSwapMapping[];
+  mapping_truncated: boolean;
+  roles: Array<{
+    role: string;
+    label: string;
+    tensors: number;
+    action: string;
+  }>;
+  counts: Record<string, number>;
+  warnings: string[];
+  notes: string[];
+}
+
+export interface ArchSwapResult {
+  output_dir: string;
+  checkpoint: string;
+  manifest_path: string;
+  source_family: string;
+  target_family: string;
+  tensors: number;
+  zeroed_tensors: number;
+  weight_bytes: number;
+  warnings?: string[];
+}
+
+export async function planArchSwap(
+  spec: ArchSwapSpec,
+  signal?: AbortSignal,
+): Promise<ArchSwapPlan> {
+  const response = await authFetch(`${BASE}/arch-swap/plan`, {
+    ...jsonRequest({ spec }, "POST"),
+    signal,
+  });
+  return readJson<ArchSwapPlan>(response, "arch swap plan");
+}
+
+export async function runArchSwap(spec: ArchSwapSpec): Promise<LabsJob> {
+  const response = await authFetch(`${BASE}/arch-swap/run`, {
+    ...jsonRequest({ spec }, "POST"),
+  });
+  return readJson<LabsJob>(response, "arch swap run");
 }

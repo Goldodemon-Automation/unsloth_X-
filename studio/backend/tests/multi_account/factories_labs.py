@@ -83,6 +83,27 @@ FACTORIES = {
             "looked up, and the owner's copy of a managed record does not exist there, hence 404"
         ),
     ),
+    "routes.labs:POST:/benchmarks/{record_id}/pin": Factory(
+        "labs-benchmark",
+        right = (403,),
+        wrong = (403,),
+        reason = (
+            "owner-only pin: a managed account is refused with 403 before its own record is "
+            "looked up, so a pinned baseline cannot be chosen for someone else"
+        ),
+    ),
+    "routes.labs:DELETE:/benchmarks/{record_id}/pin": Factory(
+        "labs-benchmark",
+        right = (403,),
+        wrong = (403,),
+        # The seeded record carries no pin, and unpinning something that was
+        # never pinned answers 404 rather than pretending it removed a pin.
+        self_expected = (404,),
+        reason = (
+            "owner-only unpin: a managed account is refused with 403 before its own record is "
+            "looked up; the owner's own seeded record exists but holds no pin, hence 404"
+        ),
+    ),
     "routes.labs:DELETE:/pipelines/{pipeline_id}": Factory(
         "labs-pipeline",
         right = (403,),

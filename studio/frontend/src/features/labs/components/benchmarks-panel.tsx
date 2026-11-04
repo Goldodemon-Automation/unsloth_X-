@@ -31,15 +31,32 @@ import {
 import {
   type Artifact,
   type BenchmarkRecord,
+  type PinnedStatus,
   deleteBenchmark,
   loadArtifacts,
   loadBenchmarks,
+  pinBenchmark,
   runBenchmark,
+  unpinBenchmark,
 } from "../api";
 import { BenchmarkTrend } from "./benchmark-trend";
 import { LABS_PATH_INPUT_CLASS, LabsPanel } from "./labs-panel";
 
 const NOISE = 0.015;
+
+// The pinned comparison is deliberately worded differently from the record's
+// own baseline verdict: one says "better than the model I started from", the
+// other says "better than the run I chose as my reference".
+const PINNED_LABEL: Record<PinnedStatus, string> = {
+  pinned: "pinned baseline",
+  regressed: "regressed vs pinned",
+  improved: "improved vs pinned",
+  mixed: "mixed vs pinned",
+  flat: "within noise of pinned",
+  unscored: "no suite in common with the pin",
+  missing: "the pinned record was deleted",
+  unpinned: "",
+};
 const INPUT_CLASS =
   "h-8 min-w-0 rounded-lg border border-border bg-background px-2 text-sm text-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -227,6 +244,23 @@ export function BenchmarksPanel(): ReactElement {
       toast.error(t("labs.benchmarks.installFailed"), { description: message });
     } finally {
       setInstalling(false);
+    }
+  };
+
+  const togglePin = async (record: BenchmarkRecord) => {
+    try {
+      if (record.pin?.is_self) {
+        await unpinBenchmark(record.id);
+      } else {
+        await pinBenchmark(record.id);
+      }
+      // The verdict is computed server-side against the pin, so re-read the
+      // list instead of patching one row's badge locally.
+      await refreshRecords();
+    } catch (failure) {
+      toast.error("The pinned baseline could not be changed", {
+        description: failure instanceof Error ? failure.message : undefined,
+      });
     }
   };
 
@@ -475,6 +509,27 @@ export function BenchmarksPanel(): ReactElement {
                     <span className="text-ui-10 text-muted-foreground">
                       {deltaLabel(record.comparison.aggregate_delta)}
                     </span>
+                    {record.pin?.is_self ? (
+                      <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-ui-10 text-primary">
+                        {PINNED_LABEL.pinned}
+                      </span>
+                    ) : null}
+                    {record.vs_pinned &&
+                    record.vs_pinned.status !== "unpinned" &&
+                    record.vs_pinned.status !== "pinned" ? (
+                      <span
+                        className={cn(
+                          "text-ui-10",
+                          record.vs_pinned.status === "regressed"
+                            ? "font-medium text-destructive"
+                            : record.vs_pinned.status === "improved"
+                              ? "text-emerald-600 dark:text-emerald-400"
+                              : "text-muted-foreground",
+                        )}
+                      >
+                        {PINNED_LABEL[record.vs_pinned.status]}
+                      </span>
+                    ) : null}
                     <span className="ml-auto shrink-0 text-ui-10 text-muted-foreground">
                       {new Date(record.created_at).toLocaleString()}
                     </span>
@@ -534,6 +589,16 @@ export function BenchmarksPanel(): ReactElement {
                           size="sm"
                           variant="ghost"
                           className="ml-auto h-6 px-2 text-ui-10"
+                          onClick={() => void togglePin(record)}
+                        >
+                          {record.pin?.is_self
+                            ? "Unpin baseline"
+                            : "Pin as baseline"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 px-2 text-ui-10"
                           onClick={() => void remove(record.id)}
                         >
                           <HugeiconsIcon

@@ -5,6 +5,10 @@
 
 from __future__ import annotations
 
+import json
+import os
+import time
+
 import pytest
 
 from fastapi import FastAPI
@@ -12,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
 from core import labs
+from core.labs import benchmarks, housekeeping
 from routes import labs as labs_routes
 
 
@@ -157,6 +162,18 @@ def test_every_studio_route_is_closed_while_labs_is_off(monkeypatch):
     )
     assert planned.status_code == 403
     assert client.post("/api/labs/cmt/plan", json = {"spec": {}}).status_code == 403
+    assert client.post("/api/labs/surgery/plan", json = {"spec": {}}).status_code == 403
+    assert client.post("/api/labs/arch-swap/plan", json = {"spec": {}}).status_code == 403
+    assert (
+        client.post("/api/labs/surgery/run", json = {"spec": {"model": "/tmp/none"}}).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            "/api/labs/arch-swap/run", json = {"spec": {"source": "/tmp/a", "target": "/tmp/b"}}
+        ).status_code
+        == 403
+    )
     assert (
         client.post(
             "/api/labs/benchmarks/run",
@@ -177,6 +194,31 @@ def test_a_feature_that_is_off_closes_only_its_route(monkeypatch, tmp_path):
     monkeypatch.setattr("core.labs.artifacts.root", lambda: tmp_path)
     assert client.get("/api/labs/artifacts").status_code == 200
     assert client.get("/api/labs/pipelines").status_code == 403
+
+
+def test_surgery_and_arch_swap_close_one_at_a_time(monkeypatch):
+    """Two studios, two switches: turning the swap off must not close surgery."""
+    client, _ = _client(
+        monkeypatch, {"enabled": True, "features": {"surgery": True, "arch-swap": False}}
+    )
+
+    open_route = client.post("/api/labs/surgery/plan", json = {"spec": {}})
+    assert open_route.status_code == 400
+    assert "checkpoint is required" in open_route.json()["detail"]
+
+    closed = client.post("/api/labs/arch-swap/plan", json = {"spec": {}})
+    assert closed.status_code == 403
+    assert "Arch swap" in closed.json()["detail"]
+
+
+def test_both_new_studios_are_registered_for_the_settings_tab(monkeypatch):
+    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda key, default = None: None)
+    state = labs.describe_state()
+    by_id = {feature["id"]: feature for feature in state["features"]}
+    for feature_id, word in (("surgery", "Prune"), ("arch-swap", "architecture")):
+        assert by_id[feature_id]["studio"] is True
+        assert by_id[feature_id]["status"] == "alpha"
+        assert word in by_id[feature_id]["description"]
 
 
 def test_manifest_route_needs_the_manifest_feature(monkeypatch, tmp_path):
@@ -232,3 +274,121 @@ def test_describe_state_lists_the_registry_without_duplicating_it(monkeypatch):
     assert [feature["id"] for feature in state["features"]] == list(labs.FEATURE_IDS)
     assert all(feature["enabled"] for feature in state["features"])
     assert {feature["studio"] for feature in state["features"]} == {True, False}
+
+
+# ---------------------------------------------------------------------------
+# Diff, pins and janitor rules over HTTP
+# ---------------------------------------------------------------------------
+
+
+def _artifact(root, name: str, learning_rate: float) -> None:
+    model = root / name
+    model.mkdir(parents = True)
+    (model / "config.json").write_text("{}", encoding = "utf-8")
+    (model / "run_manifest.json").write_text(
+        json.dumps(
+            {"stage": "train", "run_id": name, "config": {"learning_rate": learning_rate}}
+        ),
+        encoding = "utf-8",
+    )
+
+
+def test_the_diff_route_names_the_field_that_moved(monkeypatch, tmp_path):
+    root = tmp_path / "outputs"
+    _artifact(root, "run-a", 2e-4)
+    _artifact(root, "run-b", 1e-4)
+    monkeypatch.setattr("core.labs.artifacts.root", lambda: root)
+    monkeypatch.setattr("core.labs.benchmarks.outputs", lambda: tmp_path)
+    client, _ = _client(monkeypatch, {"enabled": True, "features": {"artifacts": True}})
+
+    response = client.get(
+        "/api/labs/artifacts/diff",
+        params = {"left": str(root / "run-a"), "right": str(root / "run-b")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["changes"][0]["field"] == "config.learning_rate"
+    assert body["left"]["name"] == "run-a"
+
+
+def test_pin_and_unpin_change_what_the_list_reports(monkeypatch, tmp_path):
+    monkeypatch.setattr("core.labs.benchmarks.outputs", lambda: tmp_path)
+    artifact = tmp_path / "merged"
+    artifact.mkdir()
+    record = benchmarks.save_record(
+        job_id = "run-1",
+        artifact = str(artifact),
+        baseline = "org/base",
+        report = {"baseline_scores": {"mmlu": 0.4}, "candidate_scores": {"mmlu": 0.5}},
+        suites = ["mmlu"],
+        limit = None,
+        batch_size = 1,
+        duration_seconds = 1.0,
+        output_dir = str(tmp_path / "runs" / "run-1"),
+    )
+    client, _ = _client(monkeypatch, {"enabled": True, "features": {"benchmarks": True}})
+
+    pinned = client.post(f"/api/labs/benchmarks/{record['id']}/pin")
+    assert pinned.status_code == 200
+    assert pinned.json()["pin"]["record_id"] == record["id"]
+
+    listed = client.get("/api/labs/benchmarks").json()
+    assert listed["records"][0]["pin"]["is_self"] is True
+    assert listed["records"][0]["vs_pinned"]["status"] == "pinned"
+    assert listed["pins"][0]["record_id"] == record["id"]
+
+    assert client.delete(f"/api/labs/benchmarks/{record['id']}/pin").status_code == 200
+    after = client.get("/api/labs/benchmarks").json()
+    assert after["records"][0]["pin"] is None
+    assert after["records"][0]["vs_pinned"]["status"] == "unpinned"
+    assert client.delete(f"/api/labs/benchmarks/{record['id']}/pin").status_code == 404
+
+
+def test_janitor_rules_save_preview_and_apply_over_http(monkeypatch, tmp_path):
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    for name, days in (("run-a", 1), ("run-b", 40)):
+        directory = outputs / name
+        directory.mkdir()
+        (directory / "config.json").write_text("{}", encoding = "utf-8")
+        stamp = time.time() - days * 86_400
+        os.utime(directory, (stamp, stamp))
+    monkeypatch.setattr("core.labs.housekeeping._paths", lambda: {"outputs": outputs})
+    monkeypatch.setattr("core.labs.housekeeping._running_outputs", lambda: [])
+    monkeypatch.setattr("core.labs.benchmarks.pinned_artifacts", lambda: set())
+    client, _ = _client(monkeypatch, {"enabled": True, "features": {"housekeeping": True}})
+
+    assert client.get("/api/labs/housekeeping/rules").json()["rules"]["keep_newest"] == 3
+    saved = client.put(
+        "/api/labs/housekeeping/rules", json = {"keep_newest": 1, "min_age_days": 7}
+    )
+    assert saved.status_code == 200
+    assert saved.json()["rules"]["keep_newest"] == 1
+    assert (outputs / "run-a").is_dir()
+
+    preview = client.post("/api/labs/housekeeping/rules/preview", json = {}).json()
+    assert [entry["name"] for entry in preview["candidates"]] == ["run-b"]
+    assert [entry["name"] for entry in preview["kept"]] == ["run-a"]
+    # A preview touches nothing.
+    assert (outputs / "run-b").is_dir()
+
+    applied = client.post("/api/labs/housekeeping/rules/apply", json = {})
+    assert applied.status_code == 200
+    assert applied.json()["result"]["freed_bytes"] > 0
+    assert not (outputs / "run-b").exists()
+    assert (outputs / "run-a").is_dir()
+
+
+def test_switched_off_rules_are_refused_by_the_apply_route(monkeypatch, tmp_path):
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    monkeypatch.setattr("core.labs.housekeeping._paths", lambda: {"outputs": outputs})
+    monkeypatch.setattr("core.labs.housekeeping._running_outputs", lambda: [])
+    client, _ = _client(monkeypatch, {"enabled": True, "features": {"housekeeping": True}})
+
+    response = client.post(
+        "/api/labs/housekeeping/rules/apply", json = {"enabled": False}
+    )
+    assert response.status_code == 400
+    assert housekeeping.read_rules()["enabled"] is True

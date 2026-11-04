@@ -15,17 +15,20 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useCallback, useEffect, useState } from "react";
-import { LabsPanel } from "./labs-panel";
 import {
   type HousekeepingEntry,
   type HousekeepingReport,
+  type JanitorPreview,
+  type JanitorRules,
+  applyJanitorRules,
   deleteHousekeeping,
+  loadJanitorRules,
+  previewJanitorRules,
+  saveJanitorRules,
   scanHousekeeping,
 } from "../api";
-import {
-  type RetentionPlan,
-  planRetention,
-} from "../lib/retention-policy";
+import { type RetentionPlan, planRetention } from "../lib/retention-policy";
+import { LabsPanel } from "./labs-panel";
 
 const KIND_LABEL: Record<string, string> = {
   checkpoint: "Checkpoint",
@@ -54,6 +57,9 @@ export function JanitorPanel(): ReactElement {
   const [keepPerProject, setKeepPerProject] = useState("3");
   const [plan, setPlan] = useState<RetentionPlan | null>(null);
   const [planning, setPlanning] = useState(false);
+  const [rules, setRules] = useState<JanitorRules | null>(null);
+  const [rulePreview, setRulePreview] = useState<JanitorPreview | null>(null);
+  const [rulesBusy, setRulesBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -77,6 +83,90 @@ export function JanitorPanel(): ReactElement {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    // A failure here is not fatal: the page still lists folders by hand, and the
+    // rules card simply stays hidden until the server answers.
+    loadJanitorRules()
+      .then(setRules)
+      .catch(() => undefined);
+  }, []);
+
+  const changeRules = (patch: Partial<JanitorRules>) => {
+    setRules((current) => (current ? { ...current, ...patch } : current));
+    // An edit invalidates the preview it was based on.
+    setRulePreview(null);
+  };
+
+  const previewRules = async () => {
+    if (!rules) return;
+    setRulesBusy(true);
+    setError(null);
+    try {
+      setRulePreview(await previewJanitorRules(rules));
+    } catch (failure) {
+      setError(
+        failure instanceof Error
+          ? failure.message
+          : "The rules preview could not be built.",
+      );
+    } finally {
+      setRulesBusy(false);
+    }
+  };
+
+  const saveRules = async () => {
+    if (!rules) return;
+    setRulesBusy(true);
+    setError(null);
+    try {
+      setRules(await saveJanitorRules(rules));
+      toast.success("Janitor rules saved");
+    } catch (failure) {
+      const message =
+        failure instanceof Error
+          ? failure.message
+          : "The rules could not be saved.";
+      setError(message);
+      toast.error("The rules could not be saved", { description: message });
+    } finally {
+      setRulesBusy(false);
+    }
+  };
+
+  const applyRules = async () => {
+    if (!rules || !rulePreview || rulePreview.candidates.length === 0) return;
+    const ok = window.confirm(
+      `Delete ${rulePreview.candidates.length} folder(s) the rules selected (${rulePreview.total_label})?\n\n${rulePreview.candidates
+        .map((entry) => entry.path)
+        .join("\n")}`,
+    );
+    if (!ok) return;
+    setRulesBusy(true);
+    setError(null);
+    try {
+      const applied = await applyJanitorRules(rules);
+      toast.success(t("labs.cleanup.deleted"), {
+        description: applied.result.freed_label,
+      });
+      if (applied.result.refused.length > 0) {
+        setError(
+          applied.result.refused
+            .map((item) => `${item.path}: ${item.reason}`)
+            .join("\n"),
+        );
+      }
+      setRulePreview(null);
+      await refresh();
+    } catch (failure) {
+      const message =
+        failure instanceof Error ? failure.message : t("labs.cleanup.failed");
+      setError(message);
+      toast.error(t("labs.cleanup.failed"), { description: message });
+    } finally {
+      setRulesBusy(false);
+    }
+  };
 
   const chosen = (report?.entries ?? []).filter((entry) =>
     isSelected(selected, entry),
@@ -212,6 +302,139 @@ export function JanitorPanel(): ReactElement {
               </div>
             </div>
           ))}
+        </div>
+      ) : null}
+
+      {rules ? (
+        <div className="flex flex-col gap-2 rounded-lg border border-border/70 bg-background/40 p-3">
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="min-w-48 flex-1">
+              <p className="text-ui-11 font-medium text-foreground">
+                Auto-janitor rules
+              </p>
+              <p className="mt-0.5 text-ui-10 text-muted-foreground">
+                Keep the newest runs in each root and offer the rest once they
+                are old enough. A checkpoint with a pinned benchmark is never
+                offered.
+              </p>
+            </div>
+            <label className="flex items-center gap-1.5 text-ui-10 text-muted-foreground">
+              <input
+                type="checkbox"
+                className="size-3.5 accent-primary"
+                checked={rules.enabled}
+                onChange={(event) =>
+                  changeRules({ enabled: event.target.checked })
+                }
+              />
+              enabled
+            </label>
+            <label className="flex items-center gap-1.5 text-ui-10 text-muted-foreground">
+              keep newest
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={rules.keep_newest}
+                onChange={(event) =>
+                  changeRules({ keep_newest: Number(event.target.value) })
+                }
+                className="h-7 w-16 rounded-md border border-border bg-background px-1.5 text-ui-11 text-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              />
+            </label>
+            <label className="flex items-center gap-1.5 text-ui-10 text-muted-foreground">
+              older than (days)
+              <input
+                type="number"
+                min={0}
+                max={3650}
+                value={rules.min_age_days}
+                onChange={(event) =>
+                  changeRules({ min_age_days: Number(event.target.value) })
+                }
+                className="h-7 w-16 rounded-md border border-border bg-background px-1.5 text-ui-11 text-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              />
+            </label>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={rulesBusy || deleting}
+              onClick={() => void previewRules()}
+            >
+              {rulesBusy ? <Spinner /> : null}
+              Preview rules
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={rulesBusy}
+              onClick={() => void saveRules()}
+            >
+              Save
+            </Button>
+          </div>
+          {rulePreview ? (
+            <div className="flex flex-col gap-2 border-t border-border/60 pt-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-ui-10 text-foreground">
+                  {rulePreview.candidates.length} folder(s),{" "}
+                  {rulePreview.total_label} to free · {rulePreview.kept.length}{" "}
+                  kept · {rulePreview.protected.length} protected
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  className="ml-auto"
+                  disabled={rulesBusy || rulePreview.candidates.length === 0}
+                  onClick={() => void applyRules()}
+                >
+                  {rulesBusy ? (
+                    <Spinner />
+                  ) : (
+                    <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                  )}
+                  Apply rules
+                </Button>
+              </div>
+              {rulePreview.candidates.length === 0 ? (
+                <p className="text-ui-10 text-muted-foreground">
+                  Nothing matches the rules right now.
+                </p>
+              ) : (
+                <ul className="max-h-40 overflow-y-auto text-ui-10 text-muted-foreground">
+                  {rulePreview.candidates.map((entry) => (
+                    <li key={entry.path} className="flex gap-2">
+                      <span className="min-w-0 flex-1 truncate font-mono">
+                        {entry.path}
+                      </span>
+                      <span className="shrink-0">{entry.bytes_label}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {rulePreview.protected.length > 0 ? (
+                <details className="text-ui-10 text-muted-foreground">
+                  <summary className="cursor-pointer">
+                    Why {rulePreview.protected.length} were left alone
+                  </summary>
+                  <ul className="mt-1 max-h-32 overflow-y-auto">
+                    {rulePreview.protected.map((item) => (
+                      <li key={item.path} className="truncate font-mono">
+                        {item.path} — {item.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
+              <p className="text-ui-10 text-muted-foreground/70">
+                Apply uses the same delete guard as the folder list; a running
+                job or a storage root is still refused.
+              </p>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -365,7 +588,7 @@ export function JanitorPanel(): ReactElement {
                       <span className="hidden text-ui-10 text-muted-foreground/70 sm:inline">
                         {new Date(entry.modified).toLocaleDateString()}
                       </span>
-                      {!entry.deletable ? (
+                      {entry.deletable ? null : (
                         <span className="flex items-center gap-1 text-ui-9 text-muted-foreground">
                           <HugeiconsIcon
                             icon={Alert02Icon}
@@ -373,7 +596,7 @@ export function JanitorPanel(): ReactElement {
                           />
                           {entry.protected_reason}
                         </span>
-                      ) : null}
+                      )}
                     </span>
                   </label>
                 );

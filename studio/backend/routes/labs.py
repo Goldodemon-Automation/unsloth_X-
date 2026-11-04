@@ -23,7 +23,18 @@ from auth import policy
 from auth.authentication import get_current_subject
 from core import labs
 from core.advanced import repair
-from core.labs import artifacts, autoscale, benchmarks, cmt, housekeeping, lineage, pipelines
+from core.labs import (
+    arch_swap,
+    artifacts,
+    autoscale,
+    benchmarks,
+    cmt,
+    diff,
+    housekeeping,
+    lineage,
+    pipelines,
+    surgery,
+)
 
 # Router-level, like routes.advanced: a hidden page is not a gate, and neither is a
 # GET that never asked who is calling. Every route below inherits this, so an
@@ -103,6 +114,17 @@ class HousekeepingDeleteRequest(BaseModel):
     confirm: bool = False
 
 
+class JanitorRulesUpdate(BaseModel):
+    """Any subset of the janitor rules; the rest is filled from the saved file."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: Optional[bool] = None
+    keep_newest: Optional[int] = Field(None, ge = 0, le = 100)
+    min_age_days: Optional[int] = Field(None, ge = 0, le = 3650)
+    roots: Optional[list[str]] = None
+
+
 class CmtPlanRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -116,6 +138,24 @@ class CmtRunRequest(CmtPlanRequest):
 class AutoScaleRequest(CmtPlanRequest):
     """The model, the datasets it will train on, and any size override."""
 
+    output_dir: Optional[str] = None
+
+
+class SurgeryRequest(BaseModel):
+    """The checkpoint and the prune/upcycle knobs, as the panel sends them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    spec: dict[str, Any]
+    output_dir: Optional[str] = None
+
+
+class ArchSwapRequest(BaseModel):
+    """A source checkpoint, a target checkpoint, and the surplus-block policy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    spec: dict[str, Any]
     output_dir: Optional[str] = None
 
 
@@ -205,6 +245,16 @@ def artifact_detail(path: str) -> dict[str, Any]:
         except Exception as error:  # noqa: BLE001 - the record is still useful without it
             record["manifest_error"] = str(error)
     return record
+
+
+@router.get("/artifacts/diff")
+def artifact_diff(left: str, right: str) -> dict[str, Any]:
+    """Field-level differences between two checkpoints this Studio wrote."""
+    _gate("artifacts")
+    try:
+        return diff.compare(left, right)
+    except Exception as error:  # noqa: BLE001
+        raise _translate(error) from error
 
 
 @router.get("/artifacts/manifest")
@@ -321,10 +371,13 @@ def list_benchmarks(
     """Recorded eval runs, newest first, optionally for one checkpoint."""
     _gate("benchmarks")
     try:
-        records = benchmarks.list_records(limit = limit, artifact = artifact)
+        records = benchmarks.annotate(
+            benchmarks.list_records(limit = limit, artifact = artifact)
+        )
+        pins = benchmarks.list_pins()
     except Exception as error:  # noqa: BLE001
         raise _translate(error) from error
-    return {"records": records}
+    return {"records": records, "pins": pins}
 
 
 @router.post("/benchmarks/run", dependencies = [Depends(_require_owner)])
@@ -405,6 +458,31 @@ def run_benchmark(request: BenchmarkRunRequest) -> dict[str, Any]:
         output_dir = str(run_dir),
         sources = [baseline, artifact["path"]],
     )
+
+
+@router.post("/benchmarks/{record_id}/pin", dependencies = [Depends(_require_owner)])
+def pin_benchmark(record_id: str) -> dict[str, Any]:
+    """Make one record the baseline later runs are measured against."""
+    _gate("benchmarks")
+    try:
+        entry = benchmarks.pin_record(record_id)
+        return {"pin": entry, "pins": benchmarks.list_pins()}
+    except Exception as error:  # noqa: BLE001
+        raise _translate(error) from error
+
+
+@router.delete("/benchmarks/{record_id}/pin", dependencies = [Depends(_require_owner)])
+def unpin_benchmark(record_id: str) -> dict[str, Any]:
+    """Drop the pin this record holds. The record itself is kept."""
+    _gate("benchmarks")
+    try:
+        removed = benchmarks.unpin(record_id)
+        pins = benchmarks.list_pins()
+    except Exception as error:  # noqa: BLE001
+        raise _translate(error) from error
+    if not removed:
+        raise HTTPException(status_code = 404, detail = f"No pin on record {record_id!r}.")
+    return {"unpinned": record_id, "pins": pins}
 
 
 @router.delete("/benchmarks/{record_id}", dependencies = [Depends(_require_owner)])
@@ -541,6 +619,102 @@ def run_auto_scale(request: AutoScaleRequest) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Model surgery (prune, then upcycle to routed experts)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/surgery/plan")
+def plan_surgery(request: SurgeryRequest) -> dict[str, Any]:
+    """Price the prune and the upcycle from headers. Loads no weight, writes nothing."""
+    _gate("surgery")
+    try:
+        return surgery.plan(request.spec)
+    except Exception as error:  # noqa: BLE001
+        raise _translate(error) from error
+
+
+@router.post("/surgery/run", dependencies = [Depends(_require_owner)])
+def run_surgery(request: SurgeryRequest) -> dict[str, Any]:
+    """Owner-only: write the pruned (and optionally upcycled) checkpoint."""
+    _gate("surgery")
+    try:
+        report = surgery.plan(request.spec)
+    except Exception as error:  # noqa: BLE001
+        raise _translate(error) from error
+    if not report["runnable"]:
+        raise HTTPException(
+            status_code = 400,
+            detail = report.get("blocked_reason") or "This surgery plan cannot run.",
+        )
+    output = (
+        Path(request.output_dir).expanduser()
+        if request.output_dir and request.output_dir.strip()
+        else _cmt_output_dir(report["model"], prefix = "surgery")
+    )
+
+    def work(progress) -> dict[str, Any]:
+        return surgery.run(request.spec, output_dir = str(output), progress = progress)
+
+    from routes.advanced import _start_job
+
+    return _start_job(
+        "surgery",
+        work,
+        output_dir = str(output),
+        sources = [report["model"]],
+        with_progress = True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Arch swap (tensor mapping between architectures)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/arch-swap/plan")
+def plan_arch_swap(request: ArchSwapRequest) -> dict[str, Any]:
+    """The role-by-role mapping a swap would perform, and what it would cost."""
+    _gate("arch-swap")
+    try:
+        return arch_swap.plan(request.spec)
+    except Exception as error:  # noqa: BLE001
+        raise _translate(error) from error
+
+
+@router.post("/arch-swap/run", dependencies = [Depends(_require_owner)])
+def run_arch_swap(request: ArchSwapRequest) -> dict[str, Any]:
+    """Owner-only: write the mapped checkpoint into the target's layout."""
+    _gate("arch-swap")
+    try:
+        report = arch_swap.plan(request.spec)
+    except Exception as error:  # noqa: BLE001
+        raise _translate(error) from error
+    if not report["runnable"]:
+        raise HTTPException(
+            status_code = 400,
+            detail = report.get("blocked_reason") or "This swap cannot run.",
+        )
+    output = (
+        Path(request.output_dir).expanduser()
+        if request.output_dir and request.output_dir.strip()
+        else _cmt_output_dir(report["source"], prefix = "swap")
+    )
+
+    def work(progress) -> dict[str, Any]:
+        return arch_swap.run(request.spec, output_dir = str(output), progress = progress)
+
+    from routes.advanced import _start_job
+
+    return _start_job(
+        "arch-swap",
+        work,
+        output_dir = str(output),
+        sources = [report["source"]],
+        with_progress = True,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Housekeeping
 # ---------------------------------------------------------------------------
 
@@ -561,5 +735,50 @@ def delete_housekeeping(request: HousekeepingDeleteRequest) -> dict[str, Any]:
     _gate("housekeeping")
     try:
         return housekeeping.delete(request.paths, confirm = request.confirm)
+    except Exception as error:  # noqa: BLE001
+        raise _translate(error) from error
+
+
+@router.get("/housekeeping/rules")
+def read_janitor_rules() -> dict[str, Any]:
+    """The saved retention rules, or the defaults before anything was saved."""
+    _gate("housekeeping")
+    try:
+        return {"rules": housekeeping.read_rules()}
+    except Exception as error:  # noqa: BLE001
+        raise _translate(error) from error
+
+
+@router.put("/housekeeping/rules", dependencies = [Depends(_require_owner)])
+def update_janitor_rules(request: JanitorRulesUpdate) -> dict[str, Any]:
+    """Owner-only: save the rules. They delete nothing until they are applied."""
+    _gate("housekeeping")
+    try:
+        merged = {**housekeeping.read_rules(), **request.model_dump(exclude_none = True)}
+        return {"rules": housekeeping.save_rules(merged)}
+    except Exception as error:  # noqa: BLE001
+        raise _translate(error) from error
+
+
+def _rule_overrides(request: JanitorRulesUpdate) -> dict[str, Any]:
+    return {**housekeeping.read_rules(), **request.model_dump(exclude_none = True)}
+
+
+@router.post("/housekeeping/rules/preview")
+def preview_janitor_rules(request: JanitorRulesUpdate) -> dict[str, Any]:
+    """What the rules would remove right now, including unsaved edits. Deletes nothing."""
+    _gate("housekeeping")
+    try:
+        return housekeeping.preview_rules(_rule_overrides(request))
+    except Exception as error:  # noqa: BLE001
+        raise _translate(error) from error
+
+
+@router.post("/housekeeping/rules/apply", dependencies = [Depends(_require_owner)])
+def apply_janitor_rules(request: JanitorRulesUpdate) -> dict[str, Any]:
+    """Owner-only: remove exactly what the preview offered."""
+    _gate("housekeeping")
+    try:
+        return housekeeping.apply_rules(_rule_overrides(request))
     except Exception as error:  # noqa: BLE001
         raise _translate(error) from error

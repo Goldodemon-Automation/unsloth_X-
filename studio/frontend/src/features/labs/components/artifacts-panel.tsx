@@ -21,12 +21,15 @@ import { type ReactElement, useCallback, useEffect, useState } from "react";
 import {
   type Artifact,
   type ArtifactAction,
+  type ArtifactDiff,
   loadArtifactDetail,
+  loadArtifactDiff,
   loadArtifacts,
 } from "../api";
 import { useLabsHandoffStore } from "../handoff";
 import { useLabsFeature } from "../store";
 import { LabsPanel } from "./labs-panel";
+import { RunDiff } from "./run-diff";
 
 const ACTION_LABEL: Record<ArtifactAction["id"], TranslationKey> = {
   "continue-training": "labs.action.continue",
@@ -64,6 +67,10 @@ export function ArtifactsPanel(): ReactElement {
   const [selected, setSelected] = useState<Artifact | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [showManifest, setShowManifest] = useState(false);
+  const [comparing, setComparing] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [diff, setDiff] = useState<ArtifactDiff | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
   const canContinue = useLabsFeature("training-continuation");
   const canScale = useLabsFeature("scale-from-artifact");
   const canViewManifest = useLabsFeature("manifest-viewer");
@@ -127,6 +134,40 @@ export function ArtifactsPanel(): ReactElement {
     void navigate({ to: "/scale" });
   };
 
+  const stopComparing = () => {
+    setComparing(false);
+    setPicked([]);
+    setDiff(null);
+  };
+
+  const pickForDiff = (record: Artifact) => {
+    setDiff(null);
+    setPicked((current) => {
+      if (current.includes(record.path)) {
+        return current.filter((path) => path !== record.path);
+      }
+      // A third pick replaces the older side instead of refusing the click:
+      // comparing "the run before this one" is the common case.
+      return current.length >= 2
+        ? [current[1], record.path]
+        : [...current, record.path];
+    });
+  };
+
+  const showDiff = async () => {
+    if (picked.length !== 2) return;
+    setDiffLoading(true);
+    try {
+      setDiff(await loadArtifactDiff(picked[0], picked[1]));
+    } catch (failure) {
+      toast.error("The two runs could not be compared", {
+        description: failure instanceof Error ? failure.message : undefined,
+      });
+    } finally {
+      setDiffLoading(false);
+    }
+  };
+
   return (
     <LabsPanel
       title={t("labs.tab.artifacts")}
@@ -164,253 +205,305 @@ export function ArtifactsPanel(): ReactElement {
           </p>
         </div>
       ) : (
-        <div
-          className={cn(
-            "gap-4",
-            // The detail column exists only once there is something to describe;
-            // an empty dashed pane taught the header to repeat itself.
-            selected && "grid lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]",
-          )}
-        >
-          <ul className="flex flex-col gap-2">
-            {records.map((record) => {
-              const active = selected?.path === record.path;
-              return (
-                <li key={record.path}>
-                  <button
-                    type="button"
-                    onClick={() => select(record)}
-                    aria-pressed={active}
-                    className={cn(
-                      "flex w-full flex-col gap-1 rounded-2xl border p-3 text-left transition-[background-color,border-color,transform] duration-150 motion-safe:hover:-translate-y-px motion-safe:active:translate-y-0",
-                      active
-                        ? "border-primary/50 bg-primary/5"
-                        : "border-border/60 hover:bg-muted/40",
-                    )}
-                  >
-                    <span className="flex min-w-0 items-center gap-2">
-                      {/* Wraps rather than truncates: a checkpoint name is the
+        <>
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            {comparing ? (
+              <>
+                <span className="text-ui-10 text-muted-foreground">
+                  Pick two runs ({picked.length}/2).
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={picked.length !== 2 || diffLoading}
+                  onClick={() => void showDiff()}
+                >
+                  {diffLoading ? <Spinner /> : null}
+                  Show differences
+                </Button>
+                <Button size="sm" variant="ghost" onClick={stopComparing}>
+                  Cancel
+                </Button>
+              </>
+            ) : (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={records.length < 2}
+                onClick={() => {
+                  setComparing(true);
+                  setPicked([]);
+                  setDiff(null);
+                }}
+              >
+                Compare runs
+              </Button>
+            )}
+          </div>
+          <div
+            className={cn(
+              "gap-4",
+              // The detail column exists only once there is something to describe;
+              // an empty dashed pane taught the header to repeat itself.
+              selected &&
+                !comparing &&
+                "grid lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]",
+            )}
+          >
+            <ul className="flex flex-col gap-2">
+              {records.map((record) => {
+                const active = selected?.path === record.path;
+                return (
+                  <li key={record.path}>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        comparing ? pickForDiff(record) : select(record)
+                      }
+                      aria-pressed={
+                        comparing ? picked.includes(record.path) : active
+                      }
+                      className={cn(
+                        "flex w-full flex-col gap-1 rounded-2xl border p-3 text-left transition-[background-color,border-color,transform] duration-150 motion-safe:hover:-translate-y-px motion-safe:active:translate-y-0",
+                        (comparing ? picked.includes(record.path) : active)
+                          ? "border-primary/50 bg-primary/5"
+                          : "border-border/60 hover:bg-muted/40",
+                      )}
+                    >
+                      {comparing ? (
+                        <span className="mb-1 text-ui-10 font-medium text-primary">
+                          {picked.indexOf(record.path) === 0
+                            ? "A"
+                            : picked.indexOf(record.path) === 1
+                              ? "B"
+                              : "Pick"}
+                        </span>
+                      ) : null}
+                      <span className="flex min-w-0 items-center gap-2">
+                        {/* Wraps rather than truncates: a checkpoint name is the
                           one thing this row exists to show, and at the
                           narrowest card it has ~120px. */}
-                      <span className="min-w-0 text-sm font-medium break-words text-foreground">
-                        {record.name}
-                      </span>
-                      <span className="ml-auto shrink-0 font-mono text-ui-10 text-muted-foreground">
-                        {params(record.params)}
-                      </span>
-                    </span>
-                    <span className="flex flex-wrap items-center gap-1.5">
-                      {record.manifest?.stage ? (
-                        <Badge
-                          variant="outline"
-                          className="h-5 px-1.5 text-ui-10"
-                        >
-                          {record.manifest.stage}
-                        </Badge>
-                      ) : null}
-                      {record.adapter ? (
-                        <Badge
-                          variant="outline"
-                          className="h-5 px-1.5 text-ui-10"
-                        >
-                          LoRA
-                        </Badge>
-                      ) : null}
-                      {record.quantized ? (
-                        <Badge
-                          variant="outline"
-                          className="h-5 px-1.5 text-ui-10"
-                        >
-                          quantized
-                        </Badge>
-                      ) : null}
-                      {record.moe ? (
-                        <Badge
-                          variant="outline"
-                          className="h-5 px-1.5 text-ui-10"
-                        >
-                          MoE
-                        </Badge>
-                      ) : null}
-                      <span className="text-ui-10 text-muted-foreground">
-                        {record.model_type ?? "unknown"} ·{" "}
-                        {formatBytes(record.weight_bytes)}
-                      </span>
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-
-          {selected ? (
-            <div className="flex min-w-0 flex-col gap-3">
-              <>
-                <div className="flex min-w-0 flex-col gap-1 rounded-2xl border border-border/60 p-4">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <h3 className="min-w-0 truncate text-sm font-medium text-foreground">
-                      {selected.name}
-                    </h3>
-                    {detailLoading ? <Spinner /> : null}
-                  </div>
-                  <p className="font-mono text-ui-10 break-all text-muted-foreground">
-                    {selected.path}
-                  </p>
-                  <div className="mt-2 grid grid-cols-2 gap-2 text-ui-11 sm:grid-cols-4">
-                    <div>
-                      <p className="text-ui-10 text-muted-foreground">
-                        {t("labs.artifacts.params")}
-                      </p>
-                      <p className="font-mono text-foreground">
-                        {params(selected.params)}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-ui-10 text-muted-foreground">
-                        {t("labs.artifacts.size")}
-                      </p>
-                      <p className="font-mono text-foreground">
-                        {formatBytes(selected.weight_bytes)}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-ui-10 text-muted-foreground">
-                        {t("labs.artifacts.family")}
-                      </p>
-                      <p className="font-mono text-foreground">
-                        {selected.model_type ?? "—"}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-ui-10 text-muted-foreground">
-                        {t("labs.artifacts.written")}
-                      </p>
-                      <p className="font-mono text-foreground">
-                        {selected.modified.replace("T", " ").replace("Z", "")}
-                      </p>
-                    </div>
-                  </div>
-                  {selected.manifest ? (
-                    <p className="mt-2 text-ui-10 text-muted-foreground">
-                      {t("labs.artifacts.provenance")}:{" "}
-                      <span className="font-mono text-foreground/80">
-                        {selected.manifest.stage ?? "unknown stage"} ·{" "}
-                        {selected.manifest.run_id ?? "no run id"}
-                      </span>
-                    </p>
-                  ) : (
-                    <p className="mt-2 text-ui-10 text-muted-foreground">
-                      {t("labs.artifacts.noManifest")}
-                    </p>
-                  )}
-
-                  <div className="mt-3 flex flex-wrap items-center gap-2">
-                    {canContinue &&
-                    action(selected, "continue-training").enabled ? (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => continueTraining(selected)}
-                      >
-                        {t("labs.action.continue")}
-                        <HugeiconsIcon
-                          icon={ArrowRight01Icon}
-                          strokeWidth={1.75}
-                        />
-                      </Button>
-                    ) : null}
-                    {canScale && action(selected, "scale").enabled ? (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => scaleRecord(selected)}
-                      >
-                        {t("labs.action.scale")}
-                        <HugeiconsIcon
-                          icon={ArrowUpRight01Icon}
-                          strokeWidth={1.75}
-                        />
-                      </Button>
-                    ) : null}
-                    {canViewManifest && selected.manifest_path ? (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => setShowManifest((value) => !value)}
-                      >
-                        {showManifest
-                          ? t("labs.manifest.hide")
-                          : t("labs.manifest.show")}
-                      </Button>
-                    ) : null}
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-border/60 p-4">
-                  <p className="text-ui-11 font-medium text-foreground">
-                    {t("labs.actions.title")}
-                  </p>
-                  <ul className="mt-2 flex flex-col gap-1.5">
-                    {selected.actions.map((item) => (
-                      <li
-                        key={item.id}
-                        className="flex items-start gap-2 text-ui-11 leading-snug"
-                      >
-                        {item.enabled ? (
-                          <HugeiconsIcon
-                            icon={Tick02Icon}
-                            strokeWidth={2}
-                            className="mt-0.5 size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400"
-                          />
-                        ) : (
-                          <HugeiconsIcon
-                            icon={Alert02Icon}
-                            strokeWidth={1.75}
-                            className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
-                          />
-                        )}
-                        <span className="min-w-0">
-                          <span
-                            className={cn(
-                              "font-medium",
-                              item.enabled
-                                ? "text-foreground"
-                                : "text-muted-foreground",
-                            )}
-                          >
-                            {t(ACTION_LABEL[item.id])}
-                          </span>
-                          {item.reason ? (
-                            <span className="block text-ui-10 text-muted-foreground">
-                              {item.reason}
-                            </span>
-                          ) : (
-                            <span className="block text-ui-10 text-muted-foreground">
-                              {item.id === "quantize" || item.id === "merge"
-                                ? t("labs.actions.openStudio")
-                                : ""}
-                            </span>
-                          )}
+                        <span className="min-w-0 text-sm font-medium break-words text-foreground">
+                          {record.name}
                         </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+                        <span className="ml-auto shrink-0 font-mono text-ui-10 text-muted-foreground">
+                          {params(record.params)}
+                        </span>
+                      </span>
+                      <span className="flex flex-wrap items-center gap-1.5">
+                        {record.manifest?.stage ? (
+                          <Badge
+                            variant="outline"
+                            className="h-5 px-1.5 text-ui-10"
+                          >
+                            {record.manifest.stage}
+                          </Badge>
+                        ) : null}
+                        {record.adapter ? (
+                          <Badge
+                            variant="outline"
+                            className="h-5 px-1.5 text-ui-10"
+                          >
+                            LoRA
+                          </Badge>
+                        ) : null}
+                        {record.quantized ? (
+                          <Badge
+                            variant="outline"
+                            className="h-5 px-1.5 text-ui-10"
+                          >
+                            quantized
+                          </Badge>
+                        ) : null}
+                        {record.moe ? (
+                          <Badge
+                            variant="outline"
+                            className="h-5 px-1.5 text-ui-10"
+                          >
+                            MoE
+                          </Badge>
+                        ) : null}
+                        <span className="text-ui-10 text-muted-foreground">
+                          {record.model_type ?? "unknown"} ·{" "}
+                          {formatBytes(record.weight_bytes)}
+                        </span>
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
 
-                {showManifest && selected.raw_manifest ? (
-                  <pre className="max-h-72 overflow-auto rounded-2xl border border-border/60 bg-muted/20 p-3 font-mono text-ui-10 leading-relaxed text-foreground/90">
-                    {JSON.stringify(selected.raw_manifest, null, 2)}
-                  </pre>
-                ) : null}
-                {selected.manifest_error ? (
-                  <p className="text-ui-10 text-destructive">
-                    {selected.manifest_error}
-                  </p>
-                ) : null}
-              </>
-            </div>
-          ) : null}
-        </div>
+            {selected && !comparing ? (
+              <div className="flex min-w-0 flex-col gap-3">
+                <>
+                  <div className="flex min-w-0 flex-col gap-1 rounded-2xl border border-border/60 p-4">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <h3 className="min-w-0 truncate text-sm font-medium text-foreground">
+                        {selected.name}
+                      </h3>
+                      {detailLoading ? <Spinner /> : null}
+                    </div>
+                    <p className="font-mono text-ui-10 break-all text-muted-foreground">
+                      {selected.path}
+                    </p>
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-ui-11 sm:grid-cols-4">
+                      <div>
+                        <p className="text-ui-10 text-muted-foreground">
+                          {t("labs.artifacts.params")}
+                        </p>
+                        <p className="font-mono text-foreground">
+                          {params(selected.params)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-ui-10 text-muted-foreground">
+                          {t("labs.artifacts.size")}
+                        </p>
+                        <p className="font-mono text-foreground">
+                          {formatBytes(selected.weight_bytes)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-ui-10 text-muted-foreground">
+                          {t("labs.artifacts.family")}
+                        </p>
+                        <p className="font-mono text-foreground">
+                          {selected.model_type ?? "—"}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-ui-10 text-muted-foreground">
+                          {t("labs.artifacts.written")}
+                        </p>
+                        <p className="font-mono text-foreground">
+                          {selected.modified.replace("T", " ").replace("Z", "")}
+                        </p>
+                      </div>
+                    </div>
+                    {selected.manifest ? (
+                      <p className="mt-2 text-ui-10 text-muted-foreground">
+                        {t("labs.artifacts.provenance")}:{" "}
+                        <span className="font-mono text-foreground/80">
+                          {selected.manifest.stage ?? "unknown stage"} ·{" "}
+                          {selected.manifest.run_id ?? "no run id"}
+                        </span>
+                      </p>
+                    ) : (
+                      <p className="mt-2 text-ui-10 text-muted-foreground">
+                        {t("labs.artifacts.noManifest")}
+                      </p>
+                    )}
+
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      {canContinue &&
+                      action(selected, "continue-training").enabled ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => continueTraining(selected)}
+                        >
+                          {t("labs.action.continue")}
+                          <HugeiconsIcon
+                            icon={ArrowRight01Icon}
+                            strokeWidth={1.75}
+                          />
+                        </Button>
+                      ) : null}
+                      {canScale && action(selected, "scale").enabled ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => scaleRecord(selected)}
+                        >
+                          {t("labs.action.scale")}
+                          <HugeiconsIcon
+                            icon={ArrowUpRight01Icon}
+                            strokeWidth={1.75}
+                          />
+                        </Button>
+                      ) : null}
+                      {canViewManifest && selected.manifest_path ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setShowManifest((value) => !value)}
+                        >
+                          {showManifest
+                            ? t("labs.manifest.hide")
+                            : t("labs.manifest.show")}
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-border/60 p-4">
+                    <p className="text-ui-11 font-medium text-foreground">
+                      {t("labs.actions.title")}
+                    </p>
+                    <ul className="mt-2 flex flex-col gap-1.5">
+                      {selected.actions.map((item) => (
+                        <li
+                          key={item.id}
+                          className="flex items-start gap-2 text-ui-11 leading-snug"
+                        >
+                          {item.enabled ? (
+                            <HugeiconsIcon
+                              icon={Tick02Icon}
+                              strokeWidth={2}
+                              className="mt-0.5 size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400"
+                            />
+                          ) : (
+                            <HugeiconsIcon
+                              icon={Alert02Icon}
+                              strokeWidth={1.75}
+                              className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+                            />
+                          )}
+                          <span className="min-w-0">
+                            <span
+                              className={cn(
+                                "font-medium",
+                                item.enabled
+                                  ? "text-foreground"
+                                  : "text-muted-foreground",
+                              )}
+                            >
+                              {t(ACTION_LABEL[item.id])}
+                            </span>
+                            {item.reason ? (
+                              <span className="block text-ui-10 text-muted-foreground">
+                                {item.reason}
+                              </span>
+                            ) : (
+                              <span className="block text-ui-10 text-muted-foreground">
+                                {item.id === "quantize" || item.id === "merge"
+                                  ? t("labs.actions.openStudio")
+                                  : ""}
+                              </span>
+                            )}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  {showManifest && selected.raw_manifest ? (
+                    <pre className="max-h-72 overflow-auto rounded-2xl border border-border/60 bg-muted/20 p-3 font-mono text-ui-10 leading-relaxed text-foreground/90">
+                      {JSON.stringify(selected.raw_manifest, null, 2)}
+                    </pre>
+                  ) : null}
+                  {selected.manifest_error ? (
+                    <p className="text-ui-10 text-destructive">
+                      {selected.manifest_error}
+                    </p>
+                  ) : null}
+                </>
+              </div>
+            ) : null}
+          </div>
+          {diff ? <RunDiff diff={diff} onClose={stopComparing} /> : null}
+        </>
       )}
 
       {root ? (

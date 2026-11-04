@@ -10,6 +10,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useState } from "react";
+import { ArchSwapPanel } from "./components/arch-swap-panel";
 import { ArtifactsPanel } from "./components/artifacts-panel";
 import { BenchmarksPanel } from "./components/benchmarks-panel";
 import { CmtPanel } from "./components/cmt-panel";
@@ -17,6 +18,7 @@ import { JanitorPanel } from "./components/janitor-panel";
 import { LabsFeatureGate } from "./components/labs-off-card";
 import { LineagePanel } from "./components/lineage-panel";
 import { PipelinesPanel } from "./components/pipelines-panel";
+import { SurgeryPanel } from "./components/surgery-panel";
 import {
   ensureLabsLoaded,
   refreshLabs,
@@ -29,6 +31,8 @@ type StudioTab =
   | "pipelines"
   | "benchmarks"
   | "cmt"
+  | "surgery"
+  | "swap"
   | "lineage"
   | "cleanup";
 
@@ -37,6 +41,8 @@ const TABS: ReadonlyArray<readonly [StudioTab, TranslationKey]> = [
   ["pipelines", "labs.tab.pipelines"],
   ["benchmarks", "labs.tab.benchmarks"],
   ["cmt", "labs.tab.cmt"],
+  ["surgery", "labs.tab.surgery"],
+  ["swap", "labs.tab.swap"],
   ["lineage", "labs.tab.lineage"],
   ["cleanup", "labs.tab.cleanup"],
 ];
@@ -157,6 +163,16 @@ export function LabsPage(): ReactElement {
             {tab === "cmt" ? (
               <LabsFeatureGate feature="cmt">
                 <CmtPanel />
+              </LabsFeatureGate>
+            ) : null}
+            {tab === "surgery" ? (
+              <LabsFeatureGate feature="surgery">
+                <SurgeryPanel />
+              </LabsFeatureGate>
+            ) : null}
+            {tab === "swap" ? (
+              <LabsFeatureGate feature="arch-swap">
+                <ArchSwapPanel />
               </LabsFeatureGate>
             ) : null}
             {tab === "lineage" ? (

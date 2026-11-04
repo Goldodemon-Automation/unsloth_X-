@@ -18,6 +18,7 @@ path is checked against the Studio output folder before it is read.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import uuid
@@ -27,6 +28,13 @@ from typing import Any, Iterable, Optional
 _MAX_RECORDS = 500
 _ID = re.compile(r"^[a-f0-9]{16,32}$")
 _DIRNAME = "labs-benchmarks"
+_PINS_NAME = "pins.json"
+
+# A delta counts as movement only above this floor. Two runs of the same
+# checkpoint cannot be told apart below it, and a warning that fires on noise
+# teaches a reader to ignore the warning.
+_PIN_RELATIVE_TOLERANCE = 0.01
+_PIN_ABSOLUTE_TOLERANCE = 0.005
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +58,10 @@ def runs_root() -> Path:
 
 def records_root() -> Path:
     return root() / "records"
+
+
+def pins_path() -> Path:
+    return root() / _PINS_NAME
 
 
 def create_run_dir() -> Path:
@@ -214,6 +226,17 @@ def delete_record(record_id: str) -> bool:
     if not path.is_file():
         return False
     path.unlink()
+    # A pin that outlives its record would protect a checkpoint nobody can score
+    # against and report "missing" on every page load. Drop it with the evidence.
+    try:
+        pins = _read_pins()
+        stale = [key for key, entry in pins.items() if entry.get("record_id") == record_id]
+        if stale:
+            for key in stale:
+                pins.pop(key, None)
+            _write_pins(pins)
+    except OSError:
+        pass
     return True
 
 
@@ -221,3 +244,223 @@ def find_record(record_id: str) -> Optional[dict[str, Any]]:
     if not _ID.match(str(record_id)):
         raise ValueError(f"Invalid benchmark record id: {record_id!r}")
     return _read(records_root() / f"{record_id}.json")
+
+
+# ---------------------------------------------------------------------------
+# Pinned baselines
+# ---------------------------------------------------------------------------
+#
+# A record is a snapshot of one comparison. A pin says "this snapshot is the
+# reference": the score later runs are measured against, and a folder the
+# janitor must not remove. Pins live in their own file rather than being edited
+# into a record, so pinning never rewrites the evidence a benchmark produced.
+
+
+def _pin_key(path: str) -> str:
+    return os.path.normcase(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def _read_pins() -> dict[str, dict[str, Any]]:
+    payload = _read(pins_path()) or {}
+    raw = payload.get("pins")
+    if not isinstance(raw, dict):
+        return {}
+    pins: dict[str, dict[str, Any]] = {}
+    for key, entry in raw.items():
+        if not isinstance(entry, dict):
+            continue
+        if not isinstance(entry.get("record_id"), str):
+            continue
+        pins[str(key)] = entry
+    return pins
+
+
+def _write_pins(pins: dict[str, dict[str, Any]]) -> None:
+    from core.advanced.policy import atomic_write_text
+
+    target = pins_path()
+    target.parent.mkdir(parents = True, exist_ok = True)
+    payload = json.dumps({"pins": pins}, indent = 2, sort_keys = True)
+    atomic_write_text(target, payload)
+
+
+def pin_record(record_id: str) -> dict[str, Any]:
+    """Make one record the baseline for its checkpoint, replacing any earlier pin."""
+    record = find_record(record_id)
+    if record is None:
+        raise FileNotFoundError(f"No benchmark record {record_id!r}.")
+    artifact = str(record.get("artifact") or "")
+    if not artifact:
+        raise ValueError("That record does not name a checkpoint, so it cannot be pinned.")
+    entry = {
+        "record_id": record["id"],
+        "artifact": artifact,
+        "artifact_name": record.get("artifact_name") or artifact,
+        "suites": list(record.get("suites") or []),
+        "pinned_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    pins = _read_pins()
+    pins[_pin_key(artifact)] = entry
+    _write_pins(pins)
+    return entry
+
+
+def unpin(record_id: str) -> bool:
+    """Drop the pin this record holds. False when the record was not pinned."""
+    if not _ID.match(str(record_id)):
+        raise ValueError(f"Invalid benchmark record id: {record_id!r}")
+    pins = _read_pins()
+    stale = [key for key, entry in pins.items() if entry.get("record_id") == record_id]
+    if not stale:
+        return False
+    for key in stale:
+        pins.pop(key, None)
+    _write_pins(pins)
+    return True
+
+
+def list_pins() -> list[dict[str, Any]]:
+    """Every pin, with the record it points at when that record still exists."""
+    pins = _read_pins()
+    entries: list[dict[str, Any]] = []
+    for key in sorted(pins):
+        entry = pins[key]
+        record = None
+        try:
+            record = find_record(str(entry["record_id"]))
+        except (OSError, ValueError):
+            record = None
+        entries.append(
+            {
+                **entry,
+                "artifact": entry.get("artifact") or key,
+                "available": record is not None,
+                "candidate_scores": (record or {}).get("candidate_scores") or {},
+                "created_at": (record or {}).get("created_at"),
+            }
+        )
+    return entries
+
+
+def pinned_artifacts() -> set[str]:
+    """Normalized checkpoint paths the janitor must leave alone."""
+    return {str(key) for key in _read_pins()}
+
+
+def _tolerance(pinned: float) -> float:
+    return max(_PIN_ABSOLUTE_TOLERANCE, _PIN_RELATIVE_TOLERANCE * abs(pinned))
+
+
+def _compare_scores(
+    candidate: dict[str, float], pinned: dict[str, float]
+) -> Optional[dict[str, Any]]:
+    suites: list[dict[str, Any]] = []
+    regressions: list[str] = []
+    improved: list[str] = []
+    flat: list[str] = []
+    for suite in sorted(set(candidate) & set(pinned)):
+        before = float(pinned[suite])
+        after = float(candidate[suite])
+        delta = after - before
+        tolerance = _tolerance(before)
+        if delta < -tolerance:
+            label = "regressed"
+            regressions.append(suite)
+        elif delta > tolerance:
+            label = "improved"
+            improved.append(suite)
+        else:
+            label = "flat"
+            flat.append(suite)
+        suites.append(
+            {
+                "suite": suite,
+                "pinned": before,
+                "candidate": after,
+                "delta": round(delta, 6),
+                "tolerance": round(tolerance, 6),
+                "verdict": label,
+            }
+        )
+    if not suites:
+        return None
+    if regressions and improved:
+        status = "mixed"
+    elif regressions:
+        status = "regressed"
+    elif improved:
+        status = "improved"
+    else:
+        status = "flat"
+    return {
+        "status": status,
+        "aggregate_delta": round(sum(item["delta"] for item in suites) / len(suites), 6),
+        "tolerance": round(max(item["tolerance"] for item in suites), 6),
+        "suites": suites,
+        "regressions": regressions,
+        "improved": improved,
+        "flat": flat,
+    }
+
+
+def verdict(record: dict[str, Any], pins: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """How this record sits against the pinned baseline for its checkpoint.
+
+    ``status`` is one of ``pinned`` (this record is the baseline), ``regressed``,
+    ``improved``, ``mixed``, ``flat``, ``unscored`` (no suite in common),
+    ``missing`` (the pinned record was deleted) or ``unpinned`` (nothing to
+    compare against). The pinned record is never compared with itself: a page
+    that calls its own baseline a regression is noise, not information.
+    """
+    store = _read_pins() if pins is None else pins
+    entry = store.get(_pin_key(str(record.get("artifact") or "")))
+    if entry is None:
+        return {"status": "unpinned"}
+    pinned_id = str(entry.get("record_id") or "")
+    if pinned_id == str(record.get("id") or ""):
+        return {
+            "status": "pinned",
+            "pinned_record_id": pinned_id,
+            "pinned_at": entry.get("pinned_at"),
+            "suites": [],
+            "aggregate_delta": None,
+            "tolerance": None,
+            "regressions": [],
+            "improved": [],
+            "flat": [],
+        }
+    try:
+        reference = find_record(pinned_id)
+    except (OSError, ValueError):
+        reference = None
+    if reference is None:
+        return {"status": "missing", "pinned_record_id": pinned_id}
+    comparison = _compare_scores(
+        _scores(record.get("candidate_scores")),
+        _scores(reference.get("candidate_scores")),
+    )
+    if comparison is None:
+        return {"status": "unscored", "pinned_record_id": pinned_id}
+    return {
+        **comparison,
+        "pinned_record_id": pinned_id,
+        "pinned_at": entry.get("pinned_at"),
+    }
+
+
+def annotate(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach the pin and the against-pin verdict to each record for the page."""
+    pins = _read_pins()
+    for record in records:
+        entry = pins.get(_pin_key(str(record.get("artifact") or "")))
+        record["pin"] = (
+            {
+                "record_id": entry.get("record_id"),
+                "pinned_at": entry.get("pinned_at"),
+                "is_self": str(entry.get("record_id")) == str(record.get("id")),
+            }
+            if entry is not None
+            else None
+        )
+        record["vs_pinned"] = verdict(record, pins)
+    return records

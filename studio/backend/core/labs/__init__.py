@@ -85,6 +85,26 @@ FEATURES: tuple[dict[str, Any], ...] = (
         "studio": True,
     },
     {
+        "id": "surgery",
+        "label": "Model surgery",
+        "description": (
+            "Prune a dense checkpoint -- blocks, KV groups, FFN channels -- then upcycle its "
+            "FFN into routed experts with a zero-initialised router."
+        ),
+        "status": "alpha",
+        "studio": True,
+    },
+    {
+        "id": "arch-swap",
+        "label": "Arch swap",
+        "description": (
+            "Carry weights from one architecture into another by role: fused QKV split, Conv1D "
+            "transposes undone, layers renumbered, and every lossy step named before it runs."
+        ),
+        "status": "alpha",
+        "studio": True,
+    },
+    {
         "id": "auto-scale",
         "label": "Scale before training",
         "description": (

@@ -116,3 +116,130 @@ def test_create_run_dir_stays_under_the_benchmark_root(tmp_path, monkeypatch):
     assert first.is_dir() and second.is_dir()
     assert first != second
     assert Path(first).parent == benchmarks.runs_root()
+
+
+# ---------------------------------------------------------------------------
+# Pinned baselines
+# ---------------------------------------------------------------------------
+
+
+def _scored(
+    monkeypatch, tmp_path, artifact: Path, scores: dict[str, float], job: str
+) -> dict:
+    monkeypatch.setattr(benchmarks, "outputs", lambda: tmp_path)
+    return benchmarks.save_record(
+        job_id = job,
+        artifact = str(artifact),
+        baseline = "org/base",
+        report = {
+            "baseline_scores": {name: 0.5 for name in scores},
+            "candidate_scores": scores,
+            "comparison": {},
+            "verdict": "equal",
+        },
+        suites = list(scores),
+        limit = None,
+        batch_size = 1,
+        duration_seconds = 1.0,
+        output_dir = str(tmp_path / "runs" / job),
+    )
+
+
+def test_a_pin_turns_one_record_into_the_reference_for_its_checkpoint(tmp_path, monkeypatch):
+    artifact = tmp_path / "merged"
+    artifact.mkdir()
+    baseline = _scored(monkeypatch, tmp_path, artifact, {"mmlu": 0.50}, "baseline")
+
+    entry = benchmarks.pin_record(baseline["id"])
+    assert entry["record_id"] == baseline["id"]
+    assert [pin["record_id"] for pin in benchmarks.list_pins()] == [baseline["id"]]
+    assert benchmarks.list_pins()[0]["available"] is True
+    assert benchmarks.pinned_artifacts() == {benchmarks._pin_key(str(artifact))}
+    assert benchmarks.verdict(benchmarks.find_record(baseline["id"]))["status"] == "pinned"
+
+    worse = _scored(monkeypatch, tmp_path, artifact, {"mmlu": 0.40}, "worse")
+    better = _scored(monkeypatch, tmp_path, artifact, {"mmlu": 0.60}, "better")
+    flat = _scored(monkeypatch, tmp_path, artifact, {"mmlu": 0.498}, "flat")
+    mixed = _scored(monkeypatch, tmp_path, artifact, {"mmlu": 0.90, "gsm8k": 0.10}, "mixed")
+
+    # 0.01 absolute is 1% of 0.50, so a 0.002 move is noise, not a regression.
+    assert benchmarks.verdict(worse)["status"] == "regressed"
+    assert benchmarks.verdict(better)["status"] == "improved"
+    assert benchmarks.verdict(flat)["status"] == "flat"
+    assert benchmarks.verdict(flat)["suites"][0]["delta"] == pytest.approx(-0.002)
+    # gsm8k has no pinned score to move against, so only mmlu decides.
+    assert benchmarks.verdict(mixed)["status"] == "improved"
+    assert benchmarks.verdict(worse)["pinned_record_id"] == baseline["id"]
+
+
+def test_two_suites_that_move_in_opposite_directions_are_mixed(tmp_path, monkeypatch):
+    artifact = tmp_path / "merged"
+    artifact.mkdir()
+    baseline = _scored(
+        monkeypatch, tmp_path, artifact, {"mmlu": 0.50, "gsm8k": 0.50}, "baseline"
+    )
+    benchmarks.pin_record(baseline["id"])
+    record = _scored(
+        monkeypatch, tmp_path, artifact, {"mmlu": 0.60, "gsm8k": 0.40}, "mixed"
+    )
+
+    result = benchmarks.verdict(record)
+    assert result["status"] == "mixed"
+    assert result["improved"] == ["mmlu"]
+    assert result["regressions"] == ["gsm8k"]
+    assert result["aggregate_delta"] == pytest.approx(0.0)
+
+
+def test_annotate_marks_the_pin_and_the_verdict_on_every_record(tmp_path, monkeypatch):
+    artifact = tmp_path / "merged"
+    artifact.mkdir()
+    baseline = _scored(monkeypatch, tmp_path, artifact, {"mmlu": 0.50}, "baseline")
+    benchmarks.pin_record(baseline["id"])
+    later = _scored(monkeypatch, tmp_path, artifact, {"mmlu": 0.30}, "later")
+
+    annotated = {
+        item["id"]: item for item in benchmarks.annotate(benchmarks.list_records())
+    }
+    assert annotated[baseline["id"]]["pin"]["is_self"] is True
+    assert annotated[baseline["id"]]["vs_pinned"]["status"] == "pinned"
+    assert annotated[later["id"]]["pin"]["is_self"] is False
+    assert annotated[later["id"]]["vs_pinned"]["status"] == "regressed"
+
+
+def test_unpin_and_delete_keep_the_pin_file_honest(tmp_path, monkeypatch):
+    artifact = tmp_path / "merged"
+    artifact.mkdir()
+    baseline = _scored(monkeypatch, tmp_path, artifact, {"mmlu": 0.50}, "baseline")
+    benchmarks.pin_record(baseline["id"])
+
+    assert benchmarks.unpin(baseline["id"]) is True
+    assert benchmarks.unpin(baseline["id"]) is False
+    assert benchmarks.list_pins() == []
+
+    benchmarks.pin_record(baseline["id"])
+    assert benchmarks.delete_record(baseline["id"]) is True
+    assert benchmarks.list_pins() == []
+    assert benchmarks.pinned_artifacts() == set()
+
+
+def test_a_stale_pin_is_reported_rather_than_scored(tmp_path, monkeypatch):
+    artifact = tmp_path / "merged"
+    artifact.mkdir()
+    baseline = _scored(monkeypatch, tmp_path, artifact, {"mmlu": 0.50}, "baseline")
+    benchmarks.pin_record(baseline["id"])
+    record = _scored(monkeypatch, tmp_path, artifact, {"mmlu": 0.50}, "later")
+
+    # A record removed behind the pin's back (the prune path) must not be
+    # scored as if it were still there.
+    (benchmarks.records_root() / f"{baseline['id']}.json").unlink()
+
+    assert benchmarks.verdict(record)["status"] == "missing"
+    assert benchmarks.list_pins()[0]["available"] is False
+
+
+def test_pinning_rejects_an_unknown_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(benchmarks, "outputs", lambda: tmp_path)
+    with pytest.raises(FileNotFoundError):
+        benchmarks.pin_record("a" * 32)
+    with pytest.raises(ValueError):
+        benchmarks.unpin("../../escape")
