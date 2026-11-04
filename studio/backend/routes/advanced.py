@@ -21,6 +21,7 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from auth import policy
 from auth.authentication import get_current_subject
 from core.advanced import (
     blending,
@@ -37,6 +38,7 @@ from core.advanced import (
     scaling,
     tokenizer_check,
 )
+from utils.account_context import OWNER_ACCOUNT_ID, current_account_id
 
 router = APIRouter(dependencies = [Depends(get_current_subject)])
 
@@ -424,6 +426,9 @@ def _start_job(
     record = {
         "job_id": job_id,
         "kind": kind,
+        # The job belongs to the account that started it, so a job id alone is
+        # not a read capability. Housekeeping only looks at output_dir/status.
+        "account_id": current_account_id(),
         "status": "running",
         "created_at": time.time(),
         "finished_at": None,
@@ -477,11 +482,23 @@ def _start_job(
     return record
 
 
+def _owned_by_caller(record: dict[str, Any]) -> bool:
+    """Whether ``record`` may be listed for the calling account.
+
+    Same rule as ``policy.require_account_scope``: a record without an owner
+    predates accounts and belongs to the installation owner.
+    """
+    owner_of = record.get("account_id") or OWNER_ACCOUNT_ID
+    return owner_of == current_account_id()
+
+
 def _job(job_id: str) -> dict[str, Any]:
     with _JOBS_LOCK:
         record = _JOBS.get(job_id)
     if record is None:
         raise HTTPException(status_code = 404, detail = "Unknown advanced job.")
+    # 404 rather than 403: another account's job does not exist for this caller.
+    policy.require_account_scope(record.get("account_id"))
     return record
 
 
@@ -1533,7 +1550,11 @@ def job_status(job_id: str) -> dict[str, Any]:
 @router.get("/jobs")
 def list_jobs() -> dict[str, Any]:
     with _JOBS_LOCK:
-        records = sorted(_JOBS.values(), key = lambda job: job["created_at"], reverse = True)
+        records = sorted(
+            (job for job in _JOBS.values() if _owned_by_caller(job)),
+            key = lambda job: job["created_at"],
+            reverse = True,
+        )
     return {
         "jobs": [
             {
