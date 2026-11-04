@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from core.advanced import resources
+from utils.account_context import OWNER_ACCOUNT_ID
 
 GB = 1024**3
 
@@ -100,11 +101,29 @@ def test_second_job_is_queued_with_a_reason_not_started():
     assert "eval" in second["reason"]
     assert broker.leases()
 
-    broker.release("job-1")
+    assert broker.release("job-1", account_id = OWNER_ACCOUNT_ID) == "released"
     third = broker.acquire(
         "job-2", "eval", {"vram_bytes": int(16 * GB), "ram_bytes": 0, "disk_bytes": 0}
     )
     assert third["status"] == "granted"
+
+
+def test_a_foreign_account_cannot_free_a_lease_it_does_not_hold():
+    """A job id is not a capability: naming another account's lease keeps it."""
+    from utils.account_context import AccountContext, run_as
+
+    alice = AccountContext("matrix-alice", "alice")
+    broker = resources.ResourceBroker(probe = lambda: _profile())
+    request = {"vram_bytes": int(16 * GB), "ram_bytes": 0, "disk_bytes": 0}
+    assert run_as(alice, broker.acquire, "job-1", "eval", request)["status"] == "granted"
+
+    assert broker.release("job-1", account_id = "matrix-bob") == "foreign"
+    assert broker.release("never-existed", account_id = "matrix-bob") == "missing"
+    # The reservation is still standing, so a second job of the same size waits.
+    assert broker.leases()[0]["account_id"] == "matrix-alice"
+    assert broker.acquire("job-2", "eval", request)["status"] == "queued"
+    assert broker.release("job-1", account_id = "matrix-alice") == "released"
+    assert broker.acquire("job-2", "eval", request)["status"] == "granted"
 
 
 def test_impossible_request_is_denied_not_queued():

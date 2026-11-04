@@ -29,6 +29,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from utils.account_context import OWNER_ACCOUNT_ID, current_account_id
+
 GB = 1024**3
 
 # How much of the machine a job may claim in total, leaving room for the engine,
@@ -92,6 +94,10 @@ class Lease:
     need: Need
     granted_at: float
     note: str = ""
+    # Which account the lease belongs to. Empty means it predates accounts and
+    # belongs to the installation owner, so a caller cannot free someone else's
+    # reservation by naming their job id.
+    account_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -342,7 +348,13 @@ class ResourceBroker:
             need = Need(**estimate_payload["need"])
         if need.total() <= 0:
             # Nothing to reserve (an empty or unreadable plan): nothing to block.
-            lease = Lease(job_id = job_id, kind = kind, need = need, granted_at = time.time())
+            lease = Lease(
+                job_id = job_id,
+                kind = kind,
+                need = need,
+                granted_at = time.time(),
+                account_id = current_account_id(),
+            )
             with self._lock:
                 self._leases[job_id] = lease
             return {"status": "granted", "lease": lease.to_dict(), "reason": ""}
@@ -373,7 +385,11 @@ class ResourceBroker:
                     }
                 if not waited:
                     lease = Lease(
-                        job_id = job_id, kind = kind, need = need, granted_at = time.time()
+                        job_id = job_id,
+                        kind = kind,
+                        need = need,
+                        granted_at = time.time(),
+                        account_id = current_account_id(),
                     )
                     self._leases[job_id] = lease
                     self._queue = [item for item in self._queue if item != job_id]
@@ -402,11 +418,23 @@ class ResourceBroker:
                     }
                 self._condition.wait(timeout = max(0.01, deadline - time.monotonic()))
 
-    def release(self, job_id: str) -> None:
+    def release(self, job_id: str, *, account_id: str) -> str:
+        """Free ``job_id`` if ``account_id`` holds it.
+
+        Returns ``"released"``, ``"missing"`` for an id nobody holds, or
+        ``"foreign"`` when another account holds it, which callers turn into the
+        same 404 as an unknown job: existence is itself information.
+        """
         with self._condition:
+            lease = self._leases.get(job_id)
+            if lease is None:
+                return "missing"
+            if (lease.account_id or OWNER_ACCOUNT_ID) != account_id:
+                return "foreign"
             self._leases.pop(job_id, None)
             self._queue = [item for item in self._queue if item != job_id]
             self._condition.notify_all()
+            return "released"
 
     def leases(self) -> list[dict[str, Any]]:
         with self._lock:

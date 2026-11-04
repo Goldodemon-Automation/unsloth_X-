@@ -476,10 +476,16 @@ def _start_job(
             }
         finally:
             record["finished_at"] = time.time()
-            resources.BROKER.release(job_id)
+            # This thread starts unbound, so the owner comes from the record.
+            resources.BROKER.release(job_id, account_id = record["account_id"])
 
     threading.Thread(target = _runner, name = f"advanced-{kind}", daemon = True).start()
     return record
+
+
+def _visible_lease(lease: dict[str, Any]) -> bool:
+    """Whether a broker lease may be shown to the calling account."""
+    return (lease.get("account_id") or OWNER_ACCOUNT_ID) == current_account_id()
 
 
 def _owned_by_caller(record: dict[str, Any]) -> bool:
@@ -644,8 +650,15 @@ def capabilities() -> dict[str, Any]:
 
 @router.get("/resources")
 def resource_state() -> dict[str, Any]:
-    """Live VRAM/RAM/disk, the headroom limits, and who holds a lease."""
-    return resources.BROKER.snapshot()
+    """Live VRAM/RAM/disk, the headroom limits, and who holds a lease.
+
+    Machine-wide totals stay machine-wide, but the lease and queue listings name
+    jobs, so they are trimmed to the caller's own: another account's job ids are
+    not this caller's business.
+    """
+    snapshot = resources.BROKER.snapshot()
+    snapshot["leases"] = [lease for lease in snapshot.get("leases", []) if _visible_lease(lease)]
+    return snapshot
 
 
 @router.post("/resources/estimate")
@@ -670,13 +683,22 @@ def acquire_resources(request: AcquireRequest) -> dict[str, Any]:
     )
     if result["status"] == "denied":
         raise HTTPException(status_code = 409, detail = result["reason"])
+    if result.get("leases") is not None:
+        result["leases"] = [lease for lease in result["leases"] if _visible_lease(lease)]
     return result
 
 
 @router.post("/jobs/release")
 def release_resources(request: ReleaseRequest) -> dict[str, Any]:
-    resources.BROKER.release(request.job_id)
-    return {"released": request.job_id, "leases": resources.BROKER.leases()}
+    outcome = resources.BROKER.release(request.job_id, account_id = current_account_id())
+    if outcome == "foreign":
+        # Another account's reservation is not the caller's to free, and saying so
+        # would confirm it exists.
+        raise HTTPException(status_code = 404, detail = "Unknown advanced job.")
+    return {
+        "released": request.job_id,
+        "leases": [lease for lease in resources.BROKER.leases() if _visible_lease(lease)],
+    }
 
 
 @router.get("/outputs")
