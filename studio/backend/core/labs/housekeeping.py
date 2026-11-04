@@ -246,16 +246,30 @@ def _running_outputs() -> list[str]:
         return []
 
 
-def _is_under_running_job(path: Path, running: Iterable[str], resolve: Any) -> bool:
+def _resolved_running(running: Iterable[str], resolve: Any) -> list[Path]:
+    """The running jobs' output folders, resolved once per scan or delete.
+
+    They arrive as plain strings from the job registry, and resolving them inside
+    the per-folder comparison put a filesystem walk back into the loop that this
+    module exists to keep cheap.
+    """
+    resolved: list[Path] = []
+    for output in running:
+        try:
+            resolved.append(resolve(Path(output)))
+        except (OSError, ValueError):
+            continue
+    return resolved
+
+
+def _is_under_running_job(path: Path, running: Iterable[Path], resolve: Any) -> bool:
+    """Whether *path* is a running job's output folder or sits inside one."""
     if not running:
         return False
     resolved = resolve(path)
     for output in running:
-        try:
-            if resolved == resolve(Path(output)) or _within(Path(output), resolved):
-                return True
-        except (OSError, ValueError):
-            continue
+        if resolved == output or output in resolved.parents:
+            return True
     return False
 
 
@@ -321,8 +335,8 @@ def _entries_for(
 def scan() -> dict[str, Any]:
     """Everything that is large, newest roots first, biggest entries first."""
     roots = _paths()
-    running = _running_outputs()
     resolve = _resolving()
+    running = _resolved_running(_running_outputs(), resolve)
     entries: list[dict[str, Any]] = []
     root_records: list[dict[str, Any]] = []
     for root_id in _ROOT_IDS:
@@ -382,8 +396,8 @@ def delete(paths: Iterable[str], *, confirm: bool) -> dict[str, Any]:
     if not confirm:
         raise ValueError("Deleting folders needs confirm=true.")
     roots = _paths()
-    running = _running_outputs()
     resolve = _resolving()
+    running = _resolved_running(_running_outputs(), resolve)
 
     deleted: list[dict[str, Any]] = []
     refused: list[dict[str, Any]] = []

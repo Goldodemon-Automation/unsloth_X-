@@ -256,19 +256,41 @@ class ResourceBroker:
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
         self._leases: dict[str, Lease] = {}
-        self._queue: list[str] = []
+        # job id -> the account waiting on it, in arrival order.
+        self._queue: dict[str, str] = {}
 
     # -- inspection ---------------------------------------------------------
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, *, account_id: str | None = None) -> dict[str, Any]:
+        """Machine resources, and the leases and queue behind them.
+
+        ``account_id`` narrows the lease and queue listings to one account's own
+        jobs. The memory totals stay machine-wide either way, because the
+        headroom is a property of the host, not of a caller.
+        """
         profile = dict(self._probe())
         with self._lock:
-            leases = [lease.to_dict() for lease in self._leases.values()]
+            held = [lease.to_dict() for lease in self._leases.values()]
             queued = list(self._queue)
+            queued_by = dict(self._queue)
+        # Reservations are a property of the machine, so the totals count every
+        # lease. Only the names in the listing are narrowed to the caller.
         reserved = {
-            key: sum(lease["need"][key] for lease in leases)
+            key: sum(lease["need"][key] for lease in held)
             for key in ("vram_bytes", "ram_bytes", "disk_bytes")
         }
+        leases = held
+        if account_id is not None:
+            leases = [
+                lease
+                for lease in held
+                if (lease.get("account_id") or OWNER_ACCOUNT_ID) == account_id
+            ]
+            queued = [
+                job_id
+                for job_id in queued
+                if (queued_by.get(job_id) or OWNER_ACCOUNT_ID) == account_id
+            ]
         return {
             **profile,
             "limits": self._limits(profile),
@@ -293,6 +315,17 @@ class ResourceBroker:
         return {key: max(0, limits[key] - int(reserved.get(key, 0))) for key in limits}
 
     # -- acquiring ----------------------------------------------------------
+
+    def _held_by_another(self, job_id: str, account_id: str) -> bool:
+        """True when ``job_id`` is already reserved by a different account.
+
+        Callers hold the lock. A job id is a name, not a capability, so an id in
+        use must never be handed to whoever asks for it next -- including the
+        zero-resource grant, which would otherwise swap a foreign reservation for
+        an empty one and free the resources behind it.
+        """
+        lease = self._leases.get(job_id)
+        return lease is not None and (lease.account_id or OWNER_ACCOUNT_ID) != account_id
 
     def _shortfalls(
         self, need: Need, available: Mapping[str, int], limits: Mapping[str, int]
@@ -346,21 +379,29 @@ class ResourceBroker:
         if need.total() <= 0 and sources is not None:
             estimate_payload = estimate(kind, sources = sources)
             need = Need(**estimate_payload["need"])
+        account_id = current_account_id()
         if need.total() <= 0:
-            # Nothing to reserve (an empty or unreadable plan): nothing to block.
-            lease = Lease(
-                job_id = job_id,
-                kind = kind,
-                need = need,
-                granted_at = time.time(),
-                account_id = current_account_id(),
-            )
+            # Nothing to reserve (an empty or unreadable plan): nothing to block,
+            # but the id still belongs to whoever holds it.
             with self._lock:
+                if self._held_by_another(job_id, account_id):
+                    return {"status": "denied", "reason": _TAKEN_REASON}
+                lease = Lease(
+                    job_id = job_id,
+                    kind = kind,
+                    need = need,
+                    granted_at = time.time(),
+                    account_id = account_id,
+                )
                 self._leases[job_id] = lease
             return {"status": "granted", "lease": lease.to_dict(), "reason": ""}
 
         deadline = time.monotonic() + max(0.0, float(wait_seconds))
         with self._condition:
+            # Checked once under the lock that every grant and queue write takes,
+            # so a foreign id can neither be granted nor queued.
+            if self._held_by_another(job_id, account_id):
+                return {"status": "denied", "reason": _TAKEN_REASON}
             while True:
                 profile = dict(self._probe())
                 reserved = {
@@ -389,10 +430,10 @@ class ResourceBroker:
                         kind = kind,
                         need = need,
                         granted_at = time.time(),
-                        account_id = current_account_id(),
+                        account_id = account_id,
                     )
                     self._leases[job_id] = lease
-                    self._queue = [item for item in self._queue if item != job_id]
+                    self._queue.pop(job_id, None)
                     self._condition.notify_all()
                     return {
                         "status": "granted",
@@ -405,8 +446,7 @@ class ResourceBroker:
                     f"{kind} is queued: {', '.join(waited)}"
                     + _busy_note(self._leases)
                 )
-                if job_id not in self._queue:
-                    self._queue.append(job_id)
+                self._queue[job_id] = account_id
                 if time.monotonic() >= deadline or wait_seconds <= 0:
                     return {
                         "status": "queued",
@@ -414,7 +454,11 @@ class ResourceBroker:
                         "need": need.to_dict(),
                         "available": available,
                         "limits": limits,
-                        "leases": [lease.to_dict() for lease in self._leases.values()],
+                        "leases": [
+                            lease.to_dict()
+                            for lease in self._leases.values()
+                            if (lease.account_id or OWNER_ACCOUNT_ID) == account_id
+                        ],
                     }
                 self._condition.wait(timeout = max(0.01, deadline - time.monotonic()))
 
@@ -432,13 +476,22 @@ class ResourceBroker:
             if (lease.account_id or OWNER_ACCOUNT_ID) != account_id:
                 return "foreign"
             self._leases.pop(job_id, None)
-            self._queue = [item for item in self._queue if item != job_id]
+            self._queue.pop(job_id, None)
             self._condition.notify_all()
             return "released"
 
-    def leases(self) -> list[dict[str, Any]]:
+    def leases(self, *, account_id: str | None = None) -> list[dict[str, Any]]:
+        """The leases, optionally only the ones ``account_id`` holds."""
         with self._lock:
-            return [lease.to_dict() for lease in self._leases.values()]
+            return [
+                lease.to_dict()
+                for lease in self._leases.values()
+                if account_id is None
+                or (lease.account_id or OWNER_ACCOUNT_ID) == account_id
+            ]
+
+
+_TAKEN_REASON = "That job id is already reserved by a running job."
 
 
 def _busy_note(leases: Mapping[str, Lease]) -> str:
