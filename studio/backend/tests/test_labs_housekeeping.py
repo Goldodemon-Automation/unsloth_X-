@@ -105,8 +105,34 @@ def test_delete_refuses_a_running_jobs_output(tmp_path, monkeypatch):
 def test_protected_reason_never_offers_a_storage_root(tmp_path):
     root = tmp_path / "outputs"
     root.mkdir()
-    assert housekeeping._protected_reason(root, "outputs", root)
-    assert housekeeping._protected_reason(root / "labs-pipelines", "outputs", root)
+    resolve = housekeeping._resolving()
+    assert housekeeping._protected_reason(root, "outputs", root, resolve)
+    assert housekeeping._protected_reason(root / "labs-pipelines", "outputs", root, resolve)
     nested = root / "run" / "nested"
     nested.mkdir(parents = True)
-    assert housekeeping._protected_reason(nested, "outputs", root)
+    assert housekeeping._protected_reason(nested, "outputs", root, resolve)
+
+
+def test_one_scan_resolves_each_path_once(tmp_path, monkeypatch):
+    """resolve() walks the filesystem on Windows, so the scan must not repeat it."""
+    from pathlib import Path
+
+    root = tmp_path / "outputs"
+    for name in ("run-a", "run-b"):
+        (root / name / "merged").mkdir(parents = True)
+    monkeypatch.setattr(housekeeping, "_paths", lambda: {"outputs": root})
+
+    calls: list[Path] = []
+    real = Path.resolve
+
+    def counting(self, *args, **kwargs):
+        calls.append(self)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", counting)
+    result = housekeeping.scan()
+
+    assert len(result["entries"]) == 2
+    assert len(calls) == len(set(calls)), (
+        f"{len(calls)} resolve() calls for {len(set(calls))} distinct paths"
+    )
