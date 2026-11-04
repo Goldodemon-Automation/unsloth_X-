@@ -97,11 +97,19 @@ def _resolving() -> Any:
     return resolve
 
 
-def _mtime(path: Path) -> float:
+def _is_link(entry: os.DirEntry) -> bool:
+    """True for a symlink or a Windows junction.
+
+    ``is_symlink()`` is False for a junction, and that matters twice: a junction
+    inside a storage root is the same folder under a second name, and letting
+    ``_measure`` walk it would size (and later offer) whatever it points at.
+    """
+    if entry.is_symlink():
+        return True
     try:
-        return path.stat().st_mtime
+        return bool(entry.stat(follow_symlinks = False).st_reparse_tag)
     except OSError:
-        return 0.0
+        return False
 
 
 def _iso(stamp: float) -> str:
@@ -184,9 +192,15 @@ def _kind(path: Path, root_id: str) -> str:
 
 
 def _protected_reason(
-    path: Path, root_id: str, root: Path, resolve: Any
+    path: Path, root_id: str, root: Path, resolve: Any, *, top_level: bool = False
 ) -> Optional[str]:
-    if resolve(path) == resolve(root):
+    """Why *path* may not be offered for deletion, or None when it may.
+
+    ``top_level`` says the caller only hands over direct children of *root*, so
+    the depth rule is satisfied by construction and needs no resolution. The
+    scan sets it; delete takes an arbitrary path from the client and does not.
+    """
+    if not top_level and resolve(path) == resolve(root):
         return "This is a storage root, not a folder inside it."
     if path.is_symlink():
         return "This is a symlink; delete the folder it points at from its own location."
@@ -194,7 +208,7 @@ def _protected_reason(
         return "Hidden folders are left alone."
     if path.name in _SKIP_DIRS:
         return "Labs keeps its own plans and benchmark records here."
-    if root_id in ("outputs", "exports") and resolve(path.parent) != resolve(root):
+    if not top_level and root_id in ("outputs", "exports") and resolve(path.parent) != resolve(root):
         # The Artifacts page only reads one level below outputs, so anything
         # deeper is some run's private working directory and is not offered.
         return "Only top-level Studio folders are listed for deletion."
@@ -257,20 +271,30 @@ def _entries_for(
         return []
     records: list[dict[str, Any]] = []
     try:
-        children = sorted(root.iterdir(), key=lambda item: item.name.lower())
+        # scandir already knows each entry's type from the directory listing, so
+        # the is_dir/is_symlink questions below cost no extra syscall per folder.
+        with os.scandir(root) as scanned:
+            children = sorted(scanned, key = lambda entry: entry.name.lower())
     except OSError:
         return records
-    for child in children:
+    for entry in children:
+        child = Path(entry.path)
         try:
-            if not child.is_dir() or child.name.startswith("."):
+            if not entry.is_dir(follow_symlinks = False) or entry.name.startswith("."):
                 continue
-            if child.name in _SKIP_DIRS:
+            if entry.name in _SKIP_DIRS:
                 continue
-            if child.is_symlink():
+            # Links are never listed: a junction is the same folder under a
+            # second name, and every one of them is still refused by delete.
+            # Skipping them here is also why a listing needs no resolve().
+            if _is_link(entry):
                 continue
             size, files = _measure(child)
-            modified = _mtime(child)
-            reason = _protected_reason(child, root_id, root, resolve)
+            try:
+                modified = entry.stat(follow_symlinks = False).st_mtime
+            except OSError:
+                modified = 0.0
+            reason = _protected_reason(child, root_id, root, resolve, top_level = True)
             if _is_under_running_job(child, running, resolve):
                 reason = "A job is writing here right now."
             records.append(
