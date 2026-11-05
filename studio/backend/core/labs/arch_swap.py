@@ -503,7 +503,20 @@ def _cat(values: Sequence[Any], axis: int):
 
 
 def _transpose(value):
-    return value.transpose(0, 1) if getattr(value, "ndim", 2) == 2 else value
+    """[in, out] ↔ [out, in] for whichever framework the tensor came from.
+
+    ``torch.transpose`` swaps the two dims it is given, but numpy's ``transpose``
+    takes an axis *permutation*, so ``transpose(0, 1)`` there is the identity and
+    would silently leave every Conv1D weight unturned.
+    """
+    if getattr(value, "ndim", 2) != 2:
+        return value
+    torch = tensor_io.torch_module()
+    if torch is not None and isinstance(value, torch.Tensor):
+        return value.transpose(0, 1)
+    import numpy as np  # noqa: PLC0415
+
+    return np.swapaxes(value, 0, 1)
 
 
 def _split_qkv(value, *, pattern: str, heads: int, head_dim: int):

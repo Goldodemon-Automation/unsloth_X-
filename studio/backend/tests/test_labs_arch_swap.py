@@ -216,6 +216,16 @@ def test_an_unknown_layout_is_refused_by_name(tmp_path):
         arch_swap.plan({"source": str(source), "target": str(_llama(tmp_path / "other"))})
 
 
+def test_a_conv1d_transpose_swaps_the_axes_rather_than_permuting_them():
+    """numpy's ``transpose(0, 1)`` is the identity, so a Conv1D weight stayed unturned."""
+    value = np.arange(6, dtype = np.float32).reshape(2, 3)
+
+    swapped = arch_swap._transpose(value)
+
+    assert swapped.shape == (3, 2)
+    np.testing.assert_array_equal(swapped, value.T)
+
+
 def test_a_hub_id_is_refused_because_a_swap_writes_local_weights(tmp_path):
     with pytest.raises(ValueError, match = "download the checkpoint first"):
         arch_swap.plan({"source": "unsloth/Llama-3.2-1B", "target": str(_llama(tmp_path / "t"))})
