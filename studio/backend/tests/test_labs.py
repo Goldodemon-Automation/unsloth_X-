@@ -211,6 +211,33 @@ def test_surgery_and_arch_swap_close_one_at_a_time(monkeypatch):
     assert "Arch swap" in closed.json()["detail"]
 
 
+def test_the_surgery_plans_are_owner_only_like_their_runs(monkeypatch):
+    """A plan reads the checkpoint the spec names, so a guest account is refused.
+
+    The run routes were owner-only from the start. A plan opens the same two
+    folders before the run starts, so it carries the same gate rather than
+    answering a guest account with another account's checkpoint headers.
+    """
+    _store(monkeypatch, {"enabled": True, "features": {"surgery": True, "arch-swap": True}})
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "guest"
+
+    async def refuse():
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code = 403, detail = "Owner only.")
+
+    app.dependency_overrides[labs_routes._require_owner] = refuse
+    app.include_router(labs_routes.router, prefix = "/api/labs")
+    client = TestClient(app)
+
+    assert client.post("/api/labs/surgery/plan", json = {"spec": {}}).status_code == 403
+    assert (
+        client.post("/api/labs/arch-swap/plan", json = {"spec": {"source": "/tmp/a"}}).status_code
+        == 403
+    )
+
+
 def test_both_new_studios_are_registered_for_the_settings_tab(monkeypatch):
     monkeypatch.setattr("storage.studio_db.get_app_setting", lambda key, default = None: None)
     state = labs.describe_state()

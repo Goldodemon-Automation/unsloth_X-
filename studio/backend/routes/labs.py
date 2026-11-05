@@ -623,9 +623,15 @@ def run_auto_scale(request: AutoScaleRequest) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/surgery/plan")
+@router.post("/surgery/plan", dependencies = [Depends(_require_owner)])
 def plan_surgery(request: SurgeryRequest) -> dict[str, Any]:
-    """Price the prune and the upcycle from headers. Loads no weight, writes nothing."""
+    """Owner-only: price the prune and the upcycle. Loads no weight, writes nothing.
+
+    A plan reads config and tensor headers from whatever local path the spec
+    names, so it is as much a filesystem reader as the run it precedes. It sits
+    behind the same owner gate for the same reason the other plans do: a guest
+    account cannot see another account's checkpoints through it.
+    """
     _gate("surgery")
     try:
         return surgery.plan(request.spec)
@@ -671,9 +677,14 @@ def run_surgery(request: SurgeryRequest) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/arch-swap/plan")
+@router.post("/arch-swap/plan", dependencies = [Depends(_require_owner)])
 def plan_arch_swap(request: ArchSwapRequest) -> dict[str, Any]:
-    """The role-by-role mapping a swap would perform, and what it would cost."""
+    """Owner-only: the role-by-role mapping a swap would perform, and its cost.
+
+    Both source and target are local paths in the spec, so the plan is a reader
+    of two folders that may not belong to the caller; the run is owner-only, and
+    the plan reaches the same folders.
+    """
     _gate("arch-swap")
     try:
         return arch_swap.plan(request.spec)
