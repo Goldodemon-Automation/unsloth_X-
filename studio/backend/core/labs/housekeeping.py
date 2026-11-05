@@ -138,12 +138,19 @@ def _read_json(path: Path) -> Optional[dict[str, Any]]:
 
 
 def _measure(directory: Path) -> tuple[int, int]:
-    """Total bytes and file count under *directory*, without following symlinks.
+    """Total bytes and file count under *directory*, without following links.
 
     A cap keeps a stray cache mount from making the page hang. A folder that
     hits the cap is reported with the partial count and a note; it is still
     deletable, because the path (not the exact byte count) is what the guard
     checks.
+
+    Links are skipped with :func:`_is_link`, not ``is_symlink()``: a junction is
+    False there, and a junction pointing back at one of its own parents is a
+    cycle this walk would never leave. The cap does not save it -- ``files`` only
+    grows on a regular file, so a linked cycle around an empty folder keeps the
+    loop running while the stack grows, which is a hang and a memory leak rather
+    than a slow page.
     """
     total = 0
     files = 0
@@ -154,7 +161,7 @@ def _measure(directory: Path) -> tuple[int, int]:
             with os.scandir(current) as entries:
                 for entry in entries:
                     try:
-                        if entry.is_symlink():
+                        if _is_link(entry):
                             continue
                         if entry.is_dir(follow_symlinks=False):
                             stack.append(Path(entry.path))

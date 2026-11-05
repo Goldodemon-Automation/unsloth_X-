@@ -164,3 +164,25 @@ def test_a_junction_inside_a_root_is_never_listed(tmp_path, monkeypatch):
     assert report["total_bytes"] == 0
     # The folder the junction points at is untouched, and still there.
     assert (outside / "keep").is_dir()
+
+
+def test_a_junction_inside_a_folder_cannot_loop_the_size_walk(tmp_path):
+    """A junction pointing back at its own parent is a cycle, and the walk must not take it.
+
+    The cap counts files, so a linked cycle around a folder holding no file never
+    reached it: the walk re-pushed the same folder forever while the stack grew.
+    The listing skipped junctions but the size walk below it did not.
+    """
+    import sys
+
+    if sys.platform != "win32":
+        pytest.skip("junctions are a Windows reparse point")
+    import _winapi
+
+    run = tmp_path / "outputs" / "run-a"
+    _write(run / "model.safetensors", "a" * 16)
+    _winapi.CreateJunction(str(run), str(run / "loop"))
+
+    size, files = housekeeping._measure(run)
+
+    assert (size, files) == (16, 1)
