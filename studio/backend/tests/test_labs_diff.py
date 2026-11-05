@@ -160,3 +160,27 @@ def test_the_latest_benchmark_for_each_side_is_compared(tmp_path, monkeypatch):
     assert section["delta"][0]["suite"] == "mmlu"
     assert section["aggregate_delta"] == pytest.approx(0.06)
     assert section["left"]["vs_pinned"]["status"] == "unpinned"
+
+
+def test_the_record_directory_is_read_once_for_both_sides(tmp_path, monkeypatch):
+    """One read answers both sides: each side used to read the whole directory.
+
+    A 300-record history made a two-checkpoint diff read 402 JSON files, which
+    was 57.6 ms of the request for two numbers. The list is newest first and each
+    side takes its own first match, so a second read buys nothing.
+    """
+    root = _outputs(tmp_path, monkeypatch)
+    left = _checkpoint(root / "run-a", _manifest(run_id = "a", learning_rate = 2e-4, steps = 1, dataset = "/d.jsonl"))
+    right = _checkpoint(root / "run-b", _manifest(run_id = "b", learning_rate = 2e-4, steps = 1, dataset = "/d.jsonl"))
+    calls = []
+    original = benchmarks.list_records
+
+    def counted(**kwargs):
+        calls.append(kwargs)
+        return original(**kwargs)
+
+    monkeypatch.setattr(benchmarks, "list_records", counted)
+
+    diff.compare(str(left), str(right))
+
+    assert len(calls) == 1
