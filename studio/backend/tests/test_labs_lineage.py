@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -126,6 +127,52 @@ def test_each_manifest_is_parsed_once(tmp_path, monkeypatch):
         str(tmp_path / f"run-{index}" / "run_manifest.json") for index in range(3)
     )
     assert sorted(reads) == expected
+
+
+def test_scan_stops_walking_once_the_limit_is_reached(tmp_path, monkeypatch):
+    """The page reads ``limit`` manifests; discovery must not walk the rest of outputs."""
+    for index in range(20):
+        _manifest(
+            tmp_path / f"run-{index:02d}",
+            run_id = f"run-{index}",
+            stage = "train",
+            inputs = {},
+            created = index + 1,
+        )
+    listings: list[str] = []
+    original = os.scandir
+
+    def counting(path):
+        listings.append(str(path))
+        return original(path)
+
+    monkeypatch.setattr(lineage.os, "scandir", counting)
+    report = lineage.scan(tmp_path, limit = 1)
+
+    assert len(report["nodes"]) == 1
+    assert report["truncated"] is True
+    # A full recursive glob listed all 20 run folders (twice) before sorting them;
+    # stopping at the first manifest leaves one folder of lookahead.
+    assert len(listings) <= 4
+
+
+def test_limit_keeps_the_first_manifests_and_flags_truncation(tmp_path):
+    for index in range(3):
+        _manifest(
+            tmp_path / f"run-{index}",
+            run_id = f"run-{index}",
+            stage = "train",
+            inputs = {},
+            created = index + 1,
+        )
+
+    limited = lineage.scan(tmp_path, limit = 2)
+    assert {node["id"] for node in limited["nodes"]} == {"run-0", "run-1"}
+    assert limited["truncated"] is True
+
+    complete = lineage.scan(tmp_path, limit = 5)
+    assert {node["id"] for node in complete["nodes"]} == {"run-0", "run-1", "run-2"}
+    assert complete["truncated"] is False
 
 
 def test_a_copied_run_folder_is_not_counted_twice(tmp_path):

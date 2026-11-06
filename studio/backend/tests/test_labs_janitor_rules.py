@@ -132,6 +132,53 @@ def test_switched_off_rules_refuse_to_apply_but_still_preview(tmp_path, monkeypa
         housekeeping.apply_rules(rules)
 
 
+def test_apply_reuses_the_preview_walk_instead_of_measuring_again(tmp_path, monkeypatch):
+    """The preview walks every folder once; the delete must not walk the removed trees again.
+
+    Before the sizes cache, apply measured each candidate in the scan and then
+    measured it a second time inside delete, so removing a folder cost two full
+    walks of its tree.
+    """
+    outputs, exports = _workspace(tmp_path, monkeypatch)
+    kept = _run(outputs, "run-a", days_old = 1)
+    old = _run(outputs, "run-b", days_old = 40)
+    _run(exports, "bundle-a", days_old = 40)
+
+    measured: list[str] = []
+    original = housekeeping._measure
+
+    def counting_measure(directory):
+        measured.append(str(directory))
+        return original(directory)
+
+    monkeypatch.setattr(housekeeping, "_measure", counting_measure)
+
+    result = housekeeping.apply_rules(
+        {"keep_newest": 1, "min_age_days": 7, "roots": ["outputs"]}
+    )
+
+    assert [item["path"] for item in result["result"]["deleted"]] == [str(old)]
+    # Exactly one measurement per folder, all from the preview scan: the deleted
+    # folder is not measured again by delete.
+    assert sorted(measured) == sorted([str(kept), str(old), str(exports / "bundle-a")])
+
+
+def test_a_cached_size_cannot_slip_a_protected_folder_past_the_guard(tmp_path, monkeypatch):
+    """A pre-measured size is only a reporting shortcut; the delete guard still runs first."""
+    outputs = tmp_path / "outputs"
+    running = outputs / "run-a"
+    _run(outputs, "run-a", days_old = 40)
+    monkeypatch.setattr(housekeeping, "_paths", lambda: {"outputs": outputs})
+    monkeypatch.setattr(housekeeping, "_running_outputs", lambda: [str(running)])
+
+    cached = {housekeeping._measure_key(running): (999_999, 123)}
+    result = housekeeping.delete([str(running)], confirm = True, sizes = cached)
+
+    assert result["deleted"] == []
+    assert "right now" in result["refused"][0]["reason"]
+    assert running.is_dir()
+
+
 def test_rules_round_trip_and_bad_values_are_refused(tmp_path, monkeypatch):
     _workspace(tmp_path, monkeypatch)
 
