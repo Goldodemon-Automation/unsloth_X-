@@ -215,3 +215,38 @@ def test_one_expert_is_refused(tmp_path):
     report = surgery.plan({"model": str(_checkpoint(tmp_path / "base")), "experts": 1})
     assert report["runnable"] is False
     assert "dense model with a router" in report["blocked_reason"]
+
+
+def test_a_shard_that_fails_to_open_closes_the_shards_read_before_it(tmp_path, monkeypatch):
+    # _open only hands its readers back on success, so a later shard failing used
+    # to leave the earlier ones open for the life of the process.
+    source = _checkpoint(tmp_path / "base")
+    broken = source / "model-00002.safetensors"
+    broken.write_bytes(b"this is not a safetensors file")
+    monkeypatch.setattr(
+        surgery, "_weight_files", lambda directory: [source / "model.safetensors", broken]
+    )
+
+    real_open = surgery.tensor_io.open_file
+    closed: list[bool] = []
+
+    class _Spy:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            closed.append(True)
+            return self._handle.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._handle, name)
+
+    monkeypatch.setattr(surgery.tensor_io, "open_file", lambda path: _Spy(real_open(path)))
+
+    with pytest.raises(Exception):
+        surgery.plan({"model": str(source)})
+
+    assert closed == [True]

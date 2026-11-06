@@ -240,9 +240,11 @@ def plan(spec: Mapping[str, Any]) -> dict[str, Any]:
             "here. Known layouts: " + ", ".join(sorted(FAMILIES)) + "."
         )
 
-    source_handles, source_shapes, source_opened = surgery._open(source)
-    target_handles, target_shapes, target_opened = surgery._open(target)
+    source_opened: list[Any] = []
+    target_opened: list[Any] = []
     try:
+        source_handles, source_shapes, source_opened = surgery._open(source)
+        target_handles, target_shapes, target_opened = surgery._open(target)
         source_inventory = _inventory(source_family, source_shapes)
         target_inventory = _inventory(target_family, target_shapes)
         if not source_inventory:

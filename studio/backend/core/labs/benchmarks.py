@@ -403,7 +403,11 @@ def _compare_scores(
     }
 
 
-def verdict(record: dict[str, Any], pins: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+def verdict(
+    record: dict[str, Any],
+    pins: Optional[dict[str, Any]] = None,
+    references: Optional[dict[str, Optional[dict[str, Any]]]] = None,
+) -> dict[str, Any]:
     """How this record sits against the pinned baseline for its checkpoint.
 
     ``status`` is one of ``pinned`` (this record is the baseline), ``regressed``,
@@ -411,6 +415,10 @@ def verdict(record: dict[str, Any], pins: Optional[dict[str, Any]] = None) -> di
     ``missing`` (the pinned record was deleted) or ``unpinned`` (nothing to
     compare against). The pinned record is never compared with itself: a page
     that calls its own baseline a regression is noise, not information.
+
+    ``references`` is an optional per-call cache of pinned records keyed by id.
+    A page loads many records for the same checkpoint, and every one of them was
+    reading the same pinned record file again.
     """
     store = _read_pins() if pins is None else pins
     entry = store.get(_pin_key(str(record.get("artifact") or "")))
@@ -429,10 +437,15 @@ def verdict(record: dict[str, Any], pins: Optional[dict[str, Any]] = None) -> di
             "improved": [],
             "flat": [],
         }
-    try:
-        reference = find_record(pinned_id)
-    except (OSError, ValueError):
-        reference = None
+    if references is not None and pinned_id in references:
+        reference = references[pinned_id]
+    else:
+        try:
+            reference = find_record(pinned_id)
+        except (OSError, ValueError):
+            reference = None
+        if references is not None:
+            references[pinned_id] = reference
     if reference is None:
         return {"status": "missing", "pinned_record_id": pinned_id}
     comparison = _compare_scores(
@@ -451,6 +464,7 @@ def verdict(record: dict[str, Any], pins: Optional[dict[str, Any]] = None) -> di
 def annotate(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Attach the pin and the against-pin verdict to each record for the page."""
     pins = _read_pins()
+    references: dict[str, Optional[dict[str, Any]]] = {}
     for record in records:
         entry = pins.get(_pin_key(str(record.get("artifact") or "")))
         record["pin"] = (
@@ -462,5 +476,5 @@ def annotate(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if entry is not None
             else None
         )
-        record["vs_pinned"] = verdict(record, pins)
+        record["vs_pinned"] = verdict(record, pins, references)
     return records

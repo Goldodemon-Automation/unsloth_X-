@@ -175,6 +175,35 @@ def _measure(directory: Path) -> tuple[int, int]:
     return total, files
 
 
+def _measure_key(directory: Path) -> str:
+    """The name a walk is remembered under for the duration of one operation.
+
+    The preview and the delete that follows it are handed the same path string,
+    so a normalized absolute path matches them without resolving a component.
+    """
+    return os.path.normcase(os.path.abspath(str(directory)))
+
+
+def _measure_cached(
+    directory: Path, sizes: Optional[dict[str, tuple[int, int]]]
+) -> tuple[int, int]:
+    """Measure *directory*, reusing a size this operation already walked.
+
+    The janitor walks every folder to build a preview and then deletes the ones
+    it offered; without this the delete walks each removed tree a second time.
+    The cache is created per apply, so a folder whose contents changed since a
+    previous page load is still measured fresh.
+    """
+    if sizes is None:
+        return _measure(directory)
+    key = _measure_key(directory)
+    cached = sizes.get(key)
+    if cached is None:
+        cached = _measure(directory)
+        sizes[key] = cached
+    return cached
+
+
 def _format_bytes(value: float) -> str:
     if value >= 1e12:
         return f"{value / 1e12:.2f} TB"
@@ -294,7 +323,11 @@ def _is_under_running_job(path: Path, running: Iterable[Path], resolve: Any) -> 
 
 
 def _entries_for(
-    root_id: str, root: Path, running: list[str], resolve: Any
+    root_id: str,
+    root: Path,
+    running: list[str],
+    resolve: Any,
+    sizes: Optional[dict[str, tuple[int, int]]] = None,
 ) -> list[dict[str, Any]]:
     if not root.is_dir():
         return []
@@ -318,7 +351,7 @@ def _entries_for(
             # Skipping them here is also why a listing needs no resolve().
             if _is_link(entry):
                 continue
-            size, files = _measure(child)
+            size, files = _measure_cached(child, sizes)
             try:
                 modified = entry.stat(follow_symlinks = False).st_mtime
             except OSError:
@@ -347,8 +380,12 @@ def _entries_for(
     return records
 
 
-def scan() -> dict[str, Any]:
-    """Everything that is large, newest roots first, biggest entries first."""
+def scan(sizes: Optional[dict[str, tuple[int, int]]] = None) -> dict[str, Any]:
+    """Everything that is large, newest roots first, biggest entries first.
+
+    *sizes* is the per-operation measurement cache; a caller that is about to
+    delete what it scanned passes one so the delete does not walk again.
+    """
     roots = _paths()
     resolve = _resolving()
     running = _resolved_running(_running_outputs(), resolve)
@@ -359,7 +396,7 @@ def scan() -> dict[str, Any]:
         if root is None:
             continue
         exists = root.is_dir()
-        root_entries = _entries_for(root_id, root, running, resolve) if exists else []
+        root_entries = _entries_for(root_id, root, running, resolve, sizes) if exists else []
         entries.extend(root_entries)
         root_records.append(
             {
@@ -406,8 +443,17 @@ def scan() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def delete(paths: Iterable[str], *, confirm: bool) -> dict[str, Any]:
-    """Remove the named folders, refusing anything the scan would not offer."""
+def delete(
+    paths: Iterable[str],
+    *,
+    confirm: bool,
+    sizes: Optional[dict[str, tuple[int, int]]] = None,
+) -> dict[str, Any]:
+    """Remove the named folders, refusing anything the scan would not offer.
+
+    The guard runs before the size lookup, so a cached size can never turn a
+    refused path into a deleted one; *sizes* only spares the reporting walk.
+    """
     if not confirm:
         raise ValueError("Deleting folders needs confirm=true.")
     roots = _paths()
@@ -439,7 +485,7 @@ def delete(paths: Iterable[str], *, confirm: bool) -> dict[str, Any]:
         if _is_under_running_job(path, running, resolve):
             refused.append({"path": str(path), "reason": "A job is writing here right now."})
             continue
-        size, files = _measure(path)
+        size, files = _measure_cached(path, sizes)
         try:
             shutil.rmtree(path)
         except OSError as error:
@@ -556,10 +602,12 @@ def _holds_a_pin(path: str, pins: set[str]) -> bool:
     return any(pin.startswith(prefix + os.sep) or pin.startswith(prefix + "/") for pin in pins)
 
 
-def preview_rules(custom: Any = None) -> dict[str, Any]:
+def preview_rules(
+    custom: Any = None, sizes: Optional[dict[str, tuple[int, int]]] = None
+) -> dict[str, Any]:
     """What the rules would remove right now. Nothing is deleted."""
     rules = _validated_rules(custom) if custom is not None else read_rules()
-    report = scan()
+    report = scan(sizes)
     try:
         from core.labs import benchmarks
 
@@ -631,9 +679,13 @@ def apply_rules(custom: Any = None) -> dict[str, Any]:
     rules = _validated_rules(custom) if custom is not None else read_rules()
     if not rules["enabled"]:
         raise ValueError("The janitor rules are switched off.")
-    preview = preview_rules(rules)
+    # One cache for the preview and the delete it feeds: every folder the
+    # preview walked is measured once, and the delete reuses those numbers
+    # instead of walking each removed tree again.
+    sizes: dict[str, tuple[int, int]] = {}
+    preview = preview_rules(rules, sizes)
     paths = [entry["path"] for entry in preview["candidates"]]
-    result = delete(paths, confirm = True) if paths else {
+    result = delete(paths, confirm = True, sizes = sizes) if paths else {
         "deleted": [],
         "refused": [],
         "freed_bytes": 0,

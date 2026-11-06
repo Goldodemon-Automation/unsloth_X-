@@ -229,3 +229,41 @@ def test_a_conv1d_transpose_swaps_the_axes_rather_than_permuting_them():
 def test_a_hub_id_is_refused_because_a_swap_writes_local_weights(tmp_path):
     with pytest.raises(ValueError, match = "download the checkpoint first"):
         arch_swap.plan({"source": "unsloth/Llama-3.2-1B", "target": str(_llama(tmp_path / "t"))})
+
+
+def test_plan_closes_the_source_readers_when_the_target_cannot_be_opened(tmp_path, monkeypatch):
+    """A target with a config but no weights used to leak the source's readers."""
+    from core.advanced import tensor_io
+
+    source = _llama(tmp_path / "llama")
+    target = tmp_path / "empty"
+    target.mkdir()
+    (target / "config.json").write_text(json.dumps({"model_type": "llama"}), encoding = "utf-8")
+
+    real_open = tensor_io.open_file
+    opened: list = []
+    closed: list = []
+
+    class _Spy:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def __getattr__(self, name):
+            return getattr(self._handle, name)
+
+        def __exit__(self, *args):
+            closed.append(id(self))
+            return self._handle.__exit__(*args)
+
+    def _open(path):
+        handle = _Spy(real_open(path))
+        opened.append(handle)
+        return handle
+
+    monkeypatch.setattr(tensor_io, "open_file", _open)
+
+    with pytest.raises(ValueError, match = "No safetensors weights"):
+        arch_swap.plan({"source": str(source), "target": str(target)})
+
+    assert opened, "the source checkpoint should have been opened"
+    assert len(closed) == len(opened), "every reader opened for the plan must be closed"

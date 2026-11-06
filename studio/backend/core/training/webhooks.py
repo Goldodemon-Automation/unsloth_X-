@@ -128,7 +128,12 @@ def observe_progress(
                     stale = min(_progress, key = lambda key: _progress[key]["touched"])
                     _progress.pop(stale, None)
                 state = {
-                    "points": [],
+                    # A bounded deque, so evicting the oldest point is O(1). A
+                    # list plus ``del points[:dropped]`` memmoves the whole
+                    # retained tail on every point once the bound is reached,
+                    # which measured at about half the steady per-point cost of
+                    # a long run.
+                    "points": deque(maxlen = MAX_RETAINED_POINTS),
                     "base": 0,
                     "total": 0,
                     "checked": 0,
@@ -144,10 +149,10 @@ def observe_progress(
                 return None
             points.append((step_number, value))
             state["total"] += 1
-            if len(points) > MAX_RETAINED_POINTS:
-                dropped = len(points) - MAX_RETAINED_POINTS
-                del points[:dropped]
-                state["base"] += dropped
+            # ``maxlen`` dropped the oldest point for us when the deque was
+            # full; deriving ``base`` from what is still retained keeps absolute
+            # step attribution correct without the trim's memmove.
+            state["base"] = state["total"] - len(points)
             if parent_guard is not None:
                 parent_guard.observe(step_number, value)
             if metrics:

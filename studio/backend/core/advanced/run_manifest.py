@@ -31,7 +31,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import platform
+import stat as stat_module
 import sys
 import time
 import uuid
@@ -58,6 +60,12 @@ REQUIRED_FIELDS = (
 )
 
 _HASH_CHUNK = 4 * 1024 * 1024
+
+# A directory dataset can be a Hub cache or an extracted archive holding hundreds of
+# thousands of files. Hashing every name and size re-identifies files that cannot change
+# the reproduction question, so the walk stops here. The admitted prefix is deterministic
+# (directories and files are visited in sorted order), and a truncated identity says so.
+DATASET_WALK_LIMIT = 10_000
 
 
 # ---------------------------------------------------------------------------
@@ -196,15 +204,21 @@ def dataset_identity(source: str | Path | None) -> dict[str, Any]:
             "size_bytes": path.stat().st_size,
         }
     if path.is_dir():
-        files = sorted(child for child in path.rglob("*") if child.is_file())
-        return {
+        entries, truncated = _dataset_dir_entries(path, DATASET_WALK_LIMIT)
+        identity = {
             "kind": "directory",
             "value": text,
-            "sha256": hash_payload(
-                {child.relative_to(path).as_posix(): child.stat().st_size for child in files}
-            ),
-            "files": len(files),
+            "sha256": hash_payload(entries),
+            "files": len(entries),
         }
+        if truncated:
+            identity["truncated"] = True
+            identity["walk_limit"] = DATASET_WALK_LIMIT
+            identity["note"] = (
+                f"Directory walk stopped after {DATASET_WALK_LIMIT} files; "
+                "the digest covers that prefix only."
+            )
+        return identity
     # A Hub dataset id: record it, and say plainly that its content is not pinned.
     return {
         "kind": "reference",
@@ -212,6 +226,30 @@ def dataset_identity(source: str | Path | None) -> dict[str, Any]:
         "sha256": None,
         "note": "Remote dataset reference; content hash is not pinned by this manifest.",
     }
+
+
+def _dataset_dir_entries(root: Path, limit: int) -> tuple[dict[str, int], bool]:
+    """Relative path -> size for a dataset directory, stopping at *limit* files.
+
+    ``os.walk(followlinks = False)`` keeps a symlinked subdirectory from pulling files
+    outside the dataset into the digest (and from looping). Each admitted file is stat'ed
+    once; the old ``rglob`` plus ``is_file`` plus ``stat`` stat'ed every entry twice.
+    """
+    entries: dict[str, int] = {}
+    for current, directories, filenames in os.walk(root, followlinks = False):
+        directories.sort()
+        for name in sorted(filenames):
+            if len(entries) >= limit:
+                return entries, True
+            candidate = Path(current) / name
+            try:
+                info = candidate.stat()
+                if not stat_module.S_ISREG(info.st_mode):
+                    continue
+                entries[candidate.relative_to(root).as_posix()] = info.st_size
+            except OSError:
+                continue
+    return entries, False
 
 
 def zone_definition_hash(config: Mapping[str, Any] | None) -> str | None:

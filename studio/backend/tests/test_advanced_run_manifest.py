@@ -92,6 +92,47 @@ def test_dataset_identity_pins_local_content_and_flags_remote_references(tmp_pat
     assert "not pinned" in remote["note"]
 
 
+def test_dataset_identity_hashes_a_directory_by_relative_path_and_size(tmp_path: Path):
+    tree = tmp_path / "dataset"
+    (tree / "nested").mkdir(parents = True)
+    first = tree / "a.jsonl"
+    second = tree / "nested" / "b.parquet"
+    first.write_text('{"text": "hello"}\n', encoding = "utf-8")
+    second.write_bytes(b"parquet-ish")
+
+    identity = run_manifest.dataset_identity(tree)
+    assert identity["kind"] == "directory"
+    assert identity["files"] == 2
+    assert "truncated" not in identity
+    # Same mapping, and therefore the same digest, as before the walk was bounded.
+    assert identity["sha256"] == run_manifest.hash_payload(
+        {
+            "a.jsonl": first.stat().st_size,
+            "nested/b.parquet": second.stat().st_size,
+        }
+    )
+    # A re-run over an unchanged folder pins the same identity.
+    assert run_manifest.dataset_identity(tree)["sha256"] == identity["sha256"]
+
+
+def test_dataset_identity_bounds_a_large_directory_walk(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(run_manifest, "DATASET_WALK_LIMIT", 3)
+    tree = tmp_path / "many"
+    tree.mkdir()
+    for index in range(10):
+        (tree / f"{index:02d}.jsonl").write_text("x" * index, encoding = "utf-8")
+
+    identity = run_manifest.dataset_identity(tree)
+    assert identity["files"] == 3
+    assert identity["truncated"] is True
+    assert identity["walk_limit"] == 3
+    # The admitted prefix is the sorted one, so a re-run agrees even past the limit.
+    assert identity["sha256"] == run_manifest.hash_payload(
+        {f"{index:02d}.jsonl": index for index in range(3)}
+    )
+    assert run_manifest.dataset_identity(tree)["sha256"] == identity["sha256"]
+
+
 def test_zone_definition_hash_is_stable_and_config_sensitive():
     first = {"zone_multipliers": {"early": 0.25, "late": 0.5}}
     same = {"zone_multipliers": {"late": 0.5, "early": 0.25}}

@@ -49,6 +49,46 @@ def _read(path: Path) -> Optional[dict[str, Any]]:
     return payload if isinstance(payload, dict) else None
 
 
+def _manifest_paths(base: Path) -> Iterator[Path]:
+    """Manifest files under *base*, two levels deep, lazily and in sorted order.
+
+    Every stage writes its manifest beside its run folder, and a run folder is a
+    direct or one-level child of outputs (see ``default_merge_dir_name``), so two
+    ``scandir`` levels reach every one. An ``rglob`` had to walk and sort the whole
+    outputs tree before the page could read its first manifest; yielding lazily lets
+    a ``limit`` reached early stop the walk instead of paying for the rest.
+    """
+    try:
+        with os.scandir(base) as listing:
+            children = sorted(listing, key=lambda entry: entry.name)
+    except OSError:
+        return
+    for child in children:
+        try:
+            if not child.is_dir():
+                continue
+        except OSError:
+            continue
+        directory = Path(child.path)
+        own = directory / run_manifest.MANIFEST_NAME
+        if own.is_file():
+            yield own
+        try:
+            with os.scandir(child.path) as inner:
+                grandchildren = sorted(inner, key=lambda entry: entry.name)
+        except OSError:
+            continue
+        for grandchild in grandchildren:
+            try:
+                if not grandchild.is_dir():
+                    continue
+            except OSError:
+                continue
+            nested = Path(grandchild.path) / run_manifest.MANIFEST_NAME
+            if nested.is_file():
+                yield nested
+
+
 def _input_values(inputs: Any) -> Iterator[tuple[str, str]]:
     """(label, reference) for every input that names a folder or a model.
 
@@ -88,7 +128,7 @@ def scan(root: str | Path | None = None, *, limit: int = MAX_MANIFESTS) -> dict[
     truncated = False
 
     if base.is_dir():
-        for manifest_path in sorted(base.rglob(run_manifest.MANIFEST_NAME)):
+        for manifest_path in _manifest_paths(base):
             if len(nodes) >= limit:
                 truncated = True
                 break

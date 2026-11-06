@@ -206,6 +206,40 @@ def test_annotate_marks_the_pin_and_the_verdict_on_every_record(tmp_path, monkey
     assert annotated[later["id"]]["vs_pinned"]["status"] == "regressed"
 
 
+def test_annotate_reads_a_shared_pinned_record_once(tmp_path, monkeypatch):
+    """One pin, many records: the list must not re-read the baseline per record.
+
+    A history for a single checkpoint can hold dozens of records that all point
+    at the same pin, and the list route annotates every one of them. The pinned
+    record is the same file for all of them, so it is read once, not N times.
+    """
+    artifact = tmp_path / "merged"
+    artifact.mkdir()
+    baseline = _scored(monkeypatch, tmp_path, artifact, {"mmlu": 0.50}, "baseline")
+    benchmarks.pin_record(baseline["id"])
+    for index in range(5):
+        _scored(monkeypatch, tmp_path, artifact, {"mmlu": 0.40}, f"later-{index}")
+
+    records = benchmarks.list_records(limit = 200)
+    pinned_path = benchmarks.records_root() / f"{baseline['id']}.json"
+    original = benchmarks._read
+    reads: list[Path] = []
+
+    def counting(path):
+        reads.append(Path(path))
+        return original(path)
+
+    monkeypatch.setattr(benchmarks, "_read", counting)
+    annotated = benchmarks.annotate(records)
+
+    # The pin file and the shared pinned record, each read exactly once.
+    assert len(reads) == 2
+    assert reads.count(pinned_path) == 1
+    later = [item for item in annotated if item["id"] != baseline["id"]]
+    assert len(later) == 5
+    assert all(item["vs_pinned"]["status"] == "regressed" for item in later)
+
+
 def test_unpin_and_delete_keep_the_pin_file_honest(tmp_path, monkeypatch):
     artifact = tmp_path / "merged"
     artifact.mkdir()

@@ -64,7 +64,12 @@ def _median(values: list[float]) -> float:
 
 
 class RetainedSeries:
-    def __init__(self, points: list[tuple[float, float]], base: int, total: int):
+    def __init__(
+        self,
+        points: "list[tuple[float, float]] | deque[tuple[float, float]]",
+        base: int,
+        total: int,
+    ):
         self.points = points
         self.base = base
         self.total = total
@@ -77,7 +82,14 @@ class RetainedSeries:
             start, stop, step = index.indices(self.total)
             start = max(start, self.base)
             stop = max(stop, self.base)
-            return self.points[start - self.base : stop - self.base : step]
+            # Index the retained tail instead of slicing the container: the
+            # retained history is a ``deque`` with a bounded maxlen, and a deque
+            # cannot be sliced. Indexing also keeps this O(window), not
+            # O(retained), for the one slice the detector takes per point.
+            return [
+                self.points[offset]
+                for offset in range(start - self.base, stop - self.base, step)
+            ]
         if index < 0:
             index += self.total
         if index < self.base:

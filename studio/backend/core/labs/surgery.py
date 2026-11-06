@@ -81,6 +81,17 @@ def _checkpoint_dir(directory: Path) -> Path:
     return candidates[0] if candidates else directory
 
 
+def _close_all(opened: Sequence[Any]) -> None:
+    """Release every reader :func:`_open` handed out; never raises."""
+    for handle in opened:
+        closer = getattr(handle, "__exit__", None)
+        if callable(closer):
+            try:
+                closer(None, None, None)
+            except Exception:  # noqa: BLE001 - closing a reader must not fail a plan
+                pass
+
+
 def _open(directory: Path) -> tuple[dict[str, Any], dict[str, tuple[int, ...]], list[Any]]:
     """(key -> handle, key -> shape, open handles) for one checkpoint.
 
@@ -90,14 +101,20 @@ def _open(directory: Path) -> tuple[dict[str, Any], dict[str, tuple[int, ...]], 
     handles: dict[str, Any] = {}
     shapes: dict[str, tuple[int, ...]] = {}
     opened: list[Any] = []
-    for path in _weight_files(directory):
-        handle = tensor_io.open_file(path)
-        opened.append(handle)
-        for key in handle.keys():
-            handles[key] = handle
-            shapes[key] = tensor_io.shape_of(handle, key)
-    if not shapes:
-        raise ValueError(f"No safetensors weights found in {str(directory)!r}.")
+    try:
+        for path in _weight_files(directory):
+            handle = tensor_io.open_file(path)
+            opened.append(handle)
+            for key in handle.keys():
+                handles[key] = handle
+                shapes[key] = tensor_io.shape_of(handle, key)
+        if not shapes:
+            raise ValueError(f"No safetensors weights found in {str(directory)!r}.")
+    except BaseException:
+        # The caller never receives *opened* when this raises, so the shards
+        # already read must be released here or they leak for the process life.
+        _close_all(opened)
+        raise
     return handles, shapes, opened
 
 
@@ -460,13 +477,7 @@ def plan(spec: Mapping[str, Any]) -> dict[str, Any]:
             experts = experts or 1,
         )
     finally:
-        for handle in opened:
-            close = getattr(handle, "__exit__", None)
-            if callable(close):
-                try:
-                    handle.__exit__(None, None, None)
-                except Exception:  # noqa: BLE001 - closing a reader must not fail a plan
-                    pass
+        _close_all(opened)
 
     if dropped_layers:
         warnings.append(
@@ -799,13 +810,7 @@ def run(
                 )
         flush()
     finally:
-        for handle in opened:
-            closer = getattr(handle, "__exit__", None)
-            if callable(closer):
-                try:
-                    closer(None, None, None)
-                except Exception:  # noqa: BLE001
-                    pass
+        _close_all(opened)
 
     stage("finalizing", "Writing index, config and tokenizer...")
     if shard_index == 2 and weight_map:
