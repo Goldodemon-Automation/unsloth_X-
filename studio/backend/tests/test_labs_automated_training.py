@@ -110,6 +110,7 @@ def test_normalise_fills_every_default(tmp_path):
     assert normalised["continue_runs"] == 4
     assert normalised["seed"] == 3407
     assert normalised["steps_per_run"] == 100
+    assert normalised["timeout_seconds"] == 0
     assert normalised["benchmark"] == {"suites": [], "limit": 8, "batch_size": 1}
     assert normalised["preset"] is None
     assert normalised["training_kwargs"] == {}
@@ -223,6 +224,7 @@ def test_plan_lays_out_cmt_compatible_runs(tmp_path):
         "total_train_runs": (5 + 3) * 2,
         "datasets_per_round": 4,
         "rounds": 2,
+        "timeout_seconds": 0,
     }
     assert report["presets"] == at.presets()
     assert any("Hardware is not checked" in warning for warning in report["warnings"])
@@ -573,3 +575,186 @@ def test_keyboard_interrupt_is_never_swallowed(tmp_path):
             train=interrupted,
             benchmark=_benchmark({}),
         )
+
+
+# ---------------------------------------------------------------------------
+# Cancellation
+# ---------------------------------------------------------------------------
+
+
+def test_should_stop_cancels_after_n_runs_and_records_the_manifest(tmp_path):
+    spec = _spec(
+        tmp_path,
+        datasets=2,
+        datasets_per_round=2,
+        methods=["cmt"],
+        runs_per_round=4,
+        continue_runs=2,
+        rounds=2,
+    )
+    calls: list = []
+    stages: list[str] = []
+    scores = {"run-01-cmt": 0.4, "run-02-cmt": 0.8}
+
+    def should_stop() -> bool:
+        # Two runs are enough: the third scheduling attempt is refused.
+        return len(calls) >= 2
+
+    summary = at.run(
+        spec,
+        output_dir=tmp_path / "out",
+        progress=lambda payload: stages.append(payload["stage"]),
+        train=_trainer(calls),
+        benchmark=_benchmark(scores),
+        should_stop=should_stop,
+    )
+
+    assert summary["cancelled"] is True
+    assert len(calls) == 2
+    assert summary["train_runs"] == 2
+    assert summary["benchmark_runs"] == 2
+
+    # The round that finished is kept, with a winner; the second round never ran.
+    assert [record["index"] for record in summary["rounds"]] == [1]
+    assert len(summary["rounds"][0]["continue"]) == 0
+    assert summary["best"]["score"] == pytest.approx(0.8)
+    assert summary["best"]["round"] == 1
+
+    assert stages[-1] == "cancelled"
+    assert "done" not in stages
+    assert "continue" not in stages
+
+    payload = json.loads(Path(summary["manifest_path"]).read_text(encoding = "utf-8"))
+    assert payload["cancelled"] is True
+    assert payload["totals"]["train_runs"] == 2
+    assert len(payload["rounds"]) == 1
+    assert len(payload["winners"]) == 1
+    assert payload["artifacts"]["best"]["round"] == 1
+
+
+def test_cancelling_before_the_first_run_still_writes_a_manifest(tmp_path):
+    spec = _spec(
+        tmp_path,
+        datasets=2,
+        datasets_per_round=2,
+        methods=["cmt"],
+        runs_per_round=2,
+        rounds=2,
+    )
+    calls: list = []
+    summary = at.run(
+        spec,
+        output_dir=tmp_path / "out",
+        train=_trainer(calls),
+        benchmark=_benchmark({}),
+        should_stop=lambda: True,
+    )
+
+    assert calls == []
+    assert summary["cancelled"] is True
+    assert summary["rounds"] == []
+    assert summary["best"] is None
+    assert summary["train_runs"] == 0
+    assert summary["benchmark_runs"] == 0
+
+    manifest_path = tmp_path / "out" / "run_manifest.json"
+    assert summary["manifest_path"] == str(manifest_path)
+    assert manifest_path.is_file()
+    payload = json.loads(manifest_path.read_text(encoding = "utf-8"))
+    assert payload["cancelled"] is True
+    assert payload["rounds"] == []
+    assert payload["winners"] == []
+    assert payload["totals"] == {
+        "train_runs": 0,
+        "benchmark_runs": 0,
+        "failed_runs": 0,
+        "rounds": 0,
+    }
+
+
+def test_should_stop_is_not_called_after_completion(tmp_path):
+    spec = _spec(
+        tmp_path,
+        datasets=2,
+        datasets_per_round=2,
+        methods=["cmt"],
+        runs_per_round=2,
+        continue_runs=2,
+        rounds=1,
+    )
+    events: list[str] = []
+
+    def train(step, output_dir, progress):
+        events.append("train")
+        Path(output_dir).mkdir(parents = True, exist_ok = True)
+        return {"output_dir": output_dir}
+
+    def should_stop() -> bool:
+        events.append("check")
+        return False
+
+    summary = at.run(
+        spec,
+        output_dir=tmp_path / "out",
+        train=train,
+        benchmark=_benchmark({}),
+        should_stop=should_stop,
+    )
+
+    assert summary["cancelled"] is False
+    assert summary["train_runs"] == 4
+    # One check between rounds plus one before each of the four runs, and none
+    # after the last run finished.
+    assert events.count("check") == 5
+    assert events[-1] == "train"
+
+
+# ---------------------------------------------------------------------------
+# Timeouts
+# ---------------------------------------------------------------------------
+
+
+def test_timeout_seconds_defaults_to_zero_and_threads_into_step_specs(tmp_path):
+    assert at.normalise(_spec(tmp_path, datasets=2))["timeout_seconds"] == 0
+
+    spec = _spec(
+        tmp_path,
+        datasets=2,
+        datasets_per_round=2,
+        methods=["cmt"],
+        runs_per_round=2,
+        continue_runs=2,
+        rounds=1,
+        timeout_seconds=90,
+    )
+    calls: list = []
+    summary = at.run(
+        spec,
+        output_dir=tmp_path / "out",
+        train=_trainer(calls),
+        benchmark=_benchmark({"run-01-cmt": 0.3, "run-02-cmt": 0.2}),
+    )
+
+    assert summary["cancelled"] is False
+    assert len(calls) == 4
+    assert all(step["spec"]["timeout_seconds"] == 90 for step in calls)
+    assert all(step["spec"]["mode"] == "cpt" for step in calls)
+    assert all("max_steps" in step["spec"] and "seed" in step["spec"] for step in calls)
+    # The engine records the value in the manifest spec, but never enforces it.
+    payload = json.loads(Path(summary["manifest_path"]).read_text(encoding = "utf-8"))
+    assert payload["spec"]["timeout_seconds"] == 90
+
+
+def test_timeout_seconds_reaches_the_plan_projection_and_rejects_negatives(tmp_path):
+    report = at.plan(_spec(tmp_path, datasets=4, rounds=2, timeout_seconds=120))
+    assert report["runnable"] is True
+    assert report["projection"]["timeout_seconds"] == 120
+
+    blocked = at.plan(_spec(tmp_path, datasets=3, datasets_per_round=4, timeout_seconds=120))
+    assert blocked["runnable"] is False
+    assert blocked["projection"]["timeout_seconds"] == 120
+
+    assert at.plan(_spec(tmp_path, datasets=4))["projection"]["timeout_seconds"] == 0
+
+    with pytest.raises(at.AutomatedTrainingError, match="timeout_seconds"):
+        at.normalise(_spec(tmp_path, datasets=2, timeout_seconds=-1))

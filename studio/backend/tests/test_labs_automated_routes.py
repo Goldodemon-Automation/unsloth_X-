@@ -293,6 +293,298 @@ def test_run_is_owner_only_and_presets_is_not(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+# The fields the CPT/FFT adapter reads off the Training backend's progress. A
+# plain namespace stands in for ``core.training.TrainingProgress`` so these tests
+# stay light: the adapter only ever reads attributes.
+_PROGRESS_DEFAULTS = {
+    "is_training": True,
+    "is_completed": False,
+    "error": None,
+    "status_message": "Training",
+    "output_dir": None,
+}
+
+
+def _at(values, index):
+    """The index-th value of a script, with the last one repeating."""
+    if isinstance(values, (list, tuple)):
+        return values[min(index, len(values) - 1)]
+    return values
+
+
+class FakeTrainingBackend:
+    """A Training backend that reports whatever the test scripts for each poll.
+
+    ``snapshots`` is one dict of progress fields per poll (missing fields take
+    ``_PROGRESS_DEFAULTS``, the last entry repeats), and ``active`` may be a
+    script of its own so a job can finish and the worker linger. ``polls`` counts
+    the times the adapter asked whether training was still active, which is once
+    per turn of its poll loop. Nothing here trains: this pins the adapter's
+    polling contract, not the worker.
+    """
+
+    def __init__(
+        self,
+        snapshots = None,
+        *,
+        active = True,
+        job_id = None,
+        refuse = False,
+    ):
+        self.snapshots = [dict(entry) for entry in (snapshots or [{}])]
+        self.active = active
+        self.current_job_id = job_id
+        self.refuse = refuse
+        self.polls = 0
+        self.started = {}
+
+    def start_training(self, *, job_id, **kwargs):
+        self.started.update({"job_id": job_id, **kwargs})
+        if self.refuse:
+            return False
+        if self.current_job_id is None:
+            self.current_job_id = job_id
+        return True
+
+    @property
+    def training_progress(self):
+        fields = {**_PROGRESS_DEFAULTS, **_at(self.snapshots, self.polls)}
+        return types.SimpleNamespace(**fields)
+
+    def is_training_active(self):
+        active = bool(_at(self.active, self.polls))
+        self.polls += 1
+        return active
+
+
+def _fake_backend(monkeypatch, backend):
+    """Put *backend* behind ``get_training_backend`` and freeze the clock."""
+    monkeypatch.setattr("core.training.get_training_backend", lambda: backend)
+    sleeps = []
+    monkeypatch.setattr(labs_routes.time, "sleep", lambda seconds: sleeps.append(seconds))
+    return sleeps
+
+
+def _cpt_step(spec = None, **step):
+    return {
+        "method": step.pop("method", "cpt"),
+        "round": 1,
+        "label": "run-02-cpt",
+        "spec": {"training_kwargs": {"output_dir": "/out/cpt", "max_steps": 20}, **(spec or {})},
+        **step,
+    }
+
+
+def test_the_train_adapter_waits_for_the_job_and_reports_its_checkpoint(monkeypatch):
+    """A start is not a checkpoint: the adapter polls until the job completes."""
+    _fake_engine(monkeypatch)
+    backend = FakeTrainingBackend(
+        [
+            {"is_training": True},
+            {"is_training": True, "status_message": "Saving checkpoint"},
+            {
+                "is_training": False,
+                "is_completed": True,
+                "output_dir": "/out/cpt/final",
+            },
+        ]
+    )
+    sleeps = _fake_backend(monkeypatch, backend)
+
+    result = labs_routes._train_adapter(_cpt_step(), "/out/run-02", None)
+
+    # Two polls reported the job still running, the third reported it done.
+    assert backend.polls == 2
+    assert sleeps == [labs_routes._AUTOMATED_POLL_SECONDS] * 2
+    # The directory the job wrote wins over the one the step asked for, which is
+    # what the benchmark adapter scores.
+    assert result["output_dir"] == "/out/cpt/final"
+    assert result["waited"] is True
+    assert result["started"] is True
+    assert result["job_id"] == "automated-1-run-02-cpt"
+
+
+def test_the_train_adapter_surfaces_the_backends_error(monkeypatch):
+    _fake_engine(monkeypatch)
+    backend = FakeTrainingBackend(
+        [{"is_training": False, "error": "CUDA out of memory"}], active = True
+    )
+    _fake_backend(monkeypatch, backend)
+
+    with pytest.raises(FakeAutomatedTrainingError) as error:
+        labs_routes._train_adapter(_cpt_step(method = "fft"), "/out/run-02", None)
+
+    message = str(error.value)
+    assert "CUDA out of memory" in message
+    assert "FFT" in message
+    assert "automated-1-run-02-cpt" in message
+
+
+def test_the_train_adapter_times_out_naming_the_method_and_job(monkeypatch):
+    _fake_engine(monkeypatch)
+    backend = FakeTrainingBackend([{"is_training": True}], active = True)
+    clock = {"now": 0.0}
+    monkeypatch.setattr("core.training.get_training_backend", lambda: backend)
+    monkeypatch.setattr(labs_routes.time, "monotonic", lambda: clock["now"])
+
+    def sleep(seconds):
+        clock["now"] += seconds
+
+    monkeypatch.setattr(labs_routes.time, "sleep", sleep)
+
+    with pytest.raises(FakeAutomatedTrainingError) as error:
+        labs_routes._train_adapter(
+            _cpt_step(spec = {"timeout_seconds": 5}), "/out/run-02", None
+        )
+
+    message = str(error.value)
+    assert "did not finish within 5 seconds" in message
+    assert "CPT" in message
+    assert "automated-1-run-02-cpt" in message
+    # 2s polls against a 5s budget: it stops as soon as the budget is spent.
+    assert clock["now"] == 6.0
+
+
+def test_the_train_adapter_reports_a_job_that_stopped_without_completing(monkeypatch):
+    """A worker that exits clean but unfinished is a failure, not a checkpoint."""
+    _fake_engine(monkeypatch)
+    backend = FakeTrainingBackend([{"is_training": False}], active = False)
+    _fake_backend(monkeypatch, backend)
+
+    with pytest.raises(FakeAutomatedTrainingError) as error:
+        labs_routes._train_adapter(_cpt_step(), "/out/run-02", None)
+
+    message = str(error.value)
+    assert "stopped without completing" in message
+    assert "automated-1-run-02-cpt" in message
+
+
+def test_the_train_adapter_does_not_trust_progress_from_another_job(monkeypatch):
+    """The next job's completion is not this job's checkpoint."""
+    _fake_engine(monkeypatch)
+    backend = FakeTrainingBackend(
+        [{"is_completed": True, "output_dir": "/out/someone-else"}],
+        active = True,
+        job_id = "someone-else",
+    )
+    _fake_backend(monkeypatch, backend)
+
+    with pytest.raises(FakeAutomatedTrainingError) as error:
+        labs_routes._train_adapter(_cpt_step(), "/out/run-02", None)
+
+    message = str(error.value)
+    assert "someone-else" in message
+    assert "automated-1-run-02-cpt" in message
+
+
+def test_the_train_adapter_keeps_fire_and_forget_when_the_spec_says_so(monkeypatch):
+    _fake_engine(monkeypatch)
+    backend = FakeTrainingBackend([{"is_completed": True, "output_dir": "/out/later"}])
+    sleeps = _fake_backend(monkeypatch, backend)
+
+    result = labs_routes._train_adapter(
+        _cpt_step(spec = {"wait_for_completion": False}), "/out/run-02", None
+    )
+
+    assert backend.polls == 0
+    assert sleeps == []
+    assert result["waited"] is False
+    assert result["output_dir"] == "/out/cpt"
+
+
+def test_the_wait_controls_never_reach_the_training_backend(monkeypatch):
+    """``wait_for_completion`` and ``timeout_seconds`` are the adapter's, not the worker's."""
+    _fake_engine(monkeypatch)
+    backend = FakeTrainingBackend(
+        [{"is_completed": True, "output_dir": "/out/cpt/final"}]
+    )
+    _fake_backend(monkeypatch, backend)
+    step = {
+        "method": "cpt",
+        "round": 1,
+        "label": "run-02-cpt",
+        # The engine's flat shape: training kwargs plus its own run fields.
+        "spec": {
+            "source": "/models/base",
+            "mode": "cpt",
+            "datasets": [],
+            "max_steps": 20,
+            "output_dir": "/out/cpt",
+            "wait_for_completion": True,
+            "timeout_seconds": 60,
+        },
+    }
+
+    labs_routes._train_adapter(step, "/out/run-02", None)
+
+    assert backend.started["job_id"] == "automated-1-run-02-cpt"
+    assert backend.started["output_dir"] == "/out/cpt"
+    assert "wait_for_completion" not in backend.started
+    assert "timeout_seconds" not in backend.started
+    # The engine's own run fields stay out of the worker request too.
+    assert "source" not in backend.started
+    assert "mode" not in backend.started
+    assert "max_steps" not in backend.started
+
+
+def test_a_zero_timeout_falls_back_to_the_adapters_default(monkeypatch):
+    """The engine always sends ``timeout_seconds``; 0 means it set no budget."""
+    _fake_engine(monkeypatch)
+    backend = FakeTrainingBackend([{"is_training": True}], active = True)
+    clock = {"now": 0.0}
+    monkeypatch.setattr("core.training.get_training_backend", lambda: backend)
+    monkeypatch.setattr(labs_routes.time, "monotonic", lambda: clock["now"])
+
+    def sleep(seconds):
+        clock["now"] += seconds
+
+    monkeypatch.setattr(labs_routes.time, "sleep", sleep)
+    step = {
+        "method": "cpt",
+        "round": 1,
+        "label": "run-02-cpt",
+        "spec": {"output_dir": "/out/cpt", "timeout_seconds": 0},
+    }
+
+    with pytest.raises(FakeAutomatedTrainingError) as error:
+        labs_routes._train_adapter(step, "/out/run-02", None)
+
+    assert f"within {labs_routes._AUTOMATED_TRAIN_TIMEOUT_S:g} seconds" in str(error.value)
+
+
+def test_the_train_adapter_reads_progress_through_the_trainers_shim(monkeypatch):
+    """``TrainingBackend`` keeps progress behind ``trainer``; that path must work."""
+    _fake_engine(monkeypatch)
+
+    class Shim:
+        training_progress = types.SimpleNamespace(
+            is_training = False,
+            is_completed = True,
+            error = None,
+            status_message = "Done",
+            output_dir = "/out/cpt/shim",
+        )
+
+    class Backend:
+        current_job_id = None
+        trainer = Shim()
+
+        def start_training(self, *, job_id, **kwargs):
+            self.current_job_id = job_id
+            return True
+
+        def is_training_active(self):
+            return False
+
+    backend = Backend()
+    sleeps = _fake_backend(monkeypatch, backend)
+
+    result = labs_routes._train_adapter(_cpt_step(), "/out/run-02", None)
+
+    assert sleeps == []
+    assert result["output_dir"] == "/out/cpt/shim"
+
+
 def test_the_train_adapter_runs_cmt_through_the_cmt_experiment(monkeypatch):
     seen = {}
 
@@ -325,14 +617,8 @@ def test_the_train_adapter_refuses_cpt_without_training_kwargs(monkeypatch):
 
 def test_the_train_adapter_hands_cpt_to_the_training_backend(monkeypatch):
     _fake_engine(monkeypatch)
-    started = {}
-
-    class Backend:
-        def start_training(self, *, job_id, **kwargs):
-            started.update({"job_id": job_id, **kwargs})
-            return True
-
-    monkeypatch.setattr("core.training.get_training_backend", lambda: Backend())
+    backend = FakeTrainingBackend([{"is_completed": True}])
+    _fake_backend(monkeypatch, backend)
 
     result = labs_routes._train_adapter(
         {
@@ -348,21 +634,19 @@ def test_the_train_adapter_hands_cpt_to_the_training_backend(monkeypatch):
         None,
     )
 
+    started = backend.started
     assert started["job_id"] == "automated-2-run-03-fft"
     assert started["output_dir"] == "/out/fft"
     assert started["max_steps"] == 20
+    # The job reported no directory of its own, so the requested one stands.
     assert result["output_dir"] == "/out/fft"
     assert result["started"] is True
 
 
 def test_the_train_adapter_reports_a_backend_that_refuses_the_run(monkeypatch):
     _fake_engine(monkeypatch)
-
-    class Backend:
-        def start_training(self, *, job_id, **kwargs):
-            return False
-
-    monkeypatch.setattr("core.training.get_training_backend", lambda: Backend())
+    backend = FakeTrainingBackend([{}], refuse = True)
+    _fake_backend(monkeypatch, backend)
 
     with pytest.raises(FakeAutomatedTrainingError) as error:
         labs_routes._train_adapter(
@@ -372,6 +656,7 @@ def test_the_train_adapter_reports_a_backend_that_refuses_the_run(monkeypatch):
         )
 
     assert "refused" in str(error.value)
+    assert backend.polls == 0
 
 
 def test_the_train_adapter_refuses_an_unknown_method(monkeypatch):

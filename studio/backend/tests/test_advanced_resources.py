@@ -248,6 +248,89 @@ def test_a_gpu_only_stage_is_still_refused_on_a_host_with_no_gpu(tmp_path: Path,
     assert "this machine offers at most" in result["reason"]
 
 
+def test_automated_training_is_a_gpu_only_row():
+    row = resources._COST_MODEL["automated-training"]
+    assert row["gpu"] is True
+    assert row["cpu"] is False
+    assert row["vram"] > 0 and row["ram"] > 0 and row["disk"] > 0
+
+
+def test_automated_training_is_refused_on_a_host_with_no_gpu(tmp_path: Path):
+    """A GPU-only scheduler must be plannable off-GPU and refused for a lease."""
+    source = _checkpoint(tmp_path / "model")
+    memory = _profile(vram = 0)
+    payload = resources.estimate("automated-training", sources = [source], memory = memory)
+    assert payload["need"]["vram_bytes"] > 0
+    assert any("can be planned but not run here" in note for note in payload["notes"])
+    broker = resources.ResourceBroker(probe = lambda: memory)
+    result = broker.acquire("auto-1", "automated-training", resources.Need(**payload["need"]))
+    assert result["status"] == "denied"
+    assert "GPU memory" in result["reason"]
+
+
+def test_automated_training_leases_gpu_memory_on_a_gpu_host(tmp_path: Path):
+    source = _checkpoint(tmp_path / "model")
+    memory = _profile(vram = 24, ram = 64, disk = 500)
+    payload = resources.estimate("automated-training", sources = [source], memory = memory)
+    assert payload["need"]["vram_bytes"] > 0
+    assert not any("can be planned but not run here" in note for note in payload["notes"])
+    broker = resources.ResourceBroker(probe = lambda: memory)
+    result = broker.acquire("auto-1", "automated-training", resources.Need(**payload["need"]))
+    assert result["status"] == "granted"
+    assert result["lease"]["need"]["vram_bytes"] == payload["need"]["vram_bytes"]
+
+
+def test_automated_training_prices_one_run_not_the_whole_schedule(tmp_path: Path):
+    """The peak is one run plus the benchmark model, so say that out loud."""
+    source = _checkpoint(tmp_path / "model")
+    payload = resources.estimate("automated-training", sources = [source], memory = _profile())
+    note = " ".join(payload["notes"])
+    assert "one at a time" in note
+    assert "largest single run" in note
+    assert "benchmark" in note
+    assert "sum of every planned run" in note
+
+
+def test_automated_training_growth_above_the_baseline_adds_gpu_free_resources_only(
+    tmp_path: Path,
+):
+    source = _checkpoint(tmp_path / "model")
+    plain = resources.estimate("automated-training", sources = [source], memory = _profile())
+    grown = resources.estimate(
+        "automated-training",
+        sources = [source],
+        memory = _profile(),
+        growth_ratio = 3.0,
+    )
+    assert grown["need"]["ram_bytes"] > plain["need"]["ram_bytes"]
+    assert grown["need"]["vram_bytes"] == plain["need"]["vram_bytes"]
+    assert grown["need"]["disk_bytes"] == plain["need"]["disk_bytes"]
+    # The RAM multiplier already pays for a 1.5x expansion, so a 3x target only
+    # doubles the term instead of tripling it on top of that expansion.
+    assert grown["need"]["ram_bytes"] == pytest.approx(2 * plain["need"]["ram_bytes"])
+
+
+def test_automated_training_does_not_double_count_the_checkpoint_it_grows(tmp_path: Path):
+    """Growth the 1.50 multiplier already covers must not reserve RAM twice."""
+    source = _checkpoint(tmp_path / "model")
+    plain = resources.estimate("automated-training", sources = [source], memory = _profile())
+    covered = resources.estimate(
+        "automated-training",
+        sources = [source],
+        memory = _profile(),
+        growth_ratio = resources._RAM_GROWTH_ALREADY_PRICED["automated-training"],
+    )
+    assert covered["need"]["ram_bytes"] == plain["need"]["ram_bytes"]
+    # A shrink direction is not a way to talk the reservation down either.
+    smaller = resources.estimate(
+        "automated-training",
+        sources = [source],
+        memory = _profile(),
+        growth_ratio = 0.5,
+    )
+    assert smaller["need"]["ram_bytes"] == plain["need"]["ram_bytes"]
+
+
 def test_a_scale_stage_reserves_the_peak_of_the_checkpoint_it_writes(tmp_path: Path):
     source = _checkpoint(tmp_path / "model")
     total = resources.checkpoint_bytes(source)

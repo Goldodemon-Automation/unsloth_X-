@@ -21,6 +21,15 @@ host and makes the whole loop testable with two small fakes.
 A failed run is a data point, not a crash: it is recorded, skipped, and the
 round still picks a winner. Only a round in which *every* candidate failed --
 or an interrupt from the caller -- stops the controller.
+
+Stopping early is a caller decision, not an error: ``run(should_stop = ...)`` is
+polled before every run is scheduled and between rounds, and once it says stop
+the controller keeps the rounds it finished, writes a manifest marked
+``cancelled``, and returns normally.
+
+``timeout_seconds`` is carried by the spec and copied into every step spec so an
+adapter can bound its own wait. The controller never enforces it -- adapters own
+the waiting -- and ``0`` means "no engine-level timeout".
 """
 
 from __future__ import annotations
@@ -49,6 +58,8 @@ DEFAULT_EVAL_FRACTION = 0.10
 MIN_STEPS = 1
 MAX_STEPS = 100_000
 MAX_SEED = 2**31 - 1
+DEFAULT_TIMEOUT_SECONDS = 0  # 0 means "the adapter decides", not "time out now"
+MAX_TIMEOUT_SECONDS = 7 * 24 * 60 * 60  # a week; long enough to never be the reason
 
 Progress = Callable[[dict[str, Any]], None]
 Trainer = Callable[[dict[str, Any], str, Optional[Progress]], Mapping[str, Any]]
@@ -322,6 +333,14 @@ def normalise(spec: Mapping[str, Any]) -> dict[str, Any]:
             maximum=MAX_STEPS,
             default=DEFAULT_STEPS_PER_RUN,
         ),
+        # Threaded to the adapter through the step spec; never enforced here.
+        "timeout_seconds": _integer(
+            raw.get("timeout_seconds"),
+            "timeout_seconds",
+            minimum=0,
+            maximum=MAX_TIMEOUT_SECONDS,
+            default=DEFAULT_TIMEOUT_SECONDS,
+        ),
         "benchmark": _benchmark(raw.get("benchmark")),
         "preset": preset_id,
         "training_kwargs": _training_kwargs(raw.get("training_kwargs")),
@@ -407,6 +426,7 @@ def _run_spec(
             "datasets": [dict(entry) for entry in datasets],
             "max_steps": steps,
             "seed": seed,
+            "timeout_seconds": int(normalised.get("timeout_seconds") or 0),
         }
     )
     return spec
@@ -495,6 +515,7 @@ def _plan_from(normalised: Mapping[str, Any]) -> dict[str, Any]:
             * normalised["rounds"],
             "datasets_per_round": normalised["datasets_per_round"],
             "rounds": normalised["rounds"],
+            "timeout_seconds": normalised["timeout_seconds"],
         },
         "presets": presets(),
     }
@@ -512,6 +533,7 @@ def _blocked(
             "total_train_runs": 0,
             "datasets_per_round": int(normalised.get("datasets_per_round") or 0),
             "rounds": 0,
+            "timeout_seconds": int(normalised.get("timeout_seconds") or 0),
         },
         "presets": presets(),
     }
@@ -623,6 +645,13 @@ def _is_interrupt(error: BaseException) -> bool:
     return isinstance(error, (KeyboardInterrupt, SystemExit))
 
 
+def _stop_requested(should_stop: Optional[Callable[[], bool]]) -> bool:
+    """Whether the caller asked to stop. No callback means "keep going"."""
+    if should_stop is None:
+        return False
+    return bool(should_stop())
+
+
 def run(
     spec: Mapping[str, Any],
     *,
@@ -630,8 +659,18 @@ def run(
     progress: Optional[Progress] = None,
     train: Optional[Trainer] = None,
     benchmark: Optional[Benchmarker] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> dict[str, Any]:
-    """Execute the planned rounds and return the best checkpoint of each."""
+    """Execute the planned rounds and return the best checkpoint of each.
+
+    ``should_stop`` is polled before every run is scheduled and between rounds
+    (and before every continuation run). Once it returns ``True`` nothing new
+    starts: the rounds that finished are kept, the manifest is written with
+    ``"cancelled": True``, a ``cancelled`` progress stage is emitted, and the
+    summary is returned normally. A cancellation is a result, not an error, so
+    it never becomes an exception -- while interrupts raised by an adapter (or
+    by the callback itself) still propagate untouched.
+    """
     normalised = normalise(spec)
     planned = _plan_from(normalised)
     if not planned["runnable"]:
@@ -666,9 +705,14 @@ def run(
     failed_runs = 0
     round_records: list[dict[str, Any]] = []
     winners: list[dict[str, Any]] = []
+    cancelled = False
     total_rounds = len(planned["rounds"])
 
     for round_plan in planned["rounds"]:
+        if _stop_requested(should_stop):
+            cancelled = True
+            break
+
         round_index = int(round_plan["index"])
         round_dir = out / f"round-{round_index:02d}"
         round_dir.mkdir(parents = True, exist_ok = True)
@@ -686,6 +730,9 @@ def run(
         order = 0
 
         for entry in round_plan["runs"]:
+            if _stop_requested(should_stop):
+                cancelled = True
+                break
             label = f"run-{int(entry['index']):02d}-{entry['method']}"
             step = {
                 **entry,
@@ -727,6 +774,10 @@ def run(
 
         if not candidates:
             failed_runs += len(failures)
+            if cancelled:
+                # Stopped before this round produced anything: nothing to rank and
+                # nothing to report as a failure, so the round is simply not recorded.
+                break
             raise AutomatedTrainingError(
                 f"Every candidate in round {round_index} failed; the run has no winner."
             )
@@ -748,6 +799,11 @@ def run(
         base_winner = winner
         continued: list[dict[str, Any]] = []
         for continue_index in range(1, normalised["continue_runs"] + 1):
+            if _stop_requested(should_stop):
+                # A cancellation skips the continuation runs; the round still keeps
+                # the winner it already picked.
+                cancelled = True
+                break
             label = f"continue-{continue_index:02d}"
             step = _continue_step(
                 normalised,
@@ -814,14 +870,18 @@ def run(
             label = winner["label"],
             score = winner["score"],
         )
+        if cancelled:
+            break
 
-    best = winners[-1]
-    best_summary = {
-        "output_dir": best["output_dir"],
-        "score": best["score"],
-        "method": best["method"],
-        "round": best["round"],
-    }
+    best_summary: Optional[dict[str, Any]] = None
+    if winners:
+        best = winners[-1]
+        best_summary = {
+            "output_dir": best["output_dir"],
+            "score": best["score"],
+            "method": best["method"],
+            "round": best["round"],
+        }
     totals = {
         "train_runs": train_runs,
         "benchmark_runs": benchmark_runs,
@@ -833,18 +893,31 @@ def run(
         normalised = normalised,
         rounds = round_records,
         winners = winners,
-        best = best_summary,
+        best = best_summary or {},
         totals = totals,
         warnings = warnings,
+        cancelled = cancelled,
     )
 
-    _emit(
-        progress,
-        "done",
-        f"Automated training finished; the best checkpoint is {best['output_dir']} "
-        f"({_format_score(best['score'])}).",
-        best = best_summary,
-    )
+    if cancelled:
+        _emit(
+            progress,
+            "cancelled",
+            f"Automated training cancelled after {len(round_records)} of {total_rounds} rounds; "
+            "no further runs were scheduled.",
+            rounds = len(round_records),
+            total = total_rounds,
+            best = best_summary,
+        )
+    else:
+        best_winner = winners[-1]
+        _emit(
+            progress,
+            "done",
+            f"Automated training finished; the best checkpoint is {best_winner['output_dir']} "
+            f"({_format_score(best_winner['score'])}).",
+            best = best_summary,
+        )
     return {
         "output_dir": str(out),
         "rounds": round_records,
@@ -852,6 +925,7 @@ def run(
         "train_runs": train_runs,
         "benchmark_runs": benchmark_runs,
         "failed_runs": failed_runs,
+        "cancelled": cancelled,
         "warnings": warnings,
         "manifest_path": str(manifest_path),
     }
@@ -980,6 +1054,7 @@ def _write_manifest(
     best: Mapping[str, Any],
     totals: Mapping[str, Any],
     warnings: Sequence[str],
+    cancelled: bool = False,
 ) -> Path:
     from core.advanced import run_manifest
 
@@ -1006,6 +1081,7 @@ def _write_manifest(
             "winners": list(winners),
             "totals": dict(totals),
             "warnings": list(warnings),
+            "cancelled": bool(cancelled),
         }
     )
     return run_manifest.write_manifest(output_dir, manifest)

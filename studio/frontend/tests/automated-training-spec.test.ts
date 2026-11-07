@@ -18,6 +18,7 @@ import {
   isAutomatedCategory,
   isAutomatedMethod,
   normalizeAutomatedTrainingSpec,
+  summarizeAutomatedProgress,
   validateAutomatedTrainingSpec,
 } from "../src/features/labs/lib/automated-training-spec.ts";
 
@@ -155,6 +156,159 @@ test("out-of-range numbers produce one error per field", () => {
   assert.ok(errors.some((error) => error.includes("Seed")));
   assert.ok(errors.some((error) => error.includes("Steps per run")));
   assert.ok(errors.length >= 9);
+});
+
+test("a training stage becomes a headline naming the round", () => {
+  const summary = summarizeAutomatedProgress(
+    {
+      stage: "training",
+      round: 2,
+      message: "Round 2: training run-01-cmt on a, b.",
+      label: "run-01-cmt",
+      method: "cmt",
+    },
+    null,
+  );
+  assert.match(summary.headline, /training/i);
+  assert.match(summary.headline, /round 2/);
+  assert.equal(summary.detail, "Round 2: training run-01-cmt on a, b.");
+  assert.deepEqual(summary.failures, []);
+});
+
+test("a benchmark stage becomes a benchmarking headline", () => {
+  const summary = summarizeAutomatedProgress(
+    { stage: "benchmark", round: 1, label: "run-02-cpt" },
+    null,
+  );
+  assert.match(summary.headline, /benchmark/i);
+  assert.match(summary.headline, /round 1/);
+  // Without a message the label is the best detail available.
+  assert.equal(summary.detail, "run-02-cpt");
+});
+
+test("round-done keeps the round and reports the completed rounds", () => {
+  const summary = summarizeAutomatedProgress(
+    { stage: "round-done", round: 2, total: 3 },
+    null,
+  );
+  assert.match(summary.headline, /round 2/i);
+  assert.match(summary.headline, /complete/i);
+  assert.equal(summary.done, 2);
+  assert.equal(summary.total, 3);
+});
+
+test("done and cancelled are terminal headlines with no bar", () => {
+  const done = summarizeAutomatedProgress(
+    { stage: "done", message: "Automated training finished." },
+    null,
+  );
+  assert.match(done.headline, /finished/i);
+  assert.equal(done.total, null);
+  assert.equal(done.done, 0);
+
+  const cancelled = summarizeAutomatedProgress(
+    { stage: "cancelled", rounds: 1, total: 3 },
+    null,
+  );
+  assert.match(cancelled.headline, /cancelled/i);
+  assert.equal(cancelled.done, 1);
+  assert.equal(cancelled.total, 3);
+});
+
+test("done and total parse from numbers and strings", () => {
+  const summary = summarizeAutomatedProgress(
+    { stage: "round-start", done: "2", total: "4" },
+    null,
+  );
+  assert.equal(summary.done, 2);
+  assert.equal(summary.total, 4);
+
+  const clamped = summarizeAutomatedProgress(
+    { stage: "round-start", done: 9, total: 4 },
+    null,
+  );
+  assert.equal(clamped.done, 4);
+  assert.equal(clamped.total, 4);
+});
+
+test("failures come from result.failed_runs", () => {
+  const summary = summarizeAutomatedProgress(
+    { stage: "done" },
+    {
+      failed_runs: ["run-01-cmt did not train", "run-02-cpt benchmark failed"],
+      warnings: ["no benchmark adapter"],
+    },
+  );
+  assert.deepEqual(summary.failures, [
+    "run-01-cmt did not train",
+    "run-02-cpt benchmark failed",
+  ]);
+});
+
+test("a failed-run count is detailed from the round records", () => {
+  const summary = summarizeAutomatedProgress(
+    { stage: "done" },
+    {
+      failed_runs: 2,
+      rounds: [
+        {
+          index: 1,
+          failures: [
+            {
+              round: 1,
+              label: "run-01-cmt",
+              stage: "train",
+              error: "ValueError: boom",
+            },
+          ],
+        },
+        { index: 2, failures: [] },
+        {
+          index: 3,
+          failures: [
+            {
+              round: 3,
+              label: "continue-01",
+              stage: "benchmark",
+              error: "TimeoutError: slow",
+            },
+          ],
+        },
+      ],
+    },
+  );
+  assert.equal(summary.failures.length, 2);
+  assert.match(summary.failures[0], /run-01-cmt/);
+  assert.match(summary.failures[0], /boom/);
+  assert.match(summary.failures[1], /continue-01/);
+  assert.match(summary.failures[1], /slow/);
+});
+
+test("a count without detail still reports the failures", () => {
+  const summary = summarizeAutomatedProgress(
+    { stage: "done" },
+    { failed_runs: 3 },
+  );
+  assert.deepEqual(summary.failures, ["3 runs failed."]);
+});
+
+test("missing progress is a safe idle summary", () => {
+  for (const progress of [null, undefined]) {
+    const summary = summarizeAutomatedProgress(progress, null);
+    assert.deepEqual(summary, {
+      headline: "Idle",
+      detail: null,
+      done: 0,
+      total: null,
+      failures: [],
+    });
+  }
+});
+
+test("an unknown stage falls back to a neutral headline", () => {
+  const summary = summarizeAutomatedProgress({ stage: "warming-up" }, null);
+  assert.equal(summary.headline, "Automated training");
+  assert.equal(summary.total, null);
 });
 
 test("normalize clamps numbers and coerces unknown values", () => {

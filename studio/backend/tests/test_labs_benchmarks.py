@@ -2,6 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 from pathlib import Path
+import json
+import os
+import time
 
 import pytest
 
@@ -353,3 +356,158 @@ def test_best_record_picks_the_top_and_none_for_empty():
     assert benchmarks.best_record(records)["id"] == "high"
     assert benchmarks.best_record([]) is None
     assert benchmarks.best_record(iter(records))["id"] == "high"
+
+
+# ---------------------------------------------------------------------------
+# Finding a checkpoint's records, including its step folders
+# ---------------------------------------------------------------------------
+
+
+def _age(record: dict, seconds_ago: float) -> Path:
+    """Give one saved record a known mtime so "newest" is not a filesystem race."""
+    path = benchmarks.records_root() / f"{record['id']}.json"
+    stamp = time.time() - seconds_ago
+    os.utime(path, (stamp, stamp))
+    return path
+
+
+def test_newest_for_prefers_the_exact_checkpoint_over_a_newer_step_record(tmp_path, monkeypatch):
+    run = tmp_path / "outputs" / "run"
+    run.mkdir(parents = True)
+    exact = _scored(monkeypatch, tmp_path, run, {"mmlu": 0.50}, "exact")
+    step = _scored(monkeypatch, tmp_path, run / "checkpoint-500", {"mmlu": 0.90}, "step")
+
+    # The step record is newer, so a plain newest-first list would pick it.
+    _age(exact, 120)
+    _age(step, 1)
+
+    assert [item["id"] for item in benchmarks.list_records(limit = 200)] == [
+        step["id"],
+        exact["id"],
+    ]
+    assert benchmarks.newest_for(str(run))["id"] == exact["id"]
+    under = benchmarks.records_under(str(run))
+    assert [item["id"] for item in under] == [step["id"], exact["id"]]
+
+
+def test_records_under_uses_a_directory_boundary_not_a_string_prefix(tmp_path, monkeypatch):
+    run = tmp_path / "out" / "run"
+    run.mkdir(parents = True)
+    here = _scored(monkeypatch, tmp_path, run, {"mmlu": 0.50}, "here")
+    stale_sibling = _scored(
+        monkeypatch, tmp_path, tmp_path / "out" / "run-2", {"mmlu": 0.90}, "sibling"
+    )
+    deeper_sibling = _scored(
+        monkeypatch, tmp_path, tmp_path / "out" / "run-20" / "checkpoint-1", {"mmlu": 0.70}, "sib2"
+    )
+    step = _scored(monkeypatch, tmp_path, run / "checkpoint-500", {"mmlu": 0.60}, "step")
+    nested = _scored(
+        monkeypatch, tmp_path, run / "checkpoint-500" / "export", {"mmlu": 0.40}, "nested"
+    )
+
+    found = {item["id"] for item in benchmarks.records_under(str(run))}
+    assert found == {here["id"], step["id"], nested["id"]}
+    assert stale_sibling["id"] not in found
+    assert deeper_sibling["id"] not in found
+    # A trailing separator and a different separator style name the same folder.
+    assert {item["id"] for item in benchmarks.records_under(str(run) + os.sep)} == found
+
+
+def test_path_key_normalizes_backslashes_separators_and_case():
+    assert benchmarks._path_key("C:\\work\\out\\run\\") == benchmarks._path_key(
+        "C:/work/out/run"
+    )
+    assert benchmarks._path_key("/out/run//") == benchmarks._path_key("/out/run")
+    assert benchmarks._path_key("C:\\work\\out\\run") == os.path.normcase(
+        "C:/work/out/run".replace("/", "\\")
+    ).replace("\\", "/")
+    assert benchmarks._path_key("") == ""
+    assert benchmarks._path_key("/") == "/"
+
+
+def test_records_under_and_newest_for_accept_backslash_paths(tmp_path, monkeypatch):
+    run = tmp_path / "out" / "run"
+    run.mkdir(parents = True)
+    step = _scored(monkeypatch, tmp_path, run / "checkpoint-500", {"mmlu": 0.60}, "step")
+    _age(step, 5)
+    recorded = str(step["artifact"])
+    typed = recorded.replace("/", "\\") + "\\"
+
+    assert benchmarks.newest_for(typed)["id"] == step["id"]
+    assert [item["id"] for item in benchmarks.records_under(typed)] == [step["id"]]
+    # A backslash typed for the step's parent still reaches the step record.
+    parent = str(run).replace("/", "\\")
+    assert benchmarks.newest_for(parent)["id"] == step["id"]
+
+
+def test_records_under_is_newest_first_and_respects_the_limit(tmp_path, monkeypatch):
+    run = tmp_path / "out" / "run"
+    run.mkdir(parents = True)
+    oldest = _scored(monkeypatch, tmp_path, run / "checkpoint-100", {"mmlu": 0.10}, "oldest")
+    newest = _scored(monkeypatch, tmp_path, run / "checkpoint-300", {"mmlu": 0.30}, "newest")
+    middle = _scored(monkeypatch, tmp_path, run / "checkpoint-200", {"mmlu": 0.20}, "middle")
+    _age(oldest, 300)
+    _age(newest, 10)
+    _age(middle, 100)
+
+    assert [item["id"] for item in benchmarks.records_under(str(run))] == [
+        newest["id"],
+        middle["id"],
+        oldest["id"],
+    ]
+    assert [item["id"] for item in benchmarks.records_under(str(run), limit = 2)] == [
+        newest["id"],
+        middle["id"],
+    ]
+    assert benchmarks.newest_for(str(run))["id"] == newest["id"]
+
+
+def test_newest_for_is_none_when_nothing_matches(tmp_path, monkeypatch):
+    monkeypatch.setattr(benchmarks, "outputs", lambda: tmp_path)
+    # No record directory at all yet.
+    assert benchmarks.records_under(str(tmp_path / "out" / "run")) == []
+    assert benchmarks.newest_for(str(tmp_path / "out" / "run")) is None
+
+    elsewhere = _scored(monkeypatch, tmp_path, tmp_path / "out" / "other", {"mmlu": 0.5}, "other")
+    _age(elsewhere, 1)
+    assert benchmarks.records_under(str(tmp_path / "out" / "run")) == []
+    assert benchmarks.newest_for(str(tmp_path / "out" / "run")) is None
+    assert benchmarks.newest_for("") is None
+
+
+def test_records_under_keeps_unscored_records(tmp_path, monkeypatch):
+    """A location query reports where the evidence is, scored or not."""
+    monkeypatch.setattr(benchmarks, "outputs", lambda: tmp_path)
+    directory = benchmarks.records_root()
+    directory.mkdir(parents = True)
+    unscored = {
+        "id": "f" * 32,
+        "artifact": str(tmp_path / "out" / "run" / "checkpoint-500"),
+        "created_at": "2026-01-01T00:00:00Z",
+        "candidate_scores": {},
+    }
+    (directory / f"{unscored['id']}.json").write_text(json.dumps(unscored), encoding = "utf-8")
+
+    found = benchmarks.records_under(str(tmp_path / "out" / "run"))
+    assert [item["id"] for item in found] == [unscored["id"]]
+    assert benchmarks.newest_for(str(tmp_path / "out" / "run"))["id"] == unscored["id"]
+    assert benchmarks._record_score(found[0]) is None
+
+
+def test_records_under_does_not_mutate_the_stored_record(tmp_path, monkeypatch):
+    run = tmp_path / "out" / "run"
+    run.mkdir(parents = True)
+    record = _scored(monkeypatch, tmp_path, run / "checkpoint-500", {"mmlu": 0.60}, "step")
+    path = benchmarks.records_root() / f"{record['id']}.json"
+    before = path.read_bytes()
+
+    first = benchmarks.records_under(str(run))
+    first[0]["artifact"] = "tampered"
+    first[0]["candidate_scores"]["mmlu"] = 99.0
+
+    assert path.read_bytes() == before
+    again = benchmarks.records_under(str(run))
+    assert again[0]["artifact"] == record["artifact"]
+    assert again[0]["candidate_scores"] == {"mmlu": 0.60}
+    assert benchmarks.newest_for(str(run))["artifact"] == record["artifact"]
+

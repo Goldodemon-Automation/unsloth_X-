@@ -151,3 +151,97 @@ def test_update_manifest_merges_into_the_existing_document(tmp_path: Path):
     assert updated["artifacts"]["output_dir"] == str(y)
     assert updated["config"] == {"a": 1}
     assert "updated_at" in updated
+
+
+# ---------------------------------------------------------------------------
+# Automated-training blocks (optional keys in the same document)
+# ---------------------------------------------------------------------------
+
+
+def _automated_manifest(**blocks) -> dict:
+    """A minimal-but-valid automated-training manifest, with optional blocks."""
+    manifest = run_manifest.build_manifest(
+        "automated_training", seeds = {"seed": 3}, config = {"spec": {"rounds": 2}}
+    )
+    manifest.update(
+        {
+            "rounds": [
+                {"index": 1, "datasets": ["a"], "runs": [], "continue": [], "failures": []},
+                {"index": 2, "datasets": ["b"], "runs": [], "continue": [], "failures": []},
+            ],
+            "winners": [{"round": 1, "output_dir": "out/r1", "score": 0.5}],
+            "totals": {"train_runs": 2, "benchmark_runs": 2, "failed_runs": 0, "rounds": 2},
+            "warnings": ["benchmark fell back to loss"],
+        }
+    )
+    manifest.update(blocks)
+    return manifest
+
+
+def test_automated_manifest_with_blocks_has_no_problems():
+    manifest = _automated_manifest()
+    assert run_manifest.validate_manifest(manifest) == []
+    assert manifest["stage"] == "automated_training"
+
+
+def test_automated_rounds_must_be_a_list():
+    problems = run_manifest.validate_manifest(_automated_manifest(rounds = {"index": 1}))
+    assert any("rounds" in problem for problem in problems), problems
+
+
+def test_automated_round_entry_must_be_an_object():
+    manifest = _automated_manifest(rounds = [{"index": 1}, "round-two"])
+    problems = run_manifest.validate_manifest(manifest)
+    assert any("'rounds'" in problem and "entry 1" in problem for problem in problems), problems
+    # The well-formed entry is not reported.
+    assert not any("entry 0" in problem for problem in problems), problems
+
+
+def test_automated_winners_and_warnings_must_be_lists():
+    problems = run_manifest.validate_manifest(
+        _automated_manifest(winners = {"round": 1}, warnings = "one warning")
+    )
+    assert any("winners" in problem for problem in problems), problems
+    assert any("warnings" in problem for problem in problems), problems
+
+
+def test_automated_winner_entry_must_be_an_object():
+    problems = run_manifest.validate_manifest(_automated_manifest(winners = [["out/r1"]]))
+    assert any("'winners'" in problem for problem in problems), problems
+
+
+def test_automated_totals_must_be_an_object():
+    problems = run_manifest.validate_manifest(_automated_manifest(totals = [2, 2, 0]))
+    assert any("totals" in problem for problem in problems), problems
+
+
+def test_manifest_without_the_optional_blocks_stays_clean():
+    # A merge manifest never writes rounds/winners/totals/warnings.
+    manifest = run_manifest.build_manifest("merge", seeds = {"seed": 1})
+    for field in ("rounds", "winners", "totals", "warnings"):
+        assert field not in manifest
+    assert run_manifest.validate_manifest(manifest) == []
+
+
+def test_automated_summary_returns_the_blocks_for_an_automated_manifest():
+    manifest = _automated_manifest()
+    summary = run_manifest.automated_summary(manifest)
+    assert summary is not None
+    assert set(summary) == {"rounds", "winners", "totals", "warnings"}
+    assert [entry["index"] for entry in summary["rounds"]] == [1, 2]
+    assert summary["winners"][0]["output_dir"] == "out/r1"
+    assert summary["totals"]["train_runs"] == 2
+    assert summary["warnings"] == ["benchmark fell back to loss"]
+    # Pure and non-aliasing: editing the summary leaves the manifest alone.
+    summary["rounds"].append({"index": 3})
+    assert len(manifest["rounds"]) == 2
+
+
+def test_automated_summary_is_none_for_a_merge_manifest():
+    manifest = run_manifest.build_manifest("merge", seeds = {"seed": 1})
+    assert run_manifest.automated_summary(manifest) is None
+    assert run_manifest.automated_summary(None) is None
+    # A rounds block alone is enough, even with an unexpected stage spelling.
+    stray = run_manifest.build_manifest("merge")
+    stray["rounds"] = []
+    assert run_manifest.automated_summary(stray) is not None

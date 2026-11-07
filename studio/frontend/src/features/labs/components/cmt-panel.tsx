@@ -27,13 +27,15 @@ import {
   runCmt,
 } from "../api";
 import {
-  applyCmtPreset,
-  CMT_PRESET_BASELINE,
-  cmtPresetForValues,
-  cmtPresetValues,
   CMT_PRESETS,
+  CMT_PRESET_BASELINE,
   type CmtPreset,
   type CmtPresetValues,
+  applyCmtPreset,
+  cmtDatasetWarning,
+  cmtPresetForValues,
+  cmtPresetValues,
+  recommendedCategory,
 } from "../lib/cmt-presets";
 import { HubPickerField, type PickerMode } from "./hub-picker-field";
 import { LabsPanel } from "./labs-panel";
@@ -190,6 +192,12 @@ export function CmtPanel(): ReactElement {
       learningRate,
     }),
   );
+
+  // Only rows with a path reach the spec, so a blank row never counts towards
+  // the backend's 2-8 dataset window.
+  const filledDatasets = rows.filter((row) => row.path.trim() !== "").length;
+  const datasetWarning = cmtDatasetWarning(filledDatasets);
+  const categoryHint = recommendedCategory(activePreset?.id);
 
   const applyPreset = (preset: CmtPreset) => {
     const values = cmtPresetValues(preset);
@@ -431,9 +439,20 @@ export function CmtPanel(): ReactElement {
 
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-ui-10 uppercase tracking-[0.05em] text-muted-foreground">
-            {t("labs.cmt.datasets")}
-          </span>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="text-ui-10 uppercase tracking-[0.05em] text-muted-foreground">
+              {t("labs.cmt.datasets")}
+            </span>
+            {/* A hint only: the preset suggests a category, it never sets one. */}
+            {categoryHint ? (
+              <span
+                className="rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-ui-9 text-muted-foreground"
+                title="A hint only: this preset suits this kind of text, and your dataset category is left as it is."
+              >
+                Recommended category: {categoryHint}
+              </span>
+            ) : null}
+          </div>
           <Button
             size="sm"
             variant="outline"
@@ -504,6 +523,15 @@ export function CmtPanel(): ReactElement {
             </div>
           ))}
         </div>
+        {datasetWarning ? (
+          <p className="flex items-start gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-ui-10 text-amber-700 dark:text-amber-300">
+            <HugeiconsIcon
+              icon={Alert02Icon}
+              className="mt-0.5 size-3 shrink-0"
+            />
+            <span>{datasetWarning}</span>
+          </p>
+        ) : null}
         <p className="text-ui-10 text-muted-foreground/70">
           {t("labs.cmt.datasetHint")}
         </p>
@@ -562,7 +590,7 @@ export function CmtPanel(): ReactElement {
           size="sm"
           variant="outline"
           onClick={() => void makePlan()}
-          disabled={planning || running}
+          disabled={planning || running || datasetWarning !== null}
         >
           {planning ? (
             <Spinner />
@@ -574,7 +602,9 @@ export function CmtPanel(): ReactElement {
         <Button
           size="sm"
           onClick={() => void start()}
-          disabled={!plan?.runnable || running || planning}
+          disabled={
+            !plan?.runnable || running || planning || datasetWarning !== null
+          }
         >
           {running ? (
             <Spinner />

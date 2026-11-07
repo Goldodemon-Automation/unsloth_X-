@@ -220,6 +220,103 @@ def list_records(
     return records
 
 
+# ---------------------------------------------------------------------------
+# Finding a checkpoint's records
+# ---------------------------------------------------------------------------
+#
+# A benchmark can name its artifact exactly (the merged model folder) or a run
+# folder whose steps are the real checkpoints. Those two cases need one query
+# that answers "what is the latest evidence for this directory?", so the path is
+# reduced to a comparable key once and then compared as a prefix. Nothing here
+# touches the filesystem beyond the record directory that list_records reads,
+# and nothing here decides whether a record is scored: a location query and a
+# usefulness question are different questions.
+
+
+def _path_key(value: str) -> str:
+    """One comparable form for a checkpoint path.
+
+    Backslashes become ``/`` so a record written on Windows still matches a
+    directory typed with the other separator, trailing separators are removed so
+    ``/out/run/`` and ``/out/run`` name the same folder, and ``os.path.normcase``
+    applies the platform's own rule (lowercase on Windows, identity elsewhere).
+    ``normcase`` turns the slashes back into backslashes on Windows, so the result
+    ends with one more ``/`` pass; the prefix test in ``records_under`` can then
+    always use a forward slash. No filesystem access happens here.
+    """
+    text = str(value or "").replace("\\", "/")
+    stem = text.rstrip("/")
+    if not stem:
+        stem = "/" if text else ""
+    return os.path.normcase(stem).replace("\\", "/")
+
+
+def records_under(directory: str, *, limit: int = 200) -> list[dict[str, Any]]:
+    """Newest-first records whose checkpoint is ``directory`` or sits under it.
+
+    A record matches when its ``artifact`` key equals the directory key or starts
+    with that key plus a ``/``. The separator is what keeps a sibling of the same
+    name out: a query for ``/out/run`` must not return ``/out/run-2``. Ordering is
+    the same newest-first order ``list_records`` uses (record file mtime,
+    descending), and the same cap applies; the input record is never written
+    back, only a copy read for this call is returned.
+
+    Unscored records are *not* filtered here. This answers where a checkpoint's
+    evidence lives, not whether the evidence has a usable score; a caller that
+    cares about scores ranks or checks them itself.
+    """
+    wanted = _path_key(directory)
+    if not wanted:
+        return []
+    prefix = wanted if wanted.endswith("/") else wanted + "/"
+    records_dir = records_root()
+    if not records_dir.is_dir():
+        return []
+    try:
+        files = sorted(
+            records_dir.glob("*.json"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return []
+    records: list[dict[str, Any]] = []
+    for path in files:
+        if len(records) >= max(1, min(int(limit), 200)):
+            break
+        record = _read(path)
+        if record is None or not isinstance(record.get("id"), str):
+            continue
+        key = _path_key(str(record.get("artifact") or ""))
+        if not key or (key != wanted and not key.startswith(prefix)):
+            continue
+        record.setdefault("created_at", "")
+        records.append(record)
+    return records
+
+
+def newest_for(directory: str, *, limit: int = 200) -> Optional[dict[str, Any]]:
+    """The record that best answers for ``directory``, or ``None``.
+
+    The rule is exact path first, then newest under the directory. A record whose
+    ``artifact`` *is* the directory wins over any record under a step folder
+    beneath it, even a newer one, because it is the benchmark of that checkpoint
+    itself. Only when no exact record exists does the newest record under the
+    directory (``records_under``) stand in: the ``checkpoint-500`` case, where the
+    eval scored a step and never the run folder.
+
+    Unscored records are not filtered here either; the caller decides whether a
+    found record is usable evidence.
+    """
+    if not _path_key(directory):
+        return None
+    exact = list_records(limit = limit, artifact = str(directory))
+    if exact:
+        return exact[0]
+    under = records_under(str(directory), limit = limit)
+    return under[0] if under else None
+
+
 def delete_record(record_id: str) -> bool:
     if not _ID.match(str(record_id)):
         raise ValueError(f"Invalid benchmark record id: {record_id!r}")

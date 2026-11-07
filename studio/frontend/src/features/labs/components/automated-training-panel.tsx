@@ -17,7 +17,13 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useCallback, useEffect, useState } from "react";
+import {
+  type ReactElement,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   type AutomatedPreset,
   type AutomatedTrainingPlan,
@@ -41,6 +47,7 @@ import {
   defaultAutomatedTrainingSpec,
   isAutomatedCategory,
   isAutomatedMethod,
+  summarizeAutomatedProgress,
   validateAutomatedTrainingSpec,
 } from "../lib/automated-training-spec";
 import { HubPickerField, type PickerMode } from "./hub-picker-field";
@@ -64,6 +71,9 @@ const METHOD_LABEL: Record<AutomatedMethod, TranslationKey> = {
 
 const DEFAULT_SPEC = defaultAutomatedTrainingSpec();
 
+/** Failures past this many are collapsed behind an "and N more" toggle. */
+const FAILURE_PREVIEW = 5;
+
 interface DatasetRow {
   id: string;
   path: string;
@@ -80,13 +90,15 @@ interface AutomatedTrainingBest {
   round?: number;
 }
 
-interface AutomatedTrainingResult {
+interface AutomatedTrainingResult extends Record<string, unknown> {
   output_dir?: string;
   best?: AutomatedTrainingBest | null;
   train_runs?: number;
   benchmark_runs?: number;
   failed_runs?: number;
   warnings?: string[];
+  rounds?: unknown[];
+  cancelled?: boolean;
 }
 
 function newRow(): DatasetRow {
@@ -106,17 +118,17 @@ function sleep(ms: number): Promise<void> {
 
 async function waitForAutomatedTraining(
   job: LabsJob,
-  onProgress: (message: string) => void,
+  onProgress: (progress: Record<string, unknown> | null) => void,
 ): Promise<AutomatedTrainingResult> {
   for (let attempt = 0; attempt < 21_600; attempt += 1) {
     const current = await fetchJob(job.job_id);
     const progress = current.progress;
     onProgress(
-      String(
-        progress?.message ??
-          progress?.stage ??
-          (current.status === "running" ? "Running…" : current.status),
-      ),
+      progress
+        ? { ...progress }
+        : current.status === "running"
+          ? { stage: "queued" }
+          : null,
     );
     if (current.status === "completed") {
       return (current.result ?? {}) as AutomatedTrainingResult;
@@ -161,9 +173,14 @@ export function AutomatedTrainingPanel(): ReactElement {
   const [plan, setPlan] = useState<AutomatedTrainingPlan | null>(null);
   const [planning, setPlanning] = useState(false);
   const [running, setRunning] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
+  const [progress, setProgress] = useState<Record<string, unknown> | null>(
+    null,
+  );
   const [result, setResult] = useState<AutomatedTrainingResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [failuresExpanded, setFailuresExpanded] = useState(false);
+  // A ref, not the state flag: two clicks in one tick both see running === false.
+  const inFlight = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -292,29 +309,39 @@ export function AutomatedTrainingPanel(): ReactElement {
   };
 
   const start = async () => {
-    if (!plan?.runnable) return;
+    if (inFlight.current || !plan?.runnable) return;
+    inFlight.current = true;
     setRunning(true);
     setError(null);
     setResult(null);
+    setProgress(null);
+    setFailuresExpanded(false);
     try {
       const spec = buildSpec();
       const job = await runAutomatedTraining(spec);
-      setStatus(t("labs.automated.starting"));
-      const finished = await waitForAutomatedTraining(job, setStatus);
+      setProgress({ stage: "queued", message: t("labs.automated.starting") });
+      const finished = await waitForAutomatedTraining(job, setProgress);
+      setProgress(null);
       setResult(finished);
       toast.success(t("labs.automated.completed"));
     } catch (failure) {
       const message =
         failure instanceof Error ? failure.message : t("labs.automated.failed");
+      setProgress(null);
       setError(message);
       toast.error(t("labs.automated.failed"), { description: message });
     } finally {
+      inFlight.current = false;
       setRunning(false);
-      setStatus(null);
     }
   };
 
   const presetList = presets.length > 0 ? presets : (plan?.presets ?? []);
+  const summary = summarizeAutomatedProgress(progress, result);
+  const visibleFailures = failuresExpanded
+    ? summary.failures
+    : summary.failures.slice(0, FAILURE_PREVIEW);
+  const showSummary = running || progress !== null || result !== null;
 
   return (
     <LabsPanel
@@ -575,10 +602,65 @@ export function AutomatedTrainingPanel(): ReactElement {
         </span>
       </div>
 
-      {status ? (
-        <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-muted/30 px-3 py-2 text-ui-11 text-muted-foreground">
-          <Spinner />
-          {status}
+      {showSummary ? (
+        <div className="flex flex-col gap-2 rounded-lg border border-border/70 bg-muted/30 px-3 py-2">
+          <div className="flex items-center gap-2 text-ui-11">
+            {running ? <Spinner /> : null}
+            <span className="font-medium text-foreground">
+              {summary.headline}
+            </span>
+            {summary.total !== null && summary.total > 0 ? (
+              <span className="ml-auto font-mono text-ui-10 text-muted-foreground">
+                {summary.done}/{summary.total}
+              </span>
+            ) : null}
+          </div>
+          {summary.detail ? (
+            <p className="text-ui-11 text-muted-foreground">{summary.detail}</p>
+          ) : null}
+          {summary.total !== null && summary.total > 0 ? (
+            // biome-ignore lint/a11y/useFocusableInteractive: a read-only progress indicator must not add a keyboard stop
+            <div
+              className="h-1.5 w-full overflow-hidden rounded-full bg-border/60"
+              role="progressbar"
+              aria-label={summary.headline}
+              aria-valuemin={0}
+              aria-valuemax={summary.total}
+              aria-valuenow={summary.done}
+            >
+              <div
+                className="h-full rounded-full bg-emerald-500 transition-[width] duration-300"
+                style={{
+                  width: `${Math.min(100, (summary.done / summary.total) * 100)}%`,
+                }}
+              />
+            </div>
+          ) : null}
+          {visibleFailures.length > 0 ? (
+            <ul className="flex flex-col gap-1 text-ui-10 text-destructive">
+              {visibleFailures.map((failure) => (
+                <li key={failure} className="flex gap-1.5">
+                  <HugeiconsIcon
+                    icon={Alert02Icon}
+                    className="mt-0.5 size-3 shrink-0"
+                  />
+                  <span className="break-words">{failure}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {summary.failures.length > FAILURE_PREVIEW ? (
+            <button
+              type="button"
+              className="self-start text-ui-10 text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+              onClick={() => setFailuresExpanded((current) => !current)}
+              aria-expanded={failuresExpanded}
+            >
+              {failuresExpanded
+                ? "Show fewer"
+                : `and ${summary.failures.length - FAILURE_PREVIEW} more`}
+            </button>
+          ) : null}
         </div>
       ) : null}
       {error ? (

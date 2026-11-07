@@ -9,10 +9,14 @@ import type { CmtSpec } from "../src/features/labs/api";
 const {
   CMT_PRESETS,
   CMT_PRESET_BASELINE,
+  CMT_MAX_DATASETS,
+  CMT_MIN_DATASETS,
   applyCmtPreset,
+  cmtDatasetWarning,
   cmtPresetById,
   cmtPresetForValues,
   cmtPresetValues,
+  recommendedCategory,
 } = await import("../src/features/labs/lib/cmt-presets.ts");
 
 const PRESET_FIELDS = new Set([
@@ -151,4 +155,59 @@ test("cmtPresetForValues finds the matching preset and rejects custom values", (
     cmtPresetForValues({ ...CMT_PRESET_BASELINE, max_steps: 7 }),
     null,
   );
+});
+
+test("the dataset window matches the backend's 2-8 bound", () => {
+  assert.equal(CMT_MIN_DATASETS, 2);
+  assert.equal(CMT_MAX_DATASETS, 8);
+});
+
+test("cmtDatasetWarning is silent for every count inside the window", () => {
+  assert.equal(cmtDatasetWarning(2), null);
+  assert.equal(cmtDatasetWarning(8), null);
+  for (let count = CMT_MIN_DATASETS; count <= CMT_MAX_DATASETS; count += 1) {
+    assert.equal(cmtDatasetWarning(count), null, `count ${count}`);
+  }
+});
+
+test("cmtDatasetWarning names the minimum when too few datasets are filled", () => {
+  const one = cmtDatasetWarning(1);
+  assert.equal(typeof one, "string");
+  assert.ok(one?.includes("at least 2"), one ?? "");
+  assert.ok(one?.includes("1 "), one ?? "");
+  const none = cmtDatasetWarning(0);
+  assert.ok(none?.includes("at least 2"), none ?? "");
+  assert.ok(none?.includes("0 "), none ?? "");
+  // A NaN count is not inside the window either.
+  assert.ok(cmtDatasetWarning(Number.NaN)?.includes("at least 2"));
+});
+
+test("cmtDatasetWarning names the maximum when too many datasets are filled", () => {
+  const nine = cmtDatasetWarning(9);
+  assert.equal(typeof nine, "string");
+  assert.ok(nine?.includes("at most 8"), nine ?? "");
+  assert.ok(nine?.includes("9 "), nine ?? "");
+  assert.equal(cmtDatasetWarning(9), cmtDatasetWarning(9));
+});
+
+test("recommendedCategory maps the four presets to their data kind", () => {
+  assert.equal(recommendedCategory("quick-check"), null);
+  assert.equal(recommendedCategory("balanced"), null);
+  assert.equal(recommendedCategory("code-heavy"), "code");
+  assert.equal(recommendedCategory("reasoning-heavy"), "reasoning");
+});
+
+test("recommendedCategory ignores unknown, empty and missing preset ids", () => {
+  assert.equal(recommendedCategory("bogus"), null);
+  assert.equal(recommendedCategory(""), null);
+  assert.equal(recommendedCategory(undefined), null);
+  assert.equal(recommendedCategory(null), null);
+  for (const preset of CMT_PRESETS) {
+    const category = recommendedCategory(preset.id);
+    assert.ok(
+      category === null ||
+        ["code", "syntax", "reasoning", "general"].includes(category),
+      `unexpected category ${String(category)} for ${preset.id}`,
+    );
+  }
 });

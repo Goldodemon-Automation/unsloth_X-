@@ -338,3 +338,47 @@ for RAM, and disk would size from `growth_ratio` the same way, but that is a sep
 decision. The front-trim decision recorded under Performance needs
 `test_end_to_end_webhook.py` relaxed or `RetainedSeries` moved to a deque, and the
 measured saving does not justify either.
+
+## Automated training (this pass)
+
+Scope: the Labs "Automated training" experiment, its presets, its ranking
+helper and the two frontend panels. Branch `x8-automated-training`, commit
+`ea6c628e5`, pushed to the `xminus` remote and open as PR #4 against
+`x8-labs-io-hardening` (stacked on the hardening PR #3).
+
+Files this pass owns:
+
+- `studio/backend/core/labs/automated_training.py` — the controller: `normalise`,
+  `plan`, `run`. It samples 2-8 datasets per round by category, schedules 2-72
+  runs across CMT/CPT/FFT, benchmarks each candidate, keeps the best,
+  continue-trains that winner 2-72 more times and repeats for N rounds. Planning
+  never loads a weight; execution takes injected `train`/`benchmark` adapters.
+  Every run's `spec` is CMT-compatible (`source`, `mode: "cpt"`, `datasets`,
+  `max_steps`, `seed`) with `training_kwargs` flattened underneath.
+- `studio/backend/routes/labs.py` — `GET /automated/presets`,
+  `POST /automated/plan`, `POST /automated/run`, all behind
+  `_gate("automated-training")`. `_train_adapter` sends CMT to `cmt.run` and
+  CPT/FFT to `get_training_backend().start_training`; `_benchmark_adapter`
+  reuses Benchmark-studio records (mean candidate score).
+- `studio/backend/core/advanced/resources.py` — an `automated-training` cost row
+  (GPU-only). Without it the run lease failed with `Unknown job kind`.
+- `studio/backend/core/labs/benchmarks.py` — `rank_records`/`best_record`, a
+  pure descending-score ranking with a stable tie rule.
+- `studio/backend/core/labs/cmt.py` — `PRESETS` (quick-check, balanced,
+  code-heavy, reasoning-heavy) merged in `_normalise`; explicit fields win.
+- `studio/frontend/src/features/labs/components/automated-training-panel.tsx`
+  and `lib/automated-training-spec.ts`; `components/cmt-panel.tsx` and
+  `lib/cmt-presets.ts`; `api.ts`, `labs-page.tsx`, `en.ts`.
+- `docs/labs.md`, `README.md`.
+
+Verification: 226 backend tests pass across the Labs + Advanced sweep (16 routes,
+30 engine, 36 CMT presets, 9 cost-model rows), and the frontend is green on
+`npm run typecheck`, `npm run i18n:check`, 9 CMT-preset tests and 12 automated
+spec tests.
+
+Known seams, in priority order: CPT/FFT is fire-and-forget unless the adapter
+waits for the training backend; CPT/FFT needs `training_kwargs` in the spec;
+benchmark scoring only sees records that already exist on disk. Round two
+(nine agents) addresses waiting/cancellation, the cost note, subfolder record
+lookup, panel progress UX, CMT dataset validation, manifest validation, docs and
+strict locale parity.

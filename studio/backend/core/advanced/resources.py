@@ -70,6 +70,16 @@ _COST_MODEL: dict[str, dict[str, Any]] = {
 }
 
 
+# Rows whose ``ram`` multiplier was already sized against an *expanded*
+# checkpoint, and how big that expansion is. Automated training charges the same
+# 1.50 the CMT row uses, and CMT's peak includes the expanded copy of the model,
+# so a caller-supplied growth_ratio must not be multiplied into that term as-is:
+# the first 1.5x of growth is already paid for, and scaling the whole term again
+# would reserve the expanded checkpoint twice. Only growth beyond this baseline
+# adds RAM, while vram and disk stay priced off the source checkpoint.
+_RAM_GROWTH_ALREADY_PRICED: dict[str, float] = {"automated-training": 1.5}
+
+
 class ResourceDenied(RuntimeError):
     """The request cannot be satisfied even on an idle machine."""
 
@@ -189,7 +199,10 @@ def estimate(
     checkpoint size when tensor sizes cannot be read. ``memory`` supplies the
     host profile; a missing or empty profile triggers a probe. On a host with
     no GPUs, CPU-capable jobs have zero estimated VRAM; GPU-only jobs retain
-    their VRAM estimate and receive a note.
+    their VRAM estimate and receive a note. ``growth_ratio`` scales the RAM term
+    for jobs whose peak grows with the checkpoint they produce; for rows whose
+    multiplier already includes one expanded checkpoint only the growth above
+    that baseline counts, so the expansion is never reserved twice.
 
     Raises ValueError for an unknown job kind.
     """
@@ -204,6 +217,10 @@ def estimate(
     gpus = profile.get("gpus") or []
     cpu_capable = bool(model.get("cpu"))
     grown = 1.0 if growth_ratio is None else max(1.0, float(growth_ratio))
+    # Sub-baseline growth leaves the RAM term alone; only the excess above the
+    # baseline the multiplier was written for scales it any further.
+    priced = float(_RAM_GROWTH_ALREADY_PRICED.get(kind, 1.0))
+    ram_growth = grown if priced <= 1.0 else max(1.0, grown / priced)
 
     notes: list[str] = []
     vram = (
@@ -222,10 +239,16 @@ def estimate(
             ram = int(total * 0.25)
             notes.append("Tensor sizes were not readable; RAM is estimated from the model size.")
     else:
-        ram = int(total * grown * float(model.get("ram", 0.0)))
+        ram = int(total * ram_growth * float(model.get("ram", 0.0)))
     disk = int(total * float(model.get("disk", 0.0)))
     if output_dir is not None and total == 0:
         disk = 0
+    if kind == "automated-training":
+        notes.append(
+            "Automated training runs its planned training runs one at a time, so this is "
+            "the peak of its largest single run plus the benchmark's resident model, not "
+            "the sum of every planned run."
+        )
     if model.get("gpu") and not gpus:
         notes.append(
             "This stage needs a GPU; the host reported none. It can be planned but not run here."

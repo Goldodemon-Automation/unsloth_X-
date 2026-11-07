@@ -44,7 +44,7 @@ not copy the list into the frontend.
 | `manifest-viewer` | feature | The raw `run_manifest.json` beside an artifact |
 | `scale-from-artifact` | feature | Hand one artifact's path to the Scaler |
 | `training-continuation` | feature | Make an artifact the Training model in one click |
-| `automated-training` | studio | The Automated training loop: sample datasets, run CMT/CPT/FFT trainings, benchmark each and continue the best |
+| `automated-training` | studio | The Automated training loop: sample datasets, run CMT/CPT/FFT trainings one at a time, benchmark each, continue the best, and record cancellations and timeouts in the manifest |
 
 Each row in the Settings tab toggles one of these. A feature that is off says so
 on its own page (`LabsOffCard`) rather than disappearing.
@@ -66,17 +66,34 @@ same convention the post-training Regression Guard uses.
 `core/labs/automated_training.py` is the loop that searches instead of asking
 for one setting. Each round it:
 
-1. Samples 2–8 datasets by category: code, syntax or reasoning.
-2. Runs 2–72 training runs across CMT, CPT and FFT.
-3. Benchmarks every output with the Benchmark studio.
-4. Keeps the best checkpoint, continues training it 2–72 more times, and
-   repeats for N rounds.
+1. Samples 2–8 datasets from the pool, balanced by category: code, syntax,
+   reasoning or general.
+2. Spreads 2–72 training runs over those datasets and the selected methods
+   (CMT, CPT and FFT, where FFT means full fine-tuning).
+3. Trains and benchmarks every run.
+4. Picks the round winner, continue-trains it 2–72 more times, re-benchmarks
+   each continuation, and keeps the best checkpoint of the round.
+5. Repeats for 1–12 rounds.
 
 Every number is user-selectable, and presets exist for a quick first run, so
 those ranges are defaults rather than a hard-coded plan. The loop stops at the
 round count the user gave; it does not decide on its own that the search is
-done. It writes the usual `run_manifest.json` and benchmark records, so an
-abandoned round is still traceable.
+done.
+
+Planning is config arithmetic only. `plan()` validates the spec, samples with a
+seeded RNG (`seed`, default 3407) and lays out every round, dataset and run
+without loading a weight, touching a GPU or the network, so the same spec always
+produces the same rounds. `projection.total_train_runs` is
+`(runs_per_round + continue_runs) * rounds`.
+
+Execution takes the trainer and benchmark as callables; the real adapters are
+imported lazily in `routes/labs.py`. `POST /api/labs/automated/run` starts one
+job, which takes one resource lease on the request thread and runs the whole
+loop on a single background thread. Runs execute one at a time, never in
+parallel, so that one lease covers the entire search rather than a single run.
+
+`presets()` returns four starting specs — `quick-check`, `balanced`, `deep` and
+`reasoning-heavy` — each a base layer that every value the user wrote overrides.
 
 The three methods are not interchangeable, and the loop says so:
 
@@ -84,13 +101,46 @@ The three methods are not interchangeable, and the loop says so:
   it needs no extra trainer settings.
 * **CPT** and **FFT** need `training_kwargs` for the dataset, method and
   parameters the trainer expects, because they post a normal training start
-  rather than the CMT route.
+  rather than the CMT route. The adapter then waits for that job to finish
+  (`wait_for_completion`, default true) and bounds the wait with
+  `timeout_seconds`, which defaults to 6 hours when the spec leaves it at 0.
+  Setting `wait_for_completion: false` restores the fire-and-forget behaviour,
+  where the adapter returns as soon as the backend accepts the job.
 
 A category that cannot be sampled, or a method whose `training_kwargs` are
 missing, is reported rather than skipped silently. The Best-pick helpers in
 `benchmarks.py` (`_record_score`, `rank_records`, `best_record`) are the pure
 rule it uses to choose between outputs: the higher mean candidate score wins,
 unscored records go last, and ties keep the input order.
+
+### Cancellation and timeouts
+
+`run(..., should_stop=...)` polls the callback between rounds, before every
+candidate run and before every continuation run. Once it returns `True` nothing
+new starts: the continuation runs of the current round are skipped, the rounds
+that already finished are kept, and the manifest is written with
+`"cancelled": true` and a final `cancelled` progress stage instead of `done`.
+A cancellation is a result, not an error — the call returns normally, and a
+`KeyboardInterrupt` or `SystemExit` raised by an adapter still propagates. The
+route does not pass a stop callback today, so a job started from the page runs
+to its round count; the hook is what a cancel button would use.
+
+Timeouts belong to the adapter, not the engine. The engine carries
+`timeout_seconds` (0–604800, default 0 meaning "the adapter decides") into every
+step spec and into `plan()["projection"]`, and never enforces it. The CPT/FFT
+adapter turns a wait past its bound into an error, which the engine records as a
+failed run: the round keeps its other candidates and still picks a winner. Only
+a round in which every candidate failed raises.
+
+### What a round writes
+
+`run_manifest.json` in the output directory, with the ordinary manifest fields
+plus `spec`, `rounds` (per-round datasets, runs, continuations, failures and
+winner), `winners`, `totals` (`train_runs`, `benchmark_runs`, `failed_runs`,
+`rounds`), `warnings` and `cancelled`. `write_manifest` also stamps the NRC-3
+notice (`LICENSE-NRC-3.txt`) beside it. Each run and continuation writes into
+its own `round-NN/run-NN-<method>` or `round-NN/continue-NN` folder, so a failed
+or abandoned round is still traceable.
 
 ## CMT is one job and one experiment
 

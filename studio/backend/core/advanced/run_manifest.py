@@ -38,7 +38,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 MANIFEST_NAME = "run_manifest.json"
 SCHEMA_VERSION = 2
@@ -58,6 +58,15 @@ REQUIRED_FIELDS = (
     "artifacts",
     "events",
 )
+
+# The automated-training engine records its own history in the same document:
+# the rounds it ran, the checkpoint each round picked, the run totals and the
+# warnings it collected. These keys are optional -- no other stage writes them --
+# so validation only inspects them when they are present.
+AUTOMATED_TRAINING_STAGE = "automated-training"
+AUTOMATED_LIST_FIELDS = ("rounds", "winners", "warnings")
+AUTOMATED_ENTRY_FIELDS = ("rounds", "winners")
+AUTOMATED_SUMMARY_FIELDS = ("rounds", "winners", "totals", "warnings")
 
 _HASH_CHUNK = 4 * 1024 * 1024
 
@@ -454,7 +463,70 @@ def validate_manifest(manifest: Mapping[str, Any] | None) -> list[str]:
     env = manifest.get("environment")
     if isinstance(env, Mapping) and not env.get("python"):
         problems.append("environment.python is missing; the run cannot be reproduced.")
+    problems.extend(_automated_block_problems(manifest))
     return problems
+
+
+def _automated_block_problems(manifest: Mapping[str, Any]) -> list[str]:
+    """Type-check the optional automated-training blocks, when they are present.
+
+    A missing block is not a problem: a merge, split or plain train manifest is
+    complete without them. A block of the wrong shape is, because the reader that
+    walks ``rounds`` or sums ``totals`` assumes it.
+    """
+    problems: list[str] = []
+    for field in AUTOMATED_LIST_FIELDS:
+        if field in manifest and not isinstance(manifest.get(field), list):
+            problems.append(f"Field {field!r} must be a list.")
+    if "totals" in manifest and not isinstance(manifest.get("totals"), Mapping):
+        problems.append("Field 'totals' must be an object.")
+    for field in AUTOMATED_ENTRY_FIELDS:
+        entries = manifest.get(field)
+        if not isinstance(entries, list):
+            continue
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, Mapping):
+                problems.append(f"Field {field!r} entry {index} must be an object.")
+    return problems
+
+
+def _is_automated_manifest(manifest: Mapping[str, Any]) -> bool:
+    """True when the document came from the automated-training engine.
+
+    The engine's stage is spelled ``automated_training`` while the resource kind
+    is ``automated-training``; both spellings are accepted. A manifest carrying a
+    ``rounds`` block is treated as automated even when the stage says otherwise,
+    because that block only has one producer.
+    """
+    if "rounds" in manifest:
+        return True
+    stage = manifest.get("stage")
+    if not isinstance(stage, str):
+        return False
+    return stage.strip().replace("_", "-").lower() == AUTOMATED_TRAINING_STAGE
+
+
+def automated_summary(manifest: Mapping[str, Any] | None) -> Optional[dict[str, Any]]:
+    """The automated-training blocks of a manifest, or ``None`` for other stages.
+
+    Pure: reads only the mapping it is given, and hands back copies so a caller
+    cannot mutate the manifest through the summary.
+    """
+    if not isinstance(manifest, Mapping) or not _is_automated_manifest(manifest):
+        return None
+    summary: dict[str, Any] = {}
+    for field in AUTOMATED_SUMMARY_FIELDS:
+        value = manifest.get(field)
+        if isinstance(value, list):
+            summary[field] = list(value)
+        elif isinstance(value, Mapping):
+            summary[field] = dict(value)
+        elif field in manifest:
+            # Keep the wrong value visible; ``validate_manifest`` reports the shape.
+            summary[field] = value
+        else:
+            summary[field] = {} if field == "totals" else []
+    return summary
 
 
 def to_artifact_list(paths: Iterable[str | Path], root: str | Path) -> list[dict[str, Any]]:

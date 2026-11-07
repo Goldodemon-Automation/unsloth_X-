@@ -834,9 +834,142 @@ def _automated_source(spec: dict[str, Any]) -> str:
 # Fields the engine's ``_run_spec`` adds to a step's spec around the user's
 # training kwargs. They describe the run, not the Training backend request, so
 # the CPT/FFT adapter strips them before forwarding the rest as backend kwargs.
+# ``timeout_seconds`` is the engine's own budget for one run, which the adapter
+# honours while waiting rather than passing to the worker.
 _RESERVED_TRAINING_KEYS = frozenset(
-    {"source", "mode", "datasets", "max_steps", "seed", "training_kwargs"}
+    {"source", "mode", "datasets", "max_steps", "seed", "training_kwargs", "timeout_seconds"}
 )
+
+# Spec keys that tell the adapter *how* to wait, not what to train. Popped off
+# the kwargs before they reach ``start_training``, which would reject them.
+_WAIT_CONTROL_KEYS = ("wait_for_completion", "timeout_seconds")
+
+# The Training backend runs each job in its own subprocess, so a ``True`` from
+# ``start_training`` only means the job was accepted. These bound the wait for
+# that subprocess: how often to ask, and how long to keep asking. Six hours is
+# generous for the short CPT/FFT runs the automated engine plans, and a spec can
+# override it with ``timeout_seconds``.
+_AUTOMATED_POLL_SECONDS = 2.0
+_AUTOMATED_TRAIN_TIMEOUT_S = 6 * 60 * 60
+
+# The progress fields the adapter reads on each poll. Everything else the backend
+# reports (loss curves, offload stats) is the Training page's business.
+_TRAINING_PROGRESS_FIELDS = (
+    "is_training",
+    "is_completed",
+    "error",
+    "status_message",
+    "output_dir",
+)
+
+
+def _training_progress_object(backend: Any) -> Any:
+    """The backend's live progress object, whichever surface it exposes.
+
+    ``TrainingBackend`` keeps it behind the ``trainer`` shim that the Training
+    routes already read, while a stand-in backend in a test puts it straight on
+    the object. Ask both before giving up, so this does not pin one shape.
+    """
+    for candidate in (
+        getattr(backend, "training_progress", None),
+        getattr(getattr(backend, "trainer", None), "training_progress", None),
+    ):
+        if candidate is not None:
+            return candidate
+    reader = getattr(backend, "get_training_progress", None)
+    if callable(reader):
+        try:
+            return reader()
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
+def _training_progress_snapshot(backend: Any) -> dict[str, Any]:
+    """One poll's worth of the backend's progress, read once as plain values."""
+    progress = _training_progress_object(backend)
+    if progress is None:
+        return {}
+    return {key: getattr(progress, key, None) for key in _TRAINING_PROGRESS_FIELDS}
+
+
+def _spec_flag(value: Any, default: bool) -> bool:
+    """A spec boolean, tolerating the ``"false"`` a hand-written JSON spec sends."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "0", "false", "no", "off")
+    return bool(value)
+
+
+def _wait_for_training(
+    backend: Any,
+    *,
+    method: str,
+    job_id: str,
+    timeout_seconds: float,
+    progress = None,
+) -> dict[str, Any]:
+    """Block until the job this adapter started finishes, or fail loudly.
+
+    Polling the backend's progress is what makes the returned ``output_dir`` a
+    directory that exists: the benchmark adapter scores whatever is on disk, and
+    an empty directory scores nothing, so reporting a checkpoint the worker has
+    not written yet would silently poison the round.
+
+    Progress is only trusted while it belongs to this job. A run that finishes
+    and is immediately followed by another leaves the backend describing the
+    newer job, and reading that as ours would report the wrong checkpoint -- or
+    the wrong error.
+
+    Returns the snapshot that proved completion, so the caller can prefer the
+    directory the backend actually wrote to.
+    """
+    from core.labs.automated_training import AutomatedTrainingError
+
+    label = f"The {method.upper()} run {job_id!r}"
+    if _training_progress_object(backend) is None:
+        raise AutomatedTrainingError(
+            f"{label} cannot be waited on: the training backend reports no progress."
+        )
+    if progress is not None:
+        progress({"stage": "train", "message": f"Training {job_id}", "job_id": job_id})
+
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        snapshot = _training_progress_snapshot(backend)
+        current = getattr(backend, "current_job_id", None)
+        ours = current is None or str(current) == job_id
+        if not ours:
+            # Another job owns the backend, so this job's progress is gone and
+            # waiting on it would only run out the clock.
+            raise AutomatedTrainingError(
+                f"{label} was replaced by {current!r} before it reported a checkpoint."
+            )
+        error = snapshot.get("error")
+        if error:
+            raise AutomatedTrainingError(f"{label} failed: {error}")
+        if snapshot.get("is_completed"):
+            return snapshot
+
+        reader = getattr(backend, "is_training_active", None)
+        active = bool(reader()) if callable(reader) else False
+        if not active:
+            # The worker exits after its last progress write, though not always
+            # before the process is reaped: read once more so a run that did
+            # finish is not called stopped.
+            snapshot = _training_progress_snapshot(backend) or snapshot
+            if snapshot.get("error"):
+                raise AutomatedTrainingError(f"{label} failed: {snapshot['error']}")
+            if snapshot.get("is_completed"):
+                return snapshot
+            raise AutomatedTrainingError(f"{label} stopped without completing.")
+
+        if time.monotonic() >= deadline:
+            raise AutomatedTrainingError(
+                f"{label} did not finish within {timeout_seconds:g} seconds."
+            )
+        time.sleep(_AUTOMATED_POLL_SECONDS)
 
 
 def _train_adapter(step: dict[str, Any], output_dir: str, progress) -> dict[str, Any]:
@@ -849,10 +982,16 @@ def _train_adapter(step: dict[str, Any], output_dir: str, progress) -> dict[str,
     ``cpt``/``fft`` belong to the Training backend, which needs the job request
     the Training page would send. That request travels in the step's
     ``spec.training_kwargs``; without it this raises instead of reporting a run
-    that never started. The backend spawns a subprocess, so the returned
-    ``output_dir`` is where that job writes (its own ``output_dir`` when it has
-    one) -- nothing here waits for the job, and the benchmark adapter scores the
-    checkpoint that is actually on disk.
+    that never started. The backend spawns a subprocess, so a successful start
+    is not a checkpoint: this then polls the backend until the job finishes and
+    returns the directory that job wrote, because the benchmark adapter scores
+    the checkpoint on disk and an empty directory would score nothing.
+
+    ``spec.wait_for_completion`` (default true) is the escape hatch: set it false
+    to get the old fire-and-forget behaviour, where this returns as soon as the
+    backend accepts the job and the caller is responsible for waiting.
+    ``spec.timeout_seconds`` bounds the wait, defaulting to
+    :data:`_AUTOMATED_TRAIN_TIMEOUT_S`.
     """
     from core.labs.automated_training import AutomatedTrainingError
 
@@ -890,17 +1029,59 @@ def _train_adapter(step: dict[str, Any], output_dir: str, progress) -> dict[str,
             or step.get("job_id")
             or f"automated-{step.get('round') or 0}-{step.get('label') or uuid.uuid4().hex[:8]}"
         )
+        # How to wait is the adapter's business, so it comes out of the kwargs
+        # before they reach the backend. Both spec shapes are covered: the engine
+        # flattens these into the step's spec, and a hand-built spec may nest
+        # them under ``training_kwargs`` (whence they arrived in ``kwargs``).
+        controls = {key: kwargs.pop(key, spec.get(key)) for key in _WAIT_CONTROL_KEYS}
+        wait = _spec_flag(controls["wait_for_completion"], True)
+        timeout_seconds = _AUTOMATED_TRAIN_TIMEOUT_S
+        requested_timeout = controls["timeout_seconds"]
+        if requested_timeout not in (None, ""):
+            try:
+                timeout_seconds = float(requested_timeout)
+            except (TypeError, ValueError):
+                raise AutomatedTrainingError(
+                    f"timeout_seconds must be a number, got {requested_timeout!r}."
+                ) from None
+            if timeout_seconds <= 0:
+                # The engine always sends this field, and 0 is how it says it set
+                # no budget of its own, so the adapter's default applies.
+                timeout_seconds = _AUTOMATED_TRAIN_TIMEOUT_S
+
         backend = get_training_backend()
         if not backend.start_training(job_id = job_id, **kwargs):
             raise AutomatedTrainingError(
                 f"The training backend refused the {method.upper()} run {job_id!r}."
             )
-        produced = kwargs.get("output_dir")
+
+        requested_dir = kwargs.get("output_dir")
+        if not wait:
+            # Fire-and-forget: the spec asked not to wait, so report where the job
+            # will write and leave the timing to whoever set that flag.
+            return {
+                "output_dir": str(requested_dir or output_dir),
+                "job_id": job_id,
+                "method": method,
+                "started": True,
+                "waited": False,
+            }
+
+        snapshot = _wait_for_training(
+            backend,
+            method = method,
+            job_id = job_id,
+            timeout_seconds = timeout_seconds,
+            progress = progress,
+        )
+        produced = snapshot.get("output_dir") or requested_dir or output_dir
         return {
-            "output_dir": str(produced or output_dir),
+            "output_dir": str(produced),
             "job_id": job_id,
             "method": method,
             "started": True,
+            "waited": True,
+            "completed": True,
         }
 
     raise AutomatedTrainingError(f"Unknown automated training method {method!r}.")

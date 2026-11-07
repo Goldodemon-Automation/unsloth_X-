@@ -102,6 +102,54 @@ export const CMT_PRESETS: CmtPreset[] = [
   },
 ];
 
+/**
+ * The dataset count window the backend enforces in core/labs/cmt.py. A spec
+ * outside it is rejected before any planning work starts, so the panel blocks
+ * the actions instead of letting the request fail.
+ */
+export const CMT_MIN_DATASETS = 2;
+export const CMT_MAX_DATASETS = 8;
+
+/**
+ * A sentence naming the dataset bound a count breaks, or null when the count is
+ * inside the window. A blank row is not a dataset, so callers pass the number
+ * of rows that carry a path.
+ */
+export function cmtDatasetWarning(count: number): string | null {
+  if (!Number.isFinite(count)) {
+    return `CMT needs at least ${CMT_MIN_DATASETS} datasets.`;
+  }
+  if (count < CMT_MIN_DATASETS) {
+    const verb = count === 1 ? "is" : "are";
+    return `CMT needs at least ${CMT_MIN_DATASETS} datasets; ${count} ${verb} filled in.`;
+  }
+  if (count > CMT_MAX_DATASETS) {
+    return `CMT takes at most ${CMT_MAX_DATASETS} datasets; ${count} are filled in.`;
+  }
+  return null;
+}
+
+/** The dataset categories a preset can point at, as the panel names them. */
+export type CmtCategory = "code" | "syntax" | "reasoning" | "general";
+
+/**
+ * The category a preset's numbers are tuned for, as a hint only: the panel
+ * never writes it anywhere. Presets that suit any text return null, so the
+ * panel shows no hint rather than a misleading one.
+ */
+export function recommendedCategory(
+  presetId: string | null | undefined,
+): CmtCategory | null {
+  switch (presetId) {
+    case "code-heavy":
+      return "code";
+    case "reasoning-heavy":
+      return "reasoning";
+    default:
+      return null;
+  }
+}
+
 /** Look up a preset by id; unknown, empty or missing ids return null. */
 export function cmtPresetById(id: string | null | undefined): CmtPreset | null {
   if (!id) return null;
