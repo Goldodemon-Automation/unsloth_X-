@@ -21,7 +21,7 @@ from utils.account_context import OWNER_ACCOUNT_ID
 GB = 1024**3
 
 CPU_HOST_GRANTS = ("autoscale", "merge", "merge_eval", "moe", "scale", "split")
-GPU_ONLY = ("cmt", "eval", "qat")
+GPU_ONLY = ("automated-training", "cmt", "eval", "qat")
 CPU_HOST_NOTED = ("autoscale", "scale")
 
 

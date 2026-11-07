@@ -793,3 +793,226 @@ def apply_janitor_rules(request: JanitorRulesUpdate) -> dict[str, Any]:
         return housekeeping.apply_rules(_rule_overrides(request))
     except Exception as error:  # noqa: BLE001
         raise _translate(error) from error
+
+
+# ---------------------------------------------------------------------------
+# Automated training (sample datasets, train, benchmark, keep the best, continue it)
+# ---------------------------------------------------------------------------
+
+
+class AutomatedTrainingPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    spec: dict[str, Any]
+
+
+class AutomatedTrainingRunRequest(AutomatedTrainingPlanRequest):
+    output_dir: Optional[str] = None
+
+
+def _automated_engine() -> Any:
+    """The automated-training engine, imported when a route first asks for it.
+
+    Lazy on purpose. The engine runs whole rounds of training and is still
+    moving, so a broken or absent engine must fail its own routes with a reason
+    instead of closing every other Labs experiment at import time.
+    """
+    from core.labs import automated_training
+
+    return automated_training
+
+
+def _automated_source(spec: dict[str, Any]) -> str:
+    """The base checkpoint the spec names, for the job's resource estimate."""
+    for key in ("source", "model", "base", "checkpoint"):
+        value = spec.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+# Fields the engine's ``_run_spec`` adds to a step's spec around the user's
+# training kwargs. They describe the run, not the Training backend request, so
+# the CPT/FFT adapter strips them before forwarding the rest as backend kwargs.
+_RESERVED_TRAINING_KEYS = frozenset(
+    {"source", "mode", "datasets", "max_steps", "seed", "training_kwargs"}
+)
+
+
+def _train_adapter(step: dict[str, Any], output_dir: str, progress) -> dict[str, Any]:
+    """Train one planned step and return what the engine records as its product.
+
+    ``cmt`` goes through the CMT experiment, which sizes the growth from the
+    step's datasets and trains only the blocks it inserted; it already returns
+    the ``output_dir`` the engine reads.
+
+    ``cpt``/``fft`` belong to the Training backend, which needs the job request
+    the Training page would send. That request travels in the step's
+    ``spec.training_kwargs``; without it this raises instead of reporting a run
+    that never started. The backend spawns a subprocess, so the returned
+    ``output_dir`` is where that job writes (its own ``output_dir`` when it has
+    one) -- nothing here waits for the job, and the benchmark adapter scores the
+    checkpoint that is actually on disk.
+    """
+    from core.labs.automated_training import AutomatedTrainingError
+
+    method = str(step.get("method") or "").strip().lower()
+    spec = step.get("spec")
+    spec = spec if isinstance(spec, dict) else {}
+
+    if method == "cmt":
+        from core.labs import cmt
+
+        return cmt.run(spec, output_dir = output_dir, progress = progress)
+
+    if method in ("cpt", "fft"):
+        # The engine flattens ``training_kwargs`` into the step's spec and then
+        # adds its own run fields. Accept both shapes: a nested
+        # ``spec["training_kwargs"]`` from a hand-built spec, or the flat spec
+        # the engine actually produces.
+        nested = spec.get("training_kwargs")
+        if isinstance(nested, dict):
+            kwargs = dict(nested)
+        else:
+            kwargs = {
+                key: value
+                for key, value in spec.items()
+                if key not in _RESERVED_TRAINING_KEYS
+            }
+        if not kwargs:
+            raise AutomatedTrainingError(
+                "CPT/FFT automated runs need training_kwargs in the spec; use CMT or supply them"
+            )
+        from core.training import get_training_backend
+
+        job_id = str(
+            kwargs.pop("job_id", None)
+            or step.get("job_id")
+            or f"automated-{step.get('round') or 0}-{step.get('label') or uuid.uuid4().hex[:8]}"
+        )
+        backend = get_training_backend()
+        if not backend.start_training(job_id = job_id, **kwargs):
+            raise AutomatedTrainingError(
+                f"The training backend refused the {method.upper()} run {job_id!r}."
+            )
+        produced = kwargs.get("output_dir")
+        return {
+            "output_dir": str(produced or output_dir),
+            "job_id": job_id,
+            "method": method,
+            "started": True,
+        }
+
+    raise AutomatedTrainingError(f"Unknown automated training method {method!r}.")
+
+
+def _benchmark_adapter(step: dict[str, Any], artifact: dict[str, Any], progress) -> dict[str, Any]:
+    """Score one trained checkpoint from the benchmark records already on disk.
+
+    The newest record for that checkpoint wins, and its score is the mean of the
+    recorded candidate scores (it reuses the numbers the Benchmark studio wrote,
+    so no eval job is started from here). A checkpoint nothing has scored yet
+    comes back with ``score: None``, which the engine ranks last rather than
+    guessing a number for it.
+    """
+    from core.labs import benchmarks
+
+    path = str(artifact.get("output_dir") or artifact.get("path") or "").strip()
+    if not path:
+        return {"score": None}
+    records = benchmarks.list_records(limit = 200, artifact = path)
+    if not records:
+        # CMT writes its trainable checkpoint under subfolders of the step
+        # directory, so an exact path match misses records keyed by the
+        # subfolder. Fall back to the newest record whose artifact lives under
+        # the step directory.
+        prefix = path.replace("\\", "/").rstrip("/") + "/"
+        records = [
+            candidate
+            for candidate in benchmarks.list_records(limit = 200)
+            if str(candidate.get("artifact") or "")
+            .replace("\\", "/")
+            .startswith(prefix)
+        ]
+    if not records:
+        return {"score": None}
+    record = records[0]
+    candidates = record.get("candidate_scores")
+    scores = (
+        [
+            float(value)
+            for value in candidates.values()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        ]
+        if isinstance(candidates, dict)
+        else []
+    )
+    if not scores:
+        return {"score": None, "record_id": record.get("id")}
+    return {"score": round(sum(scores) / len(scores), 6), "record_id": record.get("id")}
+
+
+@router.get("/automated/presets")
+def automated_presets() -> dict[str, Any]:
+    """The starting specs the automated page offers, straight from the engine."""
+    _gate("automated-training")
+    try:
+        return {"presets": _automated_engine().presets()}
+    except Exception as error:  # noqa: BLE001
+        raise _translate(error) from error
+
+
+@router.post("/automated/plan", dependencies = [Depends(_require_owner)])
+def plan_automated_training(request: AutomatedTrainingPlanRequest) -> dict[str, Any]:
+    """Lay out the rounds, runs and datasets from configs only. Starts nothing."""
+    _gate("automated-training")
+    try:
+        return _automated_engine().plan(request.spec)
+    except Exception as error:  # noqa: BLE001
+        raise _translate(error) from error
+
+
+@router.post("/automated/run", dependencies = [Depends(_require_owner)])
+def run_automated_training(request: AutomatedTrainingRunRequest) -> dict[str, Any]:
+    """Train, benchmark and continue-train over the planned rounds, in the background."""
+    _gate("automated-training")
+    try:
+        engine = _automated_engine()
+        report = engine.plan(request.spec)
+    except Exception as error:  # noqa: BLE001
+        raise _translate(error) from error
+    if not report.get("runnable"):
+        raise HTTPException(
+            status_code = 400,
+            detail = report.get("blocked_reason") or "This automated training plan cannot run.",
+        )
+    source = _automated_source(request.spec)
+    output = (
+        Path(request.output_dir).expanduser()
+        if request.output_dir and request.output_dir.strip()
+        else _cmt_output_dir(source, prefix = "automated")
+    )
+
+    def work(progress) -> dict[str, Any]:
+        return _automated_engine().run(
+            request.spec,
+            output_dir = str(output),
+            progress = progress,
+            train = _train_adapter,
+            benchmark = _benchmark_adapter,
+        )
+
+    from routes.advanced import _start_job
+
+    try:
+        return _start_job(
+            "automated-training",
+            work,
+            output_dir = str(output),
+            sources = [source] if source else [],
+            with_progress = True,
+        )
+    except ValueError as error:
+        # The lease estimate rejects a job kind it has no cost model for. Say which
+        # kind instead of raising a 500 that hides why nothing started.
+        raise _translate(error) from error
