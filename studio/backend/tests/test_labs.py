@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
 from core import labs
-from core.labs import benchmarks, housekeeping
+from core.labs import benchmarks, housekeeping, pipelines
 from routes import labs as labs_routes
 
 
@@ -419,3 +419,123 @@ def test_switched_off_rules_are_refused_by_the_apply_route(monkeypatch, tmp_path
     )
     assert response.status_code == 400
     assert housekeeping.read_rules()["enabled"] is True
+
+
+# ---------------------------------------------------------------------------
+# Pipelines: the automated-training stage
+# ---------------------------------------------------------------------------
+
+
+def _planner_checkpoint(root, name: str = "base") -> str:
+    """A local checkpoint folder with just enough config.json to be priced."""
+    model = root / name
+    model.mkdir(parents = True)
+    (model / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "llama",
+                "hidden_size": 64,
+                "num_hidden_layers": 2,
+                "intermediate_size": 128,
+                "vocab_size": 256,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 2,
+            }
+        ),
+        encoding = "utf-8",
+    )
+    return str(model)
+
+
+def test_the_automated_stage_is_a_known_pipeline_kind():
+    assert "automated" in pipelines.STAGE_KINDS
+    assert pipelines.STAGE_LABELS["automated"] == "Automated train"
+
+
+def test_an_automated_stage_prices_every_saved_candidate(tmp_path):
+    source = _planner_checkpoint(tmp_path)
+    report = pipelines.preflight(
+        {
+            "source": source,
+            # No source on the stage: it inherits the pipeline's, like scale.
+            "stages": [
+                {"kind": "train", "steps": 10},
+                {"kind": "automated", "runs_per_round": 4, "rounds": 2, "continue_runs": 3},
+            ],
+        }
+    )
+
+    automated = report["stages"][1]
+    assert automated["kind"] == "automated"
+    assert automated["blocked"] is False
+    assert automated["params_after"] == report["final_params"] == automated["params_before"]
+    assert automated["details"]["training_runs"] == (4 + 3) * 2
+    assert automated["output_bytes"] == int(automated["params_after"] * 2 * 14)
+    assert report["total_output_bytes"] > 0
+    assert report["blocked"] is False
+    assert any("one run at a time" in warning for warning in report["warnings"])
+
+
+def test_the_automated_defaults_are_the_engine_defaults(tmp_path):
+    source = _planner_checkpoint(tmp_path)
+    report = pipelines.preflight(
+        {"source": source, "stages": [{"kind": "automated"}]}
+    )
+
+    details = report["stages"][0]["details"]
+    assert details["runs_per_round"] == 8
+    assert details["rounds"] == 2
+    assert details["continue_runs"] == 4
+    assert details["training_runs"] == (8 + 4) * 2
+
+
+@pytest.mark.parametrize("key", ["runs_per_round", "rounds", "continue_runs"])
+def test_automated_run_counts_out_of_bounds_block_the_stage(tmp_path, key):
+    source = _planner_checkpoint(tmp_path)
+    value = 0 if key != "rounds" else 13
+    report = pipelines.preflight(
+        {"source": source, "stages": [{"kind": "automated", key: value}]}
+    )
+
+    stage = report["stages"][0]
+    assert stage["blocked"] is True
+    assert key in stage["reason"]
+    assert report["blocked"] is True
+    assert stage["params_after"] == stage["params_before"]
+
+
+def test_an_automated_stage_needs_a_local_source(tmp_path):
+    report = pipelines.preflight(
+        {"source": "org/not-downloaded", "stages": [{"kind": "automated"}]}
+    )
+
+    stage = report["stages"][0]
+    assert stage["blocked"] is True
+    assert "local folder" in stage["reason"]
+    assert report["blocked"] is True
+    assert report["blocked_reason"].startswith("Stage 1 (Automated train):")
+
+
+def test_an_automated_stage_after_quantize_is_refused_by_the_ordering_rule(tmp_path):
+    source = _planner_checkpoint(tmp_path)
+    with pytest.raises(pipelines.PipelineError) as refused:
+        pipelines.preflight(
+            {
+                "source": source,
+                "stages": [{"kind": "quantize", "level": "q4_k_m"}, {"kind": "automated"}],
+            }
+        )
+    assert "after the pipeline was quantized" in str(refused.value)
+
+
+def test_quantize_after_automated_is_allowed(tmp_path):
+    source = _planner_checkpoint(tmp_path)
+    report = pipelines.preflight(
+        {"source": source, "stages": [{"kind": "automated"}, {"kind": "quantize"}]}
+    )
+
+    quantize = report["stages"][1]
+    assert quantize["blocked"] is False
+    assert quantize["params_after"] == report["stages"][0]["params_after"]
+    assert report["blocked"] is False
+

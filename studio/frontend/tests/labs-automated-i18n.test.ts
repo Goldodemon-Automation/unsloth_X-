@@ -157,3 +157,104 @@ test("every locale exposes the representative automated controls", () => {
     }
   }
 });
+
+// The rest of the Labs surface: the sibling tab labels, the top-level Labs
+// strings and the handoff banner. They fall back to English silently too, so
+// the same shape check applies.
+const enLabs = enTree.labs as Tree;
+const enTabLeaves = leafPaths(enLabs.tab as Tree, "labs.tab");
+const enHandoffLeaves = leafPaths(enLabs.handoff as Tree, "labs.handoff");
+const enTopLevelStrings = Object.entries(enLabs)
+  .filter(([, value]) => typeof value === "string")
+  .map(([key]) => `labs.${key}`)
+  .sort();
+
+test("every locale labels every Labs tab that en.ts declares", () => {
+  assert.deepEqual(
+    enTabLeaves,
+    [
+      "labs.tab.artifacts",
+      "labs.tab.automated",
+      "labs.tab.benchmarks",
+      "labs.tab.cleanup",
+      "labs.tab.cmt",
+      "labs.tab.lineage",
+      "labs.tab.pipelines",
+      "labs.tab.surgery",
+      "labs.tab.swap",
+    ],
+    "en.ts Labs tab set",
+  );
+  for (const [locale, tree] of Object.entries(overlays)) {
+    const tab = read(tree, "labs.tab");
+    assert.equal(typeof tab, "object", `${locale}: labs.tab`);
+    assert.deepEqual(
+      leafPaths(tab as Tree, "labs.tab"),
+      enTabLeaves,
+      `${locale}: labs.tab key set`,
+    );
+    for (const key of enTabLeaves) {
+      const value = read(tree, key);
+      assert.equal(typeof value, "string", `${locale}: ${key}`);
+      assert.ok((value as string).length > 0, `${locale}: ${key} is empty`);
+    }
+  }
+});
+
+test("every locale carries the top-level Labs strings", () => {
+  assert.ok(
+    enTopLevelStrings.length >= 14,
+    `expected the full Labs header copy, got ${enTopLevelStrings.length}`,
+  );
+  for (const key of [
+    "labs.title",
+    "labs.description",
+    "labs.experimental",
+    "labs.offTitle",
+    "labs.offDescription",
+    "labs.openSettings",
+    "labs.reload",
+    "labs.featureOff",
+    "labs.masterOff",
+    "labs.unknownFeature",
+    "labs.unknownFeatureDescription",
+    "labs.refresh",
+    "labs.loadFailed",
+  ]) {
+    assert.ok(enTopLevelStrings.includes(key), `${key} is missing from en.ts`);
+  }
+  for (const [locale, tree] of Object.entries(overlays)) {
+    for (const key of enTopLevelStrings) {
+      const value = read(tree, key);
+      assert.equal(typeof value, "string", `${locale}: ${key}`);
+      assert.ok((value as string).length > 0, `${locale}: ${key} is empty`);
+      assert.deepEqual(
+        placeholders(value as string),
+        placeholders(read(enTree, key) as string),
+        `${locale}: ${key} placeholders`,
+      );
+    }
+  }
+});
+
+test("every locale carries the labs.handoff subtree", () => {
+  assert.deepEqual(
+    enHandoffLeaves,
+    ["labs.handoff.continue", "labs.handoff.scale"],
+    "en.ts labs.handoff set",
+  );
+  for (const [locale, tree] of Object.entries(overlays)) {
+    const handoff = read(tree, "labs.handoff");
+    assert.equal(typeof handoff, "object", `${locale}: labs.handoff`);
+    assert.deepEqual(
+      leafPaths(handoff as Tree, "labs.handoff"),
+      enHandoffLeaves,
+      `${locale}: labs.handoff key set`,
+    );
+    for (const key of enHandoffLeaves) {
+      const value = read(tree, key);
+      assert.equal(typeof value, "string", `${locale}: ${key}`);
+      assert.ok((value as string).length > 0, `${locale}: ${key} is empty`);
+    }
+  }
+});

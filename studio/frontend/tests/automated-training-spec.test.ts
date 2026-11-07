@@ -16,6 +16,7 @@ import {
   clampStepsPerRun,
   defaultAutomatedTrainingSpec,
   isAutomatedCategory,
+  isAutomatedJobCancellable,
   isAutomatedMethod,
   normalizeAutomatedTrainingSpec,
   summarizeAutomatedProgress,
@@ -156,6 +157,37 @@ test("out-of-range numbers produce one error per field", () => {
   assert.ok(errors.some((error) => error.includes("Seed")));
   assert.ok(errors.some((error) => error.includes("Steps per run")));
   assert.ok(errors.length >= 9);
+});
+
+test("only a queued or running job is cancellable", () => {
+  assert.equal(isAutomatedJobCancellable({ status: "running" }), true);
+  assert.equal(isAutomatedJobCancellable({ status: "queued" }), true);
+});
+
+test("a terminal job is not cancellable", () => {
+  for (const status of ["completed", "failed", "cancelled", "idle"]) {
+    assert.equal(
+      isAutomatedJobCancellable({ status }),
+      false,
+      `${status} must not offer Cancel`,
+    );
+  }
+});
+
+test("a missing job or status is not cancellable", () => {
+  assert.equal(isAutomatedJobCancellable(null), false);
+  assert.equal(isAutomatedJobCancellable(undefined), false);
+  assert.equal(isAutomatedJobCancellable({}), false);
+  assert.equal(isAutomatedJobCancellable({ status: "" }), false);
+});
+
+test("an unknown status is not cancellable", () => {
+  for (const status of ["starting", "paused", "unknown", "runn1ng"]) {
+    assert.equal(isAutomatedJobCancellable({ status }), false);
+  }
+  // Job records carry what the backend wrote, so case and padding are forgiven.
+  assert.equal(isAutomatedJobCancellable({ status: " RUNNING " }), true);
+  assert.equal(isAutomatedJobCancellable({ status: "Queued" }), true);
 });
 
 test("a training stage becomes a headline naming the round", () => {

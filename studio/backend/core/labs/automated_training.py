@@ -27,6 +27,12 @@ polled before every run is scheduled and between rounds, and once it says stop
 the controller keeps the rounds it finished, writes a manifest marked
 ``cancelled``, and returns normally.
 
+A cancelled or interrupted run can be continued: ``run(resume_from = ...)`` reads
+that run's ``run_manifest.json``, keeps its finished rounds, its winner and its
+run counters, and only executes the rounds the earlier run never got to. Without
+``resume_from`` nothing changes -- the controller runs every planned round from
+scratch.
+
 ``timeout_seconds`` is carried by the spec and copied into every step spec so an
 adapter can bound its own wait. The controller never enforces it -- adapters own
 the waiting -- and ``0`` means "no engine-level timeout".
@@ -35,6 +41,7 @@ the waiting -- and ``0`` means "no engine-level timeout".
 from __future__ import annotations
 
 import copy
+import json
 import math
 import random
 from pathlib import Path
@@ -628,6 +635,15 @@ def _candidate_view(candidate: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _best_view(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "output_dir": candidate.get("output_dir"),
+        "score": candidate.get("score"),
+        "method": candidate.get("method"),
+        "round": candidate.get("round"),
+    }
+
+
 def _failure_view(failure: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "kind": failure["kind"],
@@ -638,6 +654,165 @@ def _failure_view(failure: Mapping[str, Any]) -> dict[str, Any]:
         "stage": failure["stage"],
         "error": failure["error"],
         "round": failure["round"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Resuming a previous run
+# ---------------------------------------------------------------------------
+
+_RESUME_MANIFEST_NAME = "run_manifest.json"
+
+
+def _count(value: Any) -> int:
+    """A counter read from JSON, clamped to something a total can hold."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, parsed)
+
+
+def _previous_round_records(
+    payload: Mapping[str, Any], warnings: list[str]
+) -> list[dict[str, Any]]:
+    """The finished round records of a previous manifest, in their own order."""
+    raw = payload.get("rounds")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        warnings.append(
+            "The previous run manifest has a 'rounds' block that is not a list, so no round "
+            "was reused; every round runs again."
+        )
+        return []
+
+    records: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for position, entry in enumerate(raw, start = 1):
+        if not isinstance(entry, Mapping):
+            warnings.append(f"Ignoring previous round record {position}: it is not an object.")
+            continue
+        try:
+            index = int(entry.get("index"))
+        except (TypeError, ValueError):
+            warnings.append(f"Ignoring previous round record {position}: it has no usable index.")
+            continue
+        if index in seen:
+            warnings.append(
+                f"Ignoring a duplicate record for round {index} in the previous manifest."
+            )
+            continue
+        seen.add(index)
+        records.append(copy.deepcopy(dict(entry)))
+    return records
+
+
+def _previous_winners(
+    payload: Mapping[str, Any], warnings: list[str]
+) -> list[dict[str, Any]]:
+    raw = payload.get("winners")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        warnings.append(
+            "The previous run manifest has a 'winners' block that is not a list, so its winners "
+            "were not carried forward."
+        )
+        return []
+    return [copy.deepcopy(dict(entry)) for entry in raw if isinstance(entry, Mapping)]
+
+
+def _previous_best(payload: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+    """The best checkpoint a previous manifest names, wherever it recorded it."""
+    for value in (payload.get("best"), _nested(payload.get("artifacts"), "best")):
+        if isinstance(value, Mapping) and value:
+            return copy.deepcopy(dict(value))
+    return None
+
+
+def _nested(value: Any, key: str) -> Any:
+    return value.get(key) if isinstance(value, Mapping) else None
+
+
+def _comparison_candidate(best: Mapping[str, Any]) -> dict[str, Any]:
+    """A previous best reshaped into what ``_rank_key`` reads.
+
+    ``order`` is -1, lower than the 0 of the first candidate of any resumed
+    round, so a new candidate has to *beat* the previous score: an equal score
+    keeps the checkpoint the earlier run already produced.
+    """
+    candidate = dict(best)
+    try:
+        score = candidate.get("score")
+        candidate["score"] = None if score is None else float(score)
+    except (TypeError, ValueError):
+        candidate["score"] = None
+    candidate.setdefault("kind", "previous")
+    candidate.setdefault("label", str(candidate.get("output_dir") or "previous run"))
+    candidate.setdefault("method", None)
+    candidate.setdefault("index", 0)
+    candidate.setdefault("datasets", [])
+    candidate.setdefault("steps", 0)
+    candidate.setdefault("record_id", None)
+    candidate.setdefault("round", None)
+    candidate.setdefault("output_dir", "")
+    candidate["order"] = -1
+    return candidate
+
+
+def _load_resume(
+    resume_from: str | Path, warnings: list[str]
+) -> Optional[dict[str, Any]]:
+    """Read the manifest of the run being continued.
+
+    A missing, unreadable or malformed manifest is not an error: the run simply
+    starts from scratch, and the reason travels back in ``warnings`` so the
+    caller can see why nothing was reused.
+    """
+    directory = Path(resume_from).expanduser()
+    path = directory
+    if path.name != _RESUME_MANIFEST_NAME:
+        path = directory / _RESUME_MANIFEST_NAME
+    if not path.is_file():
+        warnings.append(
+            f"Resume source {str(path)!r} has no run manifest, so every round runs from scratch."
+        )
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding = "utf-8"))
+    except (OSError, ValueError) as error:
+        warnings.append(
+            f"Resume source {str(path)!r} could not be read as JSON "
+            f"({type(error).__name__}: {error}); every round runs from scratch."
+        )
+        return None
+    if not isinstance(payload, Mapping):
+        warnings.append(
+            f"Resume source {str(path)!r} is not a JSON object, so every round runs from scratch."
+        )
+        return None
+
+    rounds = _previous_round_records(payload, warnings)
+    totals = payload.get("totals")
+    if not isinstance(totals, Mapping):
+        if totals is not None:
+            warnings.append(
+                "The previous run manifest has no usable 'totals' block, so its run counters "
+                "start at zero."
+            )
+        totals = {}
+    return {
+        "path": str(path),
+        "rounds": rounds,
+        "winners": _previous_winners(payload, warnings),
+        "best": _previous_best(payload),
+        "totals": {
+            "train_runs": _count(totals.get("train_runs")),
+            "benchmark_runs": _count(totals.get("benchmark_runs")),
+            "failed_runs": _count(totals.get("failed_runs")),
+        },
+        "finished": {int(record["index"]) for record in rounds},
     }
 
 
@@ -660,6 +835,7 @@ def run(
     train: Optional[Trainer] = None,
     benchmark: Optional[Benchmarker] = None,
     should_stop: Optional[Callable[[], bool]] = None,
+    resume_from: Optional[str | Path] = None,
 ) -> dict[str, Any]:
     """Execute the planned rounds and return the best checkpoint of each.
 
@@ -670,6 +846,15 @@ def run(
     summary is returned normally. A cancellation is a result, not an error, so
     it never becomes an exception -- while interrupts raised by an adapter (or
     by the callback itself) still propagate untouched.
+
+    ``resume_from`` names a previous output directory. Its ``run_manifest.json``
+    supplies the rounds that already finished, the best checkpoint so far and
+    the run counters; those rounds are skipped and everything else is appended
+    to them, so a run can be continued instead of repeated. A resumed round can
+    only take the best checkpoint over when it scores better than the previous
+    best. A missing or malformed manifest is ignored (with a warning) and every
+    round runs from scratch, which is also what happens when ``resume_from`` is
+    not given at all.
     """
     normalised = normalise(spec)
     planned = _plan_from(normalised)
@@ -700,20 +885,46 @@ def run(
             "falls back to the earliest successful run."
         )
 
-    train_runs = 0
-    benchmark_runs = 0
-    failed_runs = 0
-    round_records: list[dict[str, Any]] = []
-    winners: list[dict[str, Any]] = []
+    previous = _load_resume(resume_from, warnings) if resume_from is not None else None
+    finished_rounds: set[int] = set() if previous is None else set(previous["finished"])
+    previous_best = None if previous is None else previous["best"]
+    # ``None`` until a previous best exists: without one there is nothing to
+    # compare a round winner against, so the last winner stays the answer.
+    resumed_best: Optional[dict[str, Any]] = (
+        None if previous_best is None else _comparison_candidate(previous_best)
+    )
+
+    train_runs = 0 if previous is None else previous["totals"]["train_runs"]
+    benchmark_runs = 0 if previous is None else previous["totals"]["benchmark_runs"]
+    failed_runs = 0 if previous is None else previous["totals"]["failed_runs"]
+    round_records: list[dict[str, Any]] = [] if previous is None else list(previous["rounds"])
+    winners: list[dict[str, Any]] = [] if previous is None else list(previous["winners"])
     cancelled = False
     total_rounds = len(planned["rounds"])
 
+    if previous is not None:
+        skipped = sum(
+            1 for round_plan in planned["rounds"] if int(round_plan["index"]) in finished_rounds
+        )
+        _emit(
+            progress,
+            "resume",
+            f"Resuming from {previous['path']}: skipping {skipped} of {total_rounds} planned "
+            f"round(s) already recorded, keeping {len(round_records)} finished round(s).",
+            source = previous["path"],
+            skipped = skipped,
+            total = total_rounds,
+            rounds = len(round_records),
+        )
+
     for round_plan in planned["rounds"]:
+        round_index = int(round_plan["index"])
+        if round_index in finished_rounds:
+            continue
         if _stop_requested(should_stop):
             cancelled = True
             break
 
-        round_index = int(round_plan["index"])
         round_dir = out / f"round-{round_index:02d}"
         round_dir.mkdir(parents = True, exist_ok = True)
         _emit(
@@ -862,6 +1073,9 @@ def run(
             }
         )
         winners.append({"round": round_index, **winner_view})
+        if resumed_best is not None and _better(winner, resumed_best):
+            # Only a round that beats the previous best takes the lead over.
+            resumed_best = winner
         _emit(
             progress,
             "round-done",
@@ -874,14 +1088,10 @@ def run(
             break
 
     best_summary: Optional[dict[str, Any]] = None
-    if winners:
-        best = winners[-1]
-        best_summary = {
-            "output_dir": best["output_dir"],
-            "score": best["score"],
-            "method": best["method"],
-            "round": best["round"],
-        }
+    if resumed_best is not None:
+        best_summary = _best_view(resumed_best)
+    elif winners:
+        best_summary = _best_view(winners[-1])
     totals = {
         "train_runs": train_runs,
         "benchmark_runs": benchmark_runs,
@@ -910,12 +1120,12 @@ def run(
             best = best_summary,
         )
     else:
-        best_winner = winners[-1]
+        finished_best = best_summary or {}
         _emit(
             progress,
             "done",
-            f"Automated training finished; the best checkpoint is {best_winner['output_dir']} "
-            f"({_format_score(best_winner['score'])}).",
+            f"Automated training finished; the best checkpoint is "
+            f"{finished_best.get('output_dir')} ({_format_score(finished_best.get('score'))}).",
             best = best_summary,
         )
     return {

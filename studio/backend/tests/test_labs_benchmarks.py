@@ -359,6 +359,92 @@ def test_best_record_picks_the_top_and_none_for_empty():
 
 
 # ---------------------------------------------------------------------------
+# One public score helper
+# ---------------------------------------------------------------------------
+
+
+def test_record_score_is_the_public_alias_of_the_private_helper():
+    """Callers should not have to reach into a private name for the rule."""
+    cases = [
+        _plain("a", {"mmlu": 0.40, "gsm8k": 0.20}),
+        _plain("blank", {}),
+        {"id": "missing"},
+        _plain("nonnumeric", {"mmlu": "high"}),
+    ]
+    for record in cases:
+        assert benchmarks.record_score(record) == benchmarks._record_score(record)
+    assert benchmarks.record_score(cases[0]) == pytest.approx(0.30)
+    assert benchmarks.record_score(cases[1]) is None
+
+
+def test_score_for_reads_an_exact_record_and_an_under_directory_record(tmp_path, monkeypatch):
+    exact_dir = tmp_path / "out" / "merged"
+    exact_dir.mkdir(parents = True)
+    exact = _scored(monkeypatch, tmp_path, exact_dir, {"mmlu": 0.40, "gsm8k": 0.20}, "exact")
+
+    run = tmp_path / "out" / "run"
+    run.mkdir(parents = True)
+    step = _scored(
+        monkeypatch, tmp_path, run / "checkpoint-500", {"mmlu": 0.30, "gsm8k": 0.10}, "step"
+    )
+
+    assert benchmarks.score_for(str(exact_dir)) == pytest.approx(0.30)
+    assert benchmarks.score_for(str(exact_dir)) == benchmarks.record_score(exact)
+    # The run folder has no record of its own, so its newest step answers for it.
+    assert benchmarks.score_for(str(run)) == pytest.approx(0.20)
+    assert benchmarks.score_for(str(run)) == benchmarks.record_score(step)
+
+
+def test_score_for_is_none_for_a_missing_or_unscored_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(benchmarks, "outputs", lambda: tmp_path)
+    assert benchmarks.score_for(str(tmp_path / "out" / "run")) is None
+
+    unscored_dir = tmp_path / "out" / "blank"
+    unscored_dir.mkdir(parents = True)
+    # save_record refuses a report with no scores at all, so the unscored case is
+    # a stored record whose candidate scores were all unusable -- exactly what
+    # the list route still reads back.
+    record = _scored(monkeypatch, tmp_path, unscored_dir, {"mmlu": 0.50}, "label")
+    path = benchmarks.records_root() / f"{record['id']}.json"
+    stored = json.loads(path.read_text(encoding = "utf-8"))
+    stored["candidate_scores"] = {}
+    path.write_text(json.dumps(stored), encoding = "utf-8")
+
+    assert benchmarks.score_for(str(unscored_dir)) is None
+    assert benchmarks.score_for("") is None
+
+
+def test_scored_records_pairs_scores_and_keeps_the_input_order():
+    high = _plain("high", {"mmlu": 0.90})
+    blank = _plain("blank", {})
+    low = _plain("low", {"mmlu": 0.10, "gsm8k": 0.30})
+    missing = {"id": "missing"}
+
+    pairs = benchmarks.scored_records([high, blank, low, missing])
+
+    assert [record["id"] for record, _ in pairs] == ["high", "low"]
+    assert [score for _, score in pairs] == [pytest.approx(0.90), pytest.approx(0.20)]
+    # Pure: the caller's own records, unchanged and un-copied.
+    assert pairs[0][0] is high
+    assert high == {"id": "high", "candidate_scores": {"mmlu": 0.90}}
+    assert benchmarks.scored_records([]) == []
+    assert benchmarks.scored_records(iter([blank])) == []
+
+
+def test_scored_records_ignores_a_non_finite_candidate_score():
+    poisoned = _plain("poisoned", {"good": 0.50, "nan": float("nan"), "inf": float("inf")})
+    only_nan = _plain("only-nan", {"nan": float("nan")})
+
+    assert benchmarks.record_score(poisoned) == pytest.approx(0.50)
+    pairs = benchmarks.scored_records([poisoned, only_nan])
+
+    # The NaN/inf suites are dropped, so an infinite suite cannot win the ranking
+    # and a record with no finite score at all is skipped rather than scored 0.
+    assert [record["id"] for record, _ in pairs] == ["poisoned"]
+    assert pairs[0][1] == pytest.approx(0.50)
+
+
+# ---------------------------------------------------------------------------
 # Finding a checkpoint's records, including its step folders
 # ---------------------------------------------------------------------------
 

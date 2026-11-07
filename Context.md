@@ -378,7 +378,30 @@ spec tests.
 
 Known seams, in priority order: CPT/FFT is fire-and-forget unless the adapter
 waits for the training backend; CPT/FFT needs `training_kwargs` in the spec;
-benchmark scoring only sees records that already exist on disk. Round two
-(nine agents) addresses waiting/cancellation, the cost note, subfolder record
-lookup, panel progress UX, CMT dataset validation, manifest validation, docs and
-strict locale parity.
+benchmark scoring only sees records that already exist on disk.
+
+### Round two, landed as `f9608665f`
+
+The CPT/FFT adapter now waits: it polls the Training backend every 2s through
+the `backend.trainer` shim, trusts progress only while the job owns the backend,
+and raises on error/timeout/foreign-owner instead of returning a directory
+nothing wrote (`wait_for_completion: false` keeps fire-and-forget). The engine
+gained `run(..., should_stop=...)` and `timeout_seconds`, both threaded into
+every step spec; a stop writes a partial manifest with `cancelled: true`. The
+cost row notes that runs execute one at a time and scales RAM only above the
+1.5 expansion baseline. Benchmarks gained `records_under`/`newest_for` with
+boundary-safe prefix matching. Manifests validate the optional
+rounds/winners/totals/warnings blocks. The frontend panel shows live stage,
+round progress and a failure list; the CMT panel validates 2-8 datasets. Every
+overlay carries the `labs.automated` strings.
+
+Verification after the merge: 318 backend tests in the integrated sweep, 51
+frontend tests, typecheck clean, i18n parity clean.
+
+### Round three (nine agents, in flight)
+
+Cancel endpoint + registry (`POST /automated/jobs/{id}/cancel`), engine
+`resume_from` (skip completed rounds), panel Cancel action, a Pipelines
+`automated` stage, docs for cancel/resume, single-source CMT preset accessors,
+`record_score`/`score_for`/`scored_records`, an Artifacts stage label for
+automated products, and the remaining Labs tab locale keys.

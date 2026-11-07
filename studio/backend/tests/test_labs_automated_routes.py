@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 import types
 
 import pytest
@@ -64,17 +65,25 @@ def _fake_engine(
     blocked_reason: str | None = None,
     presets: list | None = None,
     plan_error: Exception | None = None,
+    wait_for_cancel: bool = False,
 ):
     """Install a fake engine in the slot the routes import lazily.
 
     Both the ``sys.modules`` entry and the package attribute are set: a plain
     ``from core.labs import automated_training`` reads the attribute once an
     earlier import has set one.
+
+    ``wait_for_cancel`` makes ``run`` behave like the real engine with a plan left
+    to run: it polls the ``should_stop`` callable the route handed it and only
+    returns once that says stop, so a test can cancel a job that is genuinely in
+    flight instead of one that finished before the request arrived.
     """
     module = types.ModuleType(ENGINE_NAME)
     module.AutomatedTrainingError = FakeAutomatedTrainingError
     module.calls = []
     module.ran = threading.Event()
+    module.cancelled = threading.Event()
+    module.should_stop = None
     listed = (
         presets
         if presets is not None
@@ -105,9 +114,26 @@ def _fake_engine(
             "presets": list(listed),
         }
 
-    def run(spec, *, output_dir, progress = None, train = None, benchmark = None):
+    def run(
+        spec,
+        *,
+        output_dir,
+        progress = None,
+        train = None,
+        benchmark = None,
+        should_stop = None,
+    ):
         module.calls.append(("run", spec, output_dir, train, benchmark, progress))
+        module.should_stop = should_stop
         module.ran.set()
+        if wait_for_cancel:
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if should_stop is not None and should_stop():
+                    module.cancelled.set()
+                    return {"cancelled": True, "rounds": [], "totals": {"train_runs": 0}}
+                time.sleep(0.01)
+            raise AssertionError("nothing cancelled this run before the test gave up")
         return {"best": {"output_dir": str(output_dir), "score": 0.5}, "totals": {"train_runs": 1}}
 
     module.presets = presets_route
@@ -130,6 +156,40 @@ def _grant_resources(monkeypatch) -> list:
     return asked
 
 
+def _route_dependencies(path: str, method: str) -> set[str]:
+    """The dependency callables declared on one route of the labs router."""
+    for route in labs_routes.router.routes:
+        if getattr(route, "path", None) == path and method in getattr(route, "methods", set()):
+            names, stack = set(), [route.dependant]
+            while stack:
+                node = stack.pop()
+                for child in getattr(node, "dependencies", []):
+                    names.add(getattr(child.call, "__name__", ""))
+                    stack.append(child)
+            return names
+    raise AssertionError(f"No {method} route for {path}")
+
+
+def _wait_until(predicate, *, timeout = 10.0) -> bool:
+    """Poll *predicate* until it holds; the background work runs on its own thread."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+@pytest.fixture(autouse = True)
+def _empty_cancel_registry():
+    """A registry per test, so one test's job id cannot answer another's request."""
+    with labs_routes._AUTOMATED_CANCEL_LOCK:
+        labs_routes._AUTOMATED_CANCEL.clear()
+    yield
+    with labs_routes._AUTOMATED_CANCEL_LOCK:
+        labs_routes._AUTOMATED_CANCEL.clear()
+
+
 # ---------------------------------------------------------------------------
 # The gate
 # ---------------------------------------------------------------------------
@@ -143,6 +203,7 @@ def test_every_automated_route_is_closed_while_labs_is_off(monkeypatch):
         client.get("/api/labs/automated/presets"),
         client.post("/api/labs/automated/plan", json = {"spec": {}}),
         client.post("/api/labs/automated/run", json = {"spec": {}}),
+        client.post("/api/labs/automated/jobs/whatever/cancel"),
     ):
         assert call.status_code == 403, call.request.url
         assert "Labs" in call.json()["detail"]
@@ -163,6 +224,7 @@ def test_the_automated_switch_closes_only_the_automated_routes(monkeypatch, tmp_
     assert "Automated training" in closed.json()["detail"]
     assert client.post("/api/labs/automated/plan", json = {"spec": {}}).status_code == 403
     assert client.post("/api/labs/automated/run", json = {"spec": {}}).status_code == 403
+    assert client.post("/api/labs/automated/jobs/whatever/cancel").status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -272,20 +334,97 @@ def test_run_refuses_a_blocked_plan_with_its_reason(monkeypatch, tmp_path):
 
 
 def test_run_is_owner_only_and_presets_is_not(monkeypatch):
-    def dependencies(path: str, method: str) -> set[str]:
-        for route in labs_routes.router.routes:
-            if getattr(route, "path", None) == path and method in getattr(route, "methods", set()):
-                names, stack = set(), [route.dependant]
-                while stack:
-                    node = stack.pop()
-                    for child in getattr(node, "dependencies", []):
-                        names.add(getattr(child.call, "__name__", ""))
-                        stack.append(child)
-                return names
-        raise AssertionError(f"No {method} route for {path}")
+    assert "_require_owner" in _route_dependencies("/automated/run", "POST")
+    assert "_require_owner" not in _route_dependencies("/automated/presets", "GET")
 
-    assert "_require_owner" in dependencies("/automated/run", "POST")
-    assert "_require_owner" not in dependencies("/automated/presets", "GET")
+
+def test_cancel_is_owner_only(monkeypatch):
+    """Stopping someone else's training spends their GPU time, so it is owner-only too."""
+    assert "_require_owner" in _route_dependencies("/automated/jobs/{job_id}/cancel", "POST")
+
+
+# ---------------------------------------------------------------------------
+# Cancel
+# ---------------------------------------------------------------------------
+
+
+def test_cancel_route_sets_the_flag_a_running_job_polls(monkeypatch, tmp_path):
+    """The engine's ``should_stop`` follows ``POST .../cancel``, and the job keeps its result."""
+    engine = _fake_engine(monkeypatch, wait_for_cancel = True)
+    _grant_resources(monkeypatch)
+    client, _ = _client(monkeypatch, {"enabled": True, "features": {}})
+    output = tmp_path / "automated-run"
+
+    started = client.post(
+        "/api/labs/automated/run",
+        json = {"spec": {"source": "/models/base"}, "output_dir": str(output)},
+    )
+    assert started.status_code == 200
+    job_id = started.json()["job_id"]
+    assert engine.ran.wait(10), "the background job never reached the engine"
+    should_stop = engine.should_stop
+    assert callable(should_stop)
+    assert should_stop() is False
+
+    response = client.post(f"/api/labs/automated/jobs/{job_id}/cancel")
+
+    assert response.status_code == 200
+    assert response.json() == {"job_id": job_id, "cancelling": True}
+    assert should_stop() is True
+    # The engine stops itself at its next checkpoint instead of being killed, so it
+    # returns normally: a cancellation is a result, not an error.
+    assert engine.cancelled.wait(10), "the engine never saw the cancel flag"
+
+
+def test_cancel_route_answers_404_for_a_job_this_process_is_not_running(monkeypatch):
+    _fake_engine(monkeypatch)
+    client, _ = _client(monkeypatch, {"enabled": True, "features": {}})
+
+    response = client.post("/api/labs/automated/jobs/0123456789abcdef/cancel")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Unknown or finished automated job."
+
+
+def test_a_finished_job_is_no_longer_cancellable(monkeypatch, tmp_path):
+    """The registry entry goes when the work does, so a late cancel is an honest 404."""
+    engine = _fake_engine(monkeypatch)
+    _grant_resources(monkeypatch)
+    client, _ = _client(monkeypatch, {"enabled": True, "features": {}})
+
+    started = client.post(
+        "/api/labs/automated/run",
+        json = {"spec": {"source": "/models/base"}, "output_dir": str(tmp_path / "run")},
+    )
+    assert started.status_code == 200
+    job_id = started.json()["job_id"]
+    assert engine.ran.wait(10)
+
+    # The job is a fake, so it finishes immediately; the route registered the flag
+    # after ``_start_job`` returned, possibly after the work thread was already done.
+    assert _wait_until(lambda: labs_routes._cancel_event(job_id) is None), "the flag leaked"
+    assert labs_routes._AUTOMATED_CANCEL == {}
+
+    assert client.post(f"/api/labs/automated/jobs/{job_id}/cancel").status_code == 404
+
+
+def test_the_cancel_registry_stays_bounded(monkeypatch):
+    """A flag whose job never reached its cleanup must not grow the registry forever."""
+    limit = labs_routes._AUTOMATED_CANCEL_LIMIT
+    events = [threading.Event() for _ in range(limit + 5)]
+
+    for index, event in enumerate(events):
+        labs_routes._register_cancel(f"job-{index}", event)
+
+    assert len(labs_routes._AUTOMATED_CANCEL) == limit
+    # The oldest five were dropped; the newest are all still cancellable.
+    assert labs_routes._cancel_event("job-0") is None
+    assert labs_routes._cancel_event("job-4") is None
+    assert labs_routes._cancel_event("job-5") is events[5]
+    assert labs_routes._cancel_event(f"job-{limit + 4}") is events[-1]
+
+    labs_routes._forget_cancel("job-5")
+    assert labs_routes._cancel_event("job-5") is None
 
 
 # ---------------------------------------------------------------------------
@@ -700,3 +839,43 @@ def test_the_benchmark_adapter_leaves_an_unscored_checkpoint_unscored(monkeypatc
     result = labs_routes._benchmark_adapter({}, {"output_dir": str(tmp_path / "unscored")}, None)
 
     assert result["score"] is None
+
+
+def test_the_benchmark_adapter_asks_the_index_for_the_newest_record(monkeypatch):
+    """The exact-then-under rule lives in ``benchmarks.newest_for``, not here twice."""
+    asked = []
+    record = {
+        "id": "bench-1",
+        "artifact": "/out/run-01/checkpoint-500",
+        "candidate_scores": {"mmlu": 0.5, "gsm8k": 0.7, "humaneval": None},
+    }
+
+    def newest_for(directory, *, limit = 200):
+        asked.append((directory, limit))
+        return record
+
+    def list_records(**_kwargs):
+        raise AssertionError("the adapter must not scan records itself any more")
+
+    monkeypatch.setattr(benchmarks, "newest_for", newest_for)
+    monkeypatch.setattr(benchmarks, "list_records", list_records)
+
+    result = labs_routes._benchmark_adapter({}, {"output_dir": "/out/run-01"}, None)
+
+    assert asked == [("/out/run-01", 200)]
+    assert result == {"score": 0.6, "record_id": "bench-1"}
+
+
+def test_the_benchmark_adapter_prefers_the_artifact_path_over_the_step_dir(monkeypatch):
+    asked = []
+    monkeypatch.setattr(
+        benchmarks,
+        "newest_for",
+        lambda directory, **_kwargs: asked.append(directory) or None,
+    )
+
+    assert labs_routes._benchmark_adapter({}, {"path": "/out/run-02/best"}, None) == {"score": None}
+    assert asked == ["/out/run-02/best"]
+    # Nothing to score is not a reason to ask the index about nothing.
+    assert labs_routes._benchmark_adapter({}, {}, None) == {"score": None}
+    assert asked == ["/out/run-02/best"]

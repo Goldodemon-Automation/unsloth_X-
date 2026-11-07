@@ -102,6 +102,22 @@ export function isAutomatedMethod(value: unknown): value is AutomatedMethod {
 }
 
 /**
+ * Whether a Cancel button should be live for this job. Only a job that is still
+ * waiting or running has work left to stop; a finished, failed or cancelled job
+ * has none, and an unknown status must not offer an action the route answers
+ * with a 404. Case and surrounding spaces are tolerated because the value comes
+ * from a job record, not from this UI.
+ */
+export function isAutomatedJobCancellable(
+  job: { status?: string } | null | undefined,
+): boolean {
+  const status = job?.status;
+  if (typeof status !== "string") return false;
+  const normalized = status.trim().toLowerCase();
+  return normalized === "running" || normalized === "queued";
+}
+
+/**
  * A safe starting spec: two empty dataset slots so the first Plan explains what
  * is missing, and every numeric field already inside its bound.
  */

@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
   ArrowDown01Icon,
+  Cancel01Icon,
   Delete02Icon,
   PlayIcon,
   PlusSignIcon,
@@ -29,6 +30,7 @@ import {
   type AutomatedTrainingPlan,
   type AutomatedTrainingSpec,
   type LabsJob,
+  cancelAutomatedTraining,
   listAutomatedTrainingPresets,
   planAutomatedTraining,
   runAutomatedTraining,
@@ -46,6 +48,7 @@ import {
   clampStepsPerRun,
   defaultAutomatedTrainingSpec,
   isAutomatedCategory,
+  isAutomatedJobCancellable,
   isAutomatedMethod,
   summarizeAutomatedProgress,
   validateAutomatedTrainingSpec,
@@ -119,9 +122,13 @@ function sleep(ms: number): Promise<void> {
 async function waitForAutomatedTraining(
   job: LabsJob,
   onProgress: (progress: Record<string, unknown> | null) => void,
+  onStatus?: (status: string) => void,
 ): Promise<AutomatedTrainingResult> {
   for (let attempt = 0; attempt < 21_600; attempt += 1) {
     const current = await fetchJob(job.job_id);
+    // Reported before the status branches so the panel knows a cancel request
+    // no longer has anything to stop as soon as the job goes terminal.
+    onStatus?.(current.status);
     const progress = current.progress;
     onProgress(
       progress
@@ -179,6 +186,16 @@ export function AutomatedTrainingPanel(): ReactElement {
   const [result, setResult] = useState<AutomatedTrainingResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [failuresExpanded, setFailuresExpanded] = useState(false);
+  // The job the poll is following, so Cancel can name it. Null until the run
+  // route answers, and again once the job is finished.
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [jobStatus, setJobStatus] = useState<string | null>(null);
+  // Set by a cancel click and cleared only when the job is gone, so the button
+  // stays spent instead of inviting a second request the route would 404.
+  const [cancelling, setCancelling] = useState(false);
+  // A failed cancel request must not look like a failed run, and must not stop
+  // the poll, so it gets its own line beside the button.
+  const [cancelError, setCancelError] = useState<string | null>(null);
   // A ref, not the state flag: two clicks in one tick both see running === false.
   const inFlight = useRef(false);
 
@@ -316,14 +333,30 @@ export function AutomatedTrainingPanel(): ReactElement {
     setResult(null);
     setProgress(null);
     setFailuresExpanded(false);
+    setActiveJobId(null);
+    setJobStatus(null);
+    setCancelling(false);
+    setCancelError(null);
     try {
       const spec = buildSpec();
       const job = await runAutomatedTraining(spec);
+      setActiveJobId(job.job_id);
+      setJobStatus(job.status);
       setProgress({ stage: "queued", message: t("labs.automated.starting") });
-      const finished = await waitForAutomatedTraining(job, setProgress);
+      const finished = await waitForAutomatedTraining(
+        job,
+        setProgress,
+        setJobStatus,
+      );
       setProgress(null);
       setResult(finished);
-      toast.success(t("labs.automated.completed"));
+      // A cancelled run ends with status "completed" and result.cancelled true;
+      // a green success toast for it would misreport what happened.
+      if (finished?.cancelled) {
+        toast.message("Automated training cancelled");
+      } else {
+        toast.success(t("labs.automated.completed"));
+      }
     } catch (failure) {
       const message =
         failure instanceof Error ? failure.message : t("labs.automated.failed");
@@ -333,9 +366,34 @@ export function AutomatedTrainingPanel(): ReactElement {
     } finally {
       inFlight.current = false;
       setRunning(false);
+      setActiveJobId(null);
+      setJobStatus(null);
+      setCancelling(false);
     }
   };
 
+  const cancel = async () => {
+    const jobId = activeJobId;
+    if (!jobId || cancelling) return;
+    setCancelling(true);
+    setCancelError(null);
+    try {
+      await cancelAutomatedTraining(jobId);
+    } catch (failure) {
+      // The job is still running and the poll is untouched. Hand the button
+      // back with the reason, so a cancel the route refused is not silent.
+      setCancelling(false);
+      setCancelError(
+        failure instanceof Error
+          ? failure.message
+          : "The cancel request failed.",
+      );
+    }
+  };
+
+  const cancellable = isAutomatedJobCancellable({
+    status: jobStatus ?? undefined,
+  });
   const presetList = presets.length > 0 ? presets : (plan?.presets ?? []);
   const summary = summarizeAutomatedProgress(progress, result);
   const visibleFailures = failuresExpanded
@@ -584,6 +642,18 @@ export function AutomatedTrainingPanel(): ReactElement {
           )}
           {running ? t("labs.automated.running") : t("labs.automated.run")}
         </Button>
+        {running ? (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void cancel()}
+            disabled={cancelling || !cancellable}
+            title="Stop this automated run. Runs already finished stay as they are."
+          >
+            <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
+            {cancelling ? "Cancelling…" : "Cancel"}
+          </Button>
+        ) : null}
         {plan || result || error ? (
           <Button
             size="sm"
@@ -601,6 +671,12 @@ export function AutomatedTrainingPanel(): ReactElement {
           {t("labs.automated.oneJob")}
         </span>
       </div>
+
+      {cancelError ? (
+        <p className="whitespace-pre-wrap text-ui-11 text-destructive">
+          {cancelError}
+        </p>
+      ) : null}
 
       {showSummary ? (
         <div className="flex flex-col gap-2 rounded-lg border border-border/70 bg-muted/30 px-3 py-2">

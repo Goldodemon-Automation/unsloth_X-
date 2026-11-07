@@ -129,6 +129,105 @@ def test_manifest_absent_is_reported_not_invented(tmp_path, monkeypatch):
         artifacts.read_manifest(str(model))
 
 
+def _manifest(directory: Path, stage: str, **extra) -> Path:
+    payload = {
+        "stage": stage,
+        "run_id": "run-1",
+        "created_at": "2026-01-01T00:00:00Z",
+        "studio_version": "x8",
+    }
+    payload.update(extra)
+    (directory / "run_manifest.json").write_text(json.dumps(payload), encoding = "utf-8")
+    return directory
+
+
+def test_stage_label_names_the_automated_stage_in_both_spellings():
+    assert artifacts._stage_label("automated_training") == "Automated training"
+    assert artifacts._stage_label("automated-training") == "Automated training"
+
+
+def test_stage_label_names_a_merge():
+    assert artifacts._stage_label("merge") == "Merge"
+
+
+def test_stage_label_passes_an_unknown_stage_through():
+    assert artifacts._stage_label("brand-new-stage") == "brand-new-stage"
+    assert artifacts._stage_label(None) is None
+    assert artifacts._stage_label("") is None
+
+
+def test_describe_labels_an_automated_product_and_names_its_winner(tmp_path):
+    model = _checkpoint(tmp_path / "outputs" / "run")
+    _manifest(
+        model,
+        "automated_training",
+        rounds = [{"index": 1}],
+        winners = [{"round": 1, "label": "run-1-qlora"}],
+        best = {"round": 1, "score": 0.5},
+    )
+    record = artifacts.describe(model)
+    assert record["manifest"]["stage"] == "automated_training"
+    assert record["manifest"]["stage_label"] == "Automated training"
+    assert record["stage_label"] == "Automated training"
+
+    continue_row = _action(record, "continue-training")
+    assert continue_row["enabled"] is True
+    assert "automated-training product" in continue_row["reason"]
+    assert "run-1-qlora" in continue_row["reason"]
+
+    scale_row = _action(record, "scale")
+    assert scale_row["enabled"] is True
+    assert "automated-training product" in scale_row["reason"]
+
+
+def test_describe_labels_the_hyphenated_automated_stage(tmp_path):
+    model = _checkpoint(tmp_path / "run")
+    _manifest(model, "automated-training", rounds = [])
+    record = artifacts.describe(model)
+    assert record["stage_label"] == "Automated training"
+    assert record["manifest"]["stage_label"] == "Automated training"
+
+
+def test_an_automated_adapter_keeps_the_adapter_reasons(tmp_path):
+    model = _checkpoint(tmp_path / "adapter")
+    (model / "adapter_config.json").write_text("{}", encoding = "utf-8")
+    _manifest(model, "automated_training", rounds = [])
+    record = artifacts.describe(model)
+    assert record["adapter"] is True
+    assert _action(record, "continue-training")["enabled"] is True
+    assert "automated-training product" in _action(record, "continue-training")["reason"]
+    assert _action(record, "scale")["enabled"] is False
+    assert "Merge it into its base" in _action(record, "scale")["reason"]
+    assert "An adapter is not a standalone model" in _action(record, "quantize")["reason"]
+
+
+def test_an_automated_quantized_checkpoint_keeps_its_reason(tmp_path):
+    config = dict(LLAMA)
+    config["quantization_config"] = {"quant_method": "bitsandbytes", "bits": 4}
+    model = _checkpoint(tmp_path / "q4", config)
+    _manifest(model, "automated-training", rounds = [])
+    record = artifacts.describe(model)
+    assert _action(record, "scale")["enabled"] is False
+    assert "fp16/bf16 original" in _action(record, "scale")["reason"]
+
+
+def test_an_automated_moe_checkpoint_keeps_its_reason(tmp_path):
+    config = dict(LLAMA)
+    config["num_local_experts"] = 8
+    model = _checkpoint(tmp_path / "moe", config)
+    _manifest(model, "automated_training", rounds = [])
+    record = artifacts.describe(model)
+    assert record["moe"] is True
+    assert _action(record, "scale")["enabled"] is False
+    assert "Mixture-of-Experts" in _action(record, "scale")["reason"]
+
+
+def test_a_record_without_a_manifest_has_no_stage_label(tmp_path):
+    record = artifacts.describe(_checkpoint(tmp_path / "bare"))
+    assert record["manifest"] is None
+    assert record["stage_label"] is None
+
+
 def _spec(source: Path, *stages: dict) -> dict:
     return {"name": "planned", "source": str(source), "stages": list(stages)}
 

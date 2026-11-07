@@ -11,6 +11,7 @@ of a server-side flag: a hidden button is not a gate.
 
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -862,6 +863,45 @@ _TRAINING_PROGRESS_FIELDS = (
     "output_dir",
 )
 
+# Cancellation flags for the automated jobs this process is running, keyed by the
+# job id ``_start_job`` minted. The engine polls ``event.is_set`` before it starts
+# another run, so setting the flag stops the plan between runs instead of killing a
+# training subprocess mid-step: the rounds that finished are kept, the summary comes
+# back marked ``cancelled``, and the job record still completes normally.
+#
+# Bounded on purpose. The route registers the flag after ``_start_job`` returns, and
+# the work thread takes it out again in its ``finally``, but a flag whose job dies
+# before the id reached the thread would otherwise stay forever. The cap makes that
+# a bounded leak of flags rather than an unbounded one, and dropping the oldest
+# entry only costs a late cancel that answers 404 -- which is honest, the job it
+# would have stopped is gone.
+_AUTOMATED_CANCEL_LOCK = threading.Lock()
+_AUTOMATED_CANCEL: dict[str, threading.Event] = {}
+_AUTOMATED_CANCEL_LIMIT = 64
+
+
+def _register_cancel(job_id: str, event: threading.Event) -> None:
+    """Make ``job_id`` cancellable, keeping the registry bounded."""
+    with _AUTOMATED_CANCEL_LOCK:
+        _AUTOMATED_CANCEL[job_id] = event
+        overflow = len(_AUTOMATED_CANCEL) - _AUTOMATED_CANCEL_LIMIT
+        if overflow > 0:
+            # ``dict`` keeps insertion order, so this drops the oldest flags.
+            for stale in list(_AUTOMATED_CANCEL)[:overflow]:
+                _AUTOMATED_CANCEL.pop(stale, None)
+
+
+def _forget_cancel(job_id: str) -> None:
+    """Drop ``job_id``'s flag; a finished job has nothing left to stop."""
+    with _AUTOMATED_CANCEL_LOCK:
+        _AUTOMATED_CANCEL.pop(job_id, None)
+
+
+def _cancel_event(job_id: str) -> Optional[threading.Event]:
+    """The flag for a job still running here, or ``None``."""
+    with _AUTOMATED_CANCEL_LOCK:
+        return _AUTOMATED_CANCEL.get(job_id)
+
 
 def _training_progress_object(backend: Any) -> Any:
     """The backend's live progress object, whichever surface it exposes.
@@ -1101,23 +1141,14 @@ def _benchmark_adapter(step: dict[str, Any], artifact: dict[str, Any], progress)
     path = str(artifact.get("output_dir") or artifact.get("path") or "").strip()
     if not path:
         return {"score": None}
-    records = benchmarks.list_records(limit = 200, artifact = path)
-    if not records:
-        # CMT writes its trainable checkpoint under subfolders of the step
-        # directory, so an exact path match misses records keyed by the
-        # subfolder. Fall back to the newest record whose artifact lives under
-        # the step directory.
-        prefix = path.replace("\\", "/").rstrip("/") + "/"
-        records = [
-            candidate
-            for candidate in benchmarks.list_records(limit = 200)
-            if str(candidate.get("artifact") or "")
-            .replace("\\", "/")
-            .startswith(prefix)
-        ]
-    if not records:
+    # CMT writes its trainable checkpoint under subfolders of the step directory,
+    # so an exact path match can miss records keyed by the subfolder.
+    # ``newest_for`` owns that rule -- exact path first, then newest under it --
+    # exactly as the Benchmarks page reads it, so argument order and path
+    # normalisation cannot drift between the two callers.
+    record = benchmarks.newest_for(path)
+    if record is None:
         return {"score": None}
-    record = records[0]
     candidates = record.get("candidate_scores")
     scores = (
         [
@@ -1174,19 +1205,37 @@ def run_automated_training(request: AutomatedTrainingRunRequest) -> dict[str, An
         else _cmt_output_dir(source, prefix = "automated")
     )
 
+    # The engine is asked to stop, never killed: it polls this flag before every
+    # run and between rounds, so a cancel keeps the rounds already trained.
+    cancel = threading.Event()
+    # ``_start_job`` mints the id the cancel route is called with, and it starts the
+    # thread before it returns, so the id reaches ``work`` through this holder. The
+    # work thread may finish before the holder is filled; the route below then
+    # forgets the flag it just registered.
+    state: dict[str, Any] = {"job_id": None, "done": False}
+
     def work(progress) -> dict[str, Any]:
-        return _automated_engine().run(
-            request.spec,
-            output_dir = str(output),
-            progress = progress,
-            train = _train_adapter,
-            benchmark = _benchmark_adapter,
-        )
+        try:
+            return _automated_engine().run(
+                request.spec,
+                output_dir = str(output),
+                progress = progress,
+                train = _train_adapter,
+                benchmark = _benchmark_adapter,
+                should_stop = cancel.is_set,
+            )
+        finally:
+            # A finished job must not stay cancellable, or the registry would fill
+            # up with flags nothing polls and a cancel would claim a dead job.
+            state["done"] = True
+            job_id = state["job_id"]
+            if job_id:
+                _forget_cancel(job_id)
 
     from routes.advanced import _start_job
 
     try:
-        return _start_job(
+        record = _start_job(
             "automated-training",
             work,
             output_dir = str(output),
@@ -1197,3 +1246,33 @@ def run_automated_training(request: AutomatedTrainingRunRequest) -> dict[str, An
         # The lease estimate rejects a job kind it has no cost model for. Say which
         # kind instead of raising a 500 that hides why nothing started.
         raise _translate(error) from error
+
+    job_id = str(record.get("job_id") or "")
+    state["job_id"] = job_id
+    if job_id:
+        _register_cancel(job_id, cancel)
+        if state["done"]:
+            # The job finished before it was cancellable, so its own cleanup found
+            # no id to forget. Take the entry back out here.
+            _forget_cancel(job_id)
+    return record
+
+
+@router.post("/automated/jobs/{job_id}/cancel", dependencies = [Depends(_require_owner)])
+def cancel_automated_training(job_id: str) -> dict[str, Any]:
+    """Ask a running automated job to stop before its next run.
+
+    Owner-only, because stopping someone else's training spends their GPU time
+    just as much as starting it would. The engine polls the flag between runs, so
+    this returns as soon as the flag is set; the job record reports the cancel
+    when the plan returns, with the rounds already trained kept.
+    """
+    _gate("automated-training")
+    event = _cancel_event(job_id)
+    if event is None:
+        # 404 rather than 403 or 409: a job this process is not running -- unknown,
+        # finished, or started by a previous process -- has nothing to cancel, and
+        # saying which would leak whether the id ever existed.
+        raise HTTPException(status_code = 404, detail = "Unknown or finished automated job.")
+    event.set()
+    return {"job_id": job_id, "cancelling": True}

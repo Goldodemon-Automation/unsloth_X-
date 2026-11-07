@@ -1107,3 +1107,29 @@ export async function runAutomatedTraining(
   });
   return readJson<LabsJob>(response, "automated run");
 }
+
+/**
+ * What the cancel route answers: the job id it accepted and nothing else. The
+ * job keeps its own status, so the page waits for the poll to see it finish
+ * instead of pretending the training already stopped.
+ */
+export interface AutomatedTrainingCancel {
+  job_id: string;
+  cancelling: true;
+}
+
+/**
+ * Ask the engine to stop a running automated job. A job that already finished
+ * is unknown to the route and answers 404, so the caller reads the error rather
+ * than assume the cancel landed.
+ */
+export async function cancelAutomatedTraining(
+  jobId: string,
+  signal?: AbortSignal,
+): Promise<AutomatedTrainingCancel> {
+  const response = await authFetch(
+    `${BASE}/automated/jobs/${encodeURIComponent(jobId)}/cancel`,
+    { ...jsonRequest({}, "POST"), signal },
+  );
+  return readJson<AutomatedTrainingCancel>(response, "automated cancel");
+}

@@ -36,7 +36,7 @@ not copy the list into the frontend.
 | Id | Kind | What it opens |
 | --- | --- | --- |
 | `artifacts` | studio | The Artifacts studio: produced checkpoints, provenance, legal next steps |
-| `pipelines` | studio | The Pipelines planner: plan a merge → scale → train → quantize → benchmark chain |
+| `pipelines` | studio | The Pipelines planner: plan a merge → scale → train → automated → quantize → benchmark chain |
 | `benchmarks` | studio | The Benchmark studio: score an artifact, keep the report, compare later |
 | `cmt` | studio | CMT: per-dataset splits, capacity-matched expansion, new-blocks-only training |
 | `housekeeping` | studio | The Cleanup studio: output and HF-cache sizes, guarded delete |
@@ -113,17 +113,70 @@ missing, is reported rather than skipped silently. The Best-pick helpers in
 rule it uses to choose between outputs: the higher mean candidate score wins,
 unscored records go last, and ties keep the input order.
 
-### Cancellation and timeouts
+### Cancelling a run
 
-`run(..., should_stop=...)` polls the callback between rounds, before every
-candidate run and before every continuation run. Once it returns `True` nothing
-new starts: the continuation runs of the current round are skipped, the rounds
-that already finished are kept, and the manifest is written with
-`"cancelled": true` and a final `cancelled` progress stage instead of `done`.
-A cancellation is a result, not an error — the call returns normally, and a
-`KeyboardInterrupt` or `SystemExit` raised by an adapter still propagates. The
-route does not pass a stop callback today, so a job started from the page runs
-to its round count; the hook is what a cancel button would use.
+`POST /api/labs/automated/jobs/{job_id}/cancel` asks a running job to stop. It
+is owner-only (`policy.require_owner`) and gated by the `automated-training`
+switch, like the start route. It answers `{"job_id": ..., "cancelling": true}`
+as soon as the flag is set — it does not wait for the run to reach a boundary —
+and answers 404 (`Unknown or finished automated job.`) for a job this process is
+not running: an unknown id, a job that already finished, or one a previous
+process started. The flags sit in a bounded in-process registry
+(`_AUTOMATED_CANCEL`, capped at 64, oldest dropped first), so a restart or
+enough newer jobs means there is nothing left to cancel and the route says 404
+instead of claiming it stopped something.
+
+The route passes `should_stop=cancel.is_set` into the engine, which polls it
+between rounds, before every candidate run and before every continuation run.
+Once it returns `True` nothing new starts: the continuation runs of the current
+round are skipped, the rounds that already finished are kept, the manifest is
+written with `"cancelled": true`, the last progress stage is `cancelled`
+instead of `done`, and `run()` returns normally. A cancellation is a result, not
+an error — the job record completes with that result, and a `KeyboardInterrupt`
+or `SystemExit` raised by an adapter still propagates. A round stopped before it
+produced a single candidate is not recorded at all rather than reported as a
+failed round. The flag is only read between runs, so it never kills a training
+subprocess mid-step: the run already in flight finishes first.
+
+The panel shows a **Cancel** action while a job is running. It is live only for
+a `queued` or `running` job (`isAutomatedJobCancellable`) and shows
+*Cancelling…* until the poll sees a terminal status. A refused request hands
+the button back with the route's reason printed beside it, and the poll keeps
+running; a cancelled result reports `cancelled: true`, which changes the summary
+headline from "finished" to "cancelled".
+
+### Resuming
+
+`run(..., resume_from=...)` continues a run that was cancelled, interrupted or
+simply stopped. `resume_from` names the earlier output directory, or its
+`run_manifest.json` directly, and that manifest supplies what to reuse:
+
+* `rounds` already recorded, keyed by their 1-based `index`. A planned round
+  whose index is already recorded is skipped instead of re-run.
+* `winners`, which the new rounds are appended to, so the new manifest holds the
+  whole history.
+* `totals` (`train_runs`, `benchmark_runs`, `failed_runs`) as the starting values
+  the new rounds add to.
+* `best` (read from the top level, or from `artifacts.best`), used as the
+  checkpoint a resumed round has to beat. It is ranked with `order = -1`, below
+  every candidate of a resumed round, so an equal score keeps the checkpoint the
+  earlier run already produced and only a better score takes the lead.
+
+A `resume` progress stage names how many planned rounds were skipped before the
+first new one starts.
+
+A missing manifest, unreadable JSON, a payload that is not a JSON object, a
+`rounds` block that is not a list, or a record without a usable `index` are each
+ignored with a warning in the returned summary, and the run proceeds from
+scratch; resuming never becomes a failed start for a sick manifest. Without
+`resume_from` nothing changes.
+
+Resume is an engine parameter only so far. `POST /api/labs/automated/run`
+accepts `spec` and `output_dir` (unknown fields are refused), no route passes
+`resume_from`, and the page has no Resume control, so continuing a cancelled job
+from the UI is not wired yet.
+
+### Timeouts
 
 Timeouts belong to the adapter, not the engine. The engine carries
 `timeout_seconds` (0–604800, default 0 meaning "the adapter decides") into every
@@ -206,6 +259,30 @@ The planner prices a chain from `config.json` arithmetic only: parameter
 projections, fp16 bytes, the bytes each GGUF level writes, and the refusals the
 engines already enforce (growth policy, cap, tokenizer mismatch, quantize
 ordering). It never loads weights.
+
+`STAGE_KINDS` is `merge`, `scale`, `train`, `automated`, `quantize`,
+`benchmark`, and that is the order the chain has to respect: a stage after
+`quantize` is refused unless it is `benchmark`, so an `automated` stage has to
+come before the quantization.
+
+`automated` is the new kind, labelled **Automated train**, and it prices an
+automated-training run the way the engine plans it rather than the way it
+feels. It needs a local source folder, and like `scale` it falls back to the
+pipeline-level source when the stage names none; a Hub id or a missing folder
+blocks it. It reads three optional numbers, mirroring the engine's own bounds:
+`runs_per_round` 2–72 (default 8), `rounds` 1–12 (default 2) and
+`continue_runs` 2–72 (default 4). The plan is
+`(runs_per_round + continue_runs) * rounds` training runs, each saved at the
+current fp16 size, so `output_bytes` is that count times `current * 2`.
+`params_after` stays at the current parameter count: the stage retrains the same
+size unless a `scale` stage before it changed it.
+
+The number is a disk figure, not a memory figure, and the plan says so in a
+warning: the engine trains and benchmarks one candidate at a time, keeps the
+round winner and moves on, so the chain prices all saved candidates and does not
+add up concurrent runs. Nothing in the plan executes — the stage is a projection
+of what a run of that shape would write, and a value outside those bounds blocks
+the stage instead of starting anything.
 
 Executing the chain needs durability the job layer does not have yet — jobs live
 in an in-memory dict, leases are taken on the request thread, and a restart

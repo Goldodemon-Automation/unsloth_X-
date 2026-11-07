@@ -41,8 +41,37 @@ export const ja = {
       failed: "再開チェックを実行できませんでした。",
   },
   labs: {
+    title: "Labs",
+    description:
+      "Experiments on the checkpoints this Studio produced: lineage, staged plans, scoring, capacity growth, weight surgery, architecture swaps and cleanup.",
+    experimental: "Experimental",
+    loading: "Reading the Labs switch…",
+    offTitle: "Labs is off",
+    offDescription:
+      "Labs holds unfinished features. Turn it on in Settings → Labs to open the Artifacts, Pipelines, Benchmarks, CMT, Surgery, Arch swap, Lineage and Cleanup studios here.",
+    openSettings: "Open Settings → Labs",
+    reload: "Reload",
+    featureOff: "This experiment is switched off.",
+    masterOff: "Labs is off, so this experiment is not reachable.",
+    unknownFeature: "Experimental feature",
+    unknownFeatureDescription:
+      "This experiment is not registered on this build.",
+    refresh: "Refresh",
+    loadFailed: "Could not load these artifacts",
+    handoff: {
+      continue: "Training will start from this checkpoint",
+      scale: "The Scaler will open on this checkpoint",
+    },
     tab: {
+      artifacts: "Artifacts",
+      pipelines: "Pipelines",
+      benchmarks: "Benchmarks",
       automated: "Automated training",
+      cmt: "CMT",
+      surgery: "Surgery",
+      swap: "Arch swap",
+      lineage: "Lineage",
+      cleanup: "Cleanup",
     },
     automated: {
       title: "Automated training",

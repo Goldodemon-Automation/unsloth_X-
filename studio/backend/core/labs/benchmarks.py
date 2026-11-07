@@ -612,6 +612,50 @@ def _record_score(record: Mapping[str, Any]) -> Optional[float]:
     return sum(values) / len(values)
 
 
+def record_score(record: Mapping[str, Any]) -> Optional[float]:
+    """The mean of one record's finite candidate scores, or ``None``.
+
+    This is the public name for ``_record_score``, which stays as the private
+    implementation so older callers keep working. The rules are unchanged: the
+    mean of the numeric ``candidate_scores`` is the one number a ranking
+    compares; non-numeric entries are ignored; non-finite entries (``NaN``,
+    ``inf``) are dropped; and a record with no finite score at all is
+    *unscored* and yields ``None`` rather than ``0.0``.
+    """
+    return _record_score(record)
+
+
+def score_for(directory: str, *, limit: int = 200) -> Optional[float]:
+    """The score of the record that answers for ``directory``, or ``None``.
+
+    The record is chosen by ``newest_for`` -- the exact checkpoint first, then
+    the newest record under the folder -- and scored by ``record_score``. So a
+    merged-model folder with no record of its own falls back to its newest
+    scored step, which is the ``checkpoint-500`` case.
+
+    ``None`` means one of two things, and callers should not read it as a zero:
+    there is no record for the directory, or the record found is unscored.
+    """
+    return record_score(newest_for(directory, limit = limit))
+
+
+def scored_records(records: Iterable[Mapping[str, Any]]) -> list[tuple[dict, float]]:
+    """Pair every scored record with its score, keeping the input order.
+
+    A record is scored when ``record_score`` returns a finite mean; unscored
+    records are skipped rather than paired with a zero, because a record with
+    no usable score is unknown, not worst. This is pure: it reads nothing, and
+    each pair holds the caller's own record object, not a copy.
+    """
+    pairs: list[tuple[dict, float]] = []
+    for record in records:
+        score = record_score(record)
+        if score is None:
+            continue
+        pairs.append((record, score))
+    return pairs
+
+
 def rank_records(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Order records best-first: the higher mean candidate score wins.
 

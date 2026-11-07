@@ -758,3 +758,277 @@ def test_timeout_seconds_reaches_the_plan_projection_and_rejects_negatives(tmp_p
 
     with pytest.raises(at.AutomatedTrainingError, match="timeout_seconds"):
         at.normalise(_spec(tmp_path, datasets=2, timeout_seconds=-1))
+
+
+# ---------------------------------------------------------------------------
+# Resuming a previous run
+# ---------------------------------------------------------------------------
+
+SUMMARY_KEYS = {
+    "output_dir",
+    "rounds",
+    "best",
+    "train_runs",
+    "benchmark_runs",
+    "failed_runs",
+    "cancelled",
+    "warnings",
+    "manifest_path",
+}
+
+
+def _resume_spec(tmp_path: Path, rounds: int = 1, **overrides) -> dict:
+    return _spec(
+        tmp_path,
+        datasets=2,
+        datasets_per_round=2,
+        methods=["cmt"],
+        runs_per_round=2,
+        continue_runs=2,
+        rounds=rounds,
+        **overrides,
+    )
+
+
+def _benchmark_by_round(scores: dict):
+    """Scores keyed by ``(round, label)``, so each round can score differently."""
+
+    def benchmark(step, artifact, progress):
+        score = scores.get((step["round"], step["label"]))
+        return {
+            "score": score,
+            "record_id": None if score is None else f"rec-{step['round']}-{step['label']}",
+        }
+
+    return benchmark
+
+
+def test_resume_skips_completed_rounds(tmp_path):
+    spec = _resume_spec(tmp_path, rounds=3)
+    scores = {"run-01-cmt": 0.4, "run-02-cmt": 0.8, "continue-01": 0.2, "continue-02": 0.1}
+    first_calls: list = []
+    first = at.run(
+        spec,
+        output_dir=tmp_path / "first",
+        train=_trainer(first_calls),
+        benchmark=_benchmark(scores),
+    )
+    assert first["train_runs"] == (2 + 2) * 3
+
+    progress: list[dict] = []
+    calls: list = []
+    summary = at.run(
+        spec,
+        output_dir=tmp_path / "second",
+        progress=progress.append,
+        train=_trainer(calls),
+        benchmark=_benchmark(scores),
+        resume_from=tmp_path / "first",
+    )
+
+    # Every planned round was already recorded, so nothing was trained again.
+    assert calls == []
+    assert summary["train_runs"] == first["train_runs"]
+    assert summary["benchmark_runs"] == first["benchmark_runs"]
+    assert summary["failed_runs"] == 0
+    assert [record["index"] for record in summary["rounds"]] == [1, 2, 3]
+    assert summary["best"] == first["best"]
+
+    resume_stage = next(payload for payload in progress if payload["stage"] == "resume")
+    assert resume_stage["skipped"] == 3
+    assert resume_stage["total"] == 3
+    assert "3" in resume_stage["message"]
+
+    payload = json.loads(Path(summary["manifest_path"]).read_text(encoding = "utf-8"))
+    assert [record["index"] for record in payload["rounds"]] == [1, 2, 3]
+    assert payload["totals"]["rounds"] == 3
+    assert payload["totals"]["train_runs"] == first["train_runs"]
+    assert payload["spec"]["rounds"] == 3
+
+
+def test_resume_runs_only_the_missing_rounds_and_accumulates_totals(tmp_path):
+    spec = _resume_spec(tmp_path, rounds=3)
+    scores = {"run-01-cmt": 0.4, "run-02-cmt": 0.8, "continue-01": 0.2, "continue-02": 0.1}
+    first_calls: list = []
+    first = at.run(
+        spec,
+        output_dir=tmp_path / "first",
+        train=_trainer(first_calls),
+        benchmark=_benchmark(scores),
+        should_stop=lambda: len(first_calls) >= 4,
+    )
+    assert first["cancelled"] is True
+    assert [record["index"] for record in first["rounds"]] == [1]
+    assert first["train_runs"] == 4
+
+    calls: list = []
+    summary = at.run(
+        spec,
+        output_dir=tmp_path / "second",
+        train=_trainer(calls),
+        benchmark=_benchmark(scores),
+        resume_from=tmp_path / "first",
+    )
+
+    assert summary["cancelled"] is False
+    assert sorted(step["round"] for step in calls) == [2] * 4 + [3] * 4
+    assert [record["index"] for record in summary["rounds"]] == [1, 2, 3]
+    assert summary["train_runs"] == first["train_runs"] + 8
+    assert summary["benchmark_runs"] == first["benchmark_runs"] + 8
+    assert summary["failed_runs"] == first["failed_runs"]
+
+    payload = json.loads(Path(summary["manifest_path"]).read_text(encoding = "utf-8"))
+    assert payload["totals"] == {
+        "train_runs": 12,
+        "benchmark_runs": 12,
+        "failed_runs": 0,
+        "rounds": 3,
+    }
+    assert [record["index"] for record in payload["rounds"]] == [1, 2, 3]
+    assert [winner["round"] for winner in payload["winners"]] == [1, 2, 3]
+
+
+def test_resume_keeps_the_previous_best_when_the_new_round_scores_lower(tmp_path):
+    spec = _resume_spec(tmp_path, rounds=2)
+    first = at.run(
+        _resume_spec(tmp_path, rounds=1),
+        output_dir=tmp_path / "first",
+        train=_trainer([]),
+        benchmark=_benchmark({"run-01-cmt": 0.9, "run-02-cmt": 0.3}),
+    )
+    assert first["best"]["score"] == pytest.approx(0.9)
+    assert first["best"]["round"] == 1
+
+    summary = at.run(
+        spec,
+        output_dir=tmp_path / "second",
+        train=_trainer([]),
+        benchmark=_benchmark_by_round(
+            {(2, "run-01-cmt"): 0.5, (2, "run-02-cmt"): 0.4, (2, "continue-01"): 0.2}
+        ),
+        resume_from=tmp_path / "first",
+    )
+
+    # The resumed round ran, but it did not beat the checkpoint of round 1.
+    assert [record["index"] for record in summary["rounds"]] == [1, 2]
+    assert summary["best"]["round"] == 1
+    assert summary["best"]["score"] == pytest.approx(0.9)
+    assert summary["best"]["output_dir"] == first["best"]["output_dir"]
+
+
+def test_resume_lets_a_better_round_replace_the_previous_best(tmp_path):
+    spec = _resume_spec(tmp_path, rounds=2)
+    first = at.run(
+        _resume_spec(tmp_path, rounds=1),
+        output_dir=tmp_path / "first",
+        train=_trainer([]),
+        benchmark=_benchmark({"run-01-cmt": 0.3, "run-02-cmt": 0.5}),
+    )
+    assert first["best"]["score"] == pytest.approx(0.5)
+
+    calls: list = []
+    summary = at.run(
+        spec,
+        output_dir=tmp_path / "second",
+        train=_trainer(calls),
+        benchmark=_benchmark_by_round(
+            {(2, "run-01-cmt"): 0.60, (2, "run-02-cmt"): 0.70, (2, "continue-01"): 0.65}
+        ),
+        resume_from=tmp_path / "first",
+    )
+
+    assert sorted({step["round"] for step in calls}) == [2]
+    assert summary["best"]["round"] == 2
+    assert summary["best"]["score"] == pytest.approx(0.70)
+    assert summary["best"]["output_dir"].startswith(str(tmp_path / "second"))
+
+
+def test_a_tie_keeps_the_best_the_previous_run_already_found(tmp_path):
+    spec = _resume_spec(tmp_path, rounds=2)
+    first = at.run(
+        _resume_spec(tmp_path, rounds=1),
+        output_dir=tmp_path / "first",
+        train=_trainer([]),
+        benchmark=_benchmark({"run-01-cmt": 0.5, "run-02-cmt": 0.2}),
+    )
+
+    summary = at.run(
+        spec,
+        output_dir=tmp_path / "second",
+        train=_trainer([]),
+        benchmark=_benchmark_by_round(
+            {(2, "run-01-cmt"): 0.5, (2, "run-02-cmt"): 0.5, (2, "continue-01"): 0.5}
+        ),
+        resume_from=tmp_path / "first",
+    )
+
+    assert summary["best"]["round"] == 1
+    assert summary["best"]["output_dir"] == first["best"]["output_dir"]
+
+
+def test_a_malformed_manifest_is_ignored_with_a_warning(tmp_path):
+    spec = _resume_spec(tmp_path, rounds=2)
+    stale = tmp_path / "stale"
+    stale.mkdir()
+    (stale / "run_manifest.json").write_text("{not json at all", encoding = "utf-8")
+
+    calls: list = []
+    stages: list[str] = []
+    summary = at.run(
+        spec,
+        output_dir=tmp_path / "out",
+        progress=lambda payload: stages.append(payload["stage"]),
+        train=_trainer(calls),
+        benchmark=_benchmark({"run-01-cmt": 0.4, "run-02-cmt": 0.2}),
+        resume_from=stale,
+    )
+
+    assert len(calls) == 8
+    assert [record["index"] for record in summary["rounds"]] == [1, 2]
+    assert summary["train_runs"] == 8
+    assert summary["best"]["round"] == 2
+    assert any("could not be read as JSON" in warning for warning in summary["warnings"])
+    # Nothing was reused, so this was not a resume: no resume stage is emitted.
+    assert "resume" not in stages
+
+
+def test_a_missing_manifest_is_ignored_with_a_warning(tmp_path):
+    spec = _resume_spec(tmp_path, rounds=1)
+    calls: list = []
+    summary = at.run(
+        spec,
+        output_dir=tmp_path / "out",
+        train=_trainer(calls),
+        benchmark=_benchmark({"run-01-cmt": 0.4, "run-02-cmt": 0.2}),
+        resume_from=tmp_path / "never-ran",
+    )
+
+    assert len(calls) == 4
+    assert summary["train_runs"] == 4
+    assert summary["best"]["round"] == 1
+    assert any("has no run manifest" in warning for warning in summary["warnings"])
+
+
+def test_without_resume_from_the_summary_is_unchanged(tmp_path):
+    spec = _resume_spec(tmp_path, rounds=1)
+    stages: list[str] = []
+    summary = at.run(
+        spec,
+        output_dir=tmp_path / "out",
+        progress=lambda payload: stages.append(payload["stage"]),
+        train=_trainer([]),
+        benchmark=_benchmark({"run-01-cmt": 0.4, "run-02-cmt": 0.2}),
+    )
+
+    assert set(summary) == SUMMARY_KEYS
+    assert summary["warnings"] == []
+    assert "resume" not in stages
+    assert summary["rounds"][0]["index"] == 1
+    payload = json.loads(Path(summary["manifest_path"]).read_text(encoding = "utf-8"))
+    assert payload["totals"] == {
+        "train_runs": 4,
+        "benchmark_runs": 4,
+        "failed_runs": 0,
+        "rounds": 1,
+    }
+    assert [record["index"] for record in payload["rounds"]] == [1]

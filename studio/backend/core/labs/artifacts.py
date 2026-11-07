@@ -36,6 +36,105 @@ _MAX_CANDIDATES = 400
 
 
 # ---------------------------------------------------------------------------
+# Stage names
+# ---------------------------------------------------------------------------
+
+# A stage writes its own spelling into the manifest (``cmt``, ``arch-swap``,
+# ``automated_training``), which is not what a page should show. This is the
+# display name for every stage the Studio writes today; an unknown stage falls
+# back to its raw value rather than being hidden.
+_STAGE_LABELS = {
+    "merge": "Merge",
+    "scale": "Scale",
+    "autoscale": "Autoscale",
+    "cmt": "CMT",
+    "train": "Training",
+    "eval": "Evaluation",
+    "benchmark": "Benchmark",
+    "automated-training": "Automated training",
+    "split": "Split",
+    "moe": "MoE",
+    "moe-ification": "MoE-ification",
+    "prune": "Prune",
+    "surgery": "Surgery",
+    "arch-swap": "Architecture swap",
+}
+_AUTOMATED_TRAINING_STAGE = "automated-training"
+
+
+def _normalised_stage(stage: Optional[str]) -> Optional[str]:
+    """A stage compared the way the manifests spell it, or ``None``.
+
+    The automated-training engine writes ``automated_training`` while the
+    resource kind is ``automated-training``; both must land on one key.
+    """
+    if not isinstance(stage, str):
+        return None
+    key = stage.strip().replace("_", "-").lower()
+    return key or None
+
+
+def _stage_label(stage: Optional[str]) -> Optional[str]:
+    """The display label for a manifest stage, or the raw stage when unknown."""
+    key = _normalised_stage(stage)
+    if key is None:
+        return None
+    return _STAGE_LABELS.get(key, stage)
+
+
+def _is_automated_training(stage: Optional[str], manifest: Optional[dict[str, Any]]) -> bool:
+    """True for an automated-training artifact, by stage or by its rounds block."""
+    if _normalised_stage(stage) == _AUTOMATED_TRAINING_STAGE:
+        return True
+    return isinstance(manifest, dict) and isinstance(manifest.get("rounds"), list)
+
+
+def _best_round_name(manifest: Optional[dict[str, Any]]) -> Optional[str]:
+    """The best round's label, read from the manifest the engine wrote."""
+    if not isinstance(manifest, dict):
+        return None
+    best = manifest.get("best")
+    if not isinstance(best, dict):
+        artifacts_block = manifest.get("artifacts")
+        best = artifacts_block.get("best") if isinstance(artifacts_block, dict) else None
+    best = best if isinstance(best, dict) else {}
+
+    label = best.get("label")
+    if isinstance(label, str) and label.strip():
+        return label.strip()
+
+    best_round = best.get("round")
+    winners = manifest.get("winners")
+    if isinstance(winners, list):
+        for entry in winners:
+            if not isinstance(entry, dict) or entry.get("round") != best_round:
+                continue
+            winner_label = entry.get("label")
+            if isinstance(winner_label, str) and winner_label.strip():
+                return winner_label.strip()
+    if best_round is not None:
+        return f"round {best_round}"
+    method = best.get("method")
+    if isinstance(method, str) and method.strip():
+        return method.strip()
+    return None
+
+
+def _automated_training_reason(manifest: Optional[dict[str, Any]]) -> str:
+    """Why an automated-training folder deserves its own next-step note."""
+    best = _best_round_name(manifest)
+    if best:
+        return (
+            f"This folder is an automated-training product; its best round is {best}. "
+            "Continue from it to keep training that winner."
+        )
+    return (
+        "This folder is an automated-training product; its run manifest names the best "
+        "round. Continue from it to keep training that winner."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Reading a folder
 # ---------------------------------------------------------------------------
 
@@ -79,6 +178,7 @@ def _manifest_summary(directory: Path) -> tuple[Optional[dict[str, Any]], bool]:
         return None, True
     summary = {
         "stage": manifest.get("stage"),
+        "stage_label": _stage_label(manifest.get("stage")),
         "run_id": manifest.get("run_id"),
         "created_at": manifest.get("created_at"),
         "studio_version": manifest.get("studio_version"),
@@ -100,7 +200,9 @@ def _modified(directory: Path) -> str:
 
 
 def _action(action_id: str, enabled: bool, reason: Optional[str] = None) -> dict[str, Any]:
-    return {"id": action_id, "enabled": bool(enabled), "reason": None if enabled else reason}
+    # A reason normally explains a refusal, but an enabled row may still carry a
+    # note (an automated-training product says where its winner came from).
+    return {"id": action_id, "enabled": bool(enabled), "reason": reason}
 
 
 def _actions(
@@ -111,8 +213,14 @@ def _actions(
     supported: bool,
     params: Optional[int],
     model_type: Optional[str],
+    stage: Optional[str] = None,
+    manifest: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, Any]]:
-    """Every next step, with the reason it is unavailable when it is."""
+    """Every next step, with the reason it is unavailable when it is.
+
+    ``stage``/``manifest`` are only used to annotate an automated-training
+    product; they never change which actions are enabled.
+    """
     family = model_type or "this model type"
     dense_reason = None
     if adapter:
@@ -140,9 +248,16 @@ def _actions(
             "2x would exceed it."
         )
 
+    automated_reason = (
+        _automated_training_reason(manifest)
+        if _is_automated_training(stage, manifest)
+        else None
+    )
+
     return [
-        _action("continue-training", True, None),
-        _action("scale", scale_enabled, dense_reason),
+        _action("continue-training", True, automated_reason),
+        # A refusal still wins: the folder's own limit is the useful sentence.
+        _action("scale", scale_enabled, dense_reason or automated_reason),
         _action("merge", dense_reason is None, dense_reason),
         _action(
             "quantize",
@@ -174,6 +289,7 @@ def describe(directory: Path) -> dict[str, Any]:
     supported = bool(model_type) and str(model_type) in SUPPORTED_MODEL_TYPES
     params = _base_params(config) if config else None
     manifest, manifest_present = _manifest_summary(directory)
+    document = _read_json(directory / MANIFEST_NAME) if manifest_present else None
     size = _weights_bytes(directory)
     return {
         "path": str(directory),
@@ -188,6 +304,7 @@ def describe(directory: Path) -> dict[str, Any]:
         "supported": supported,
         "manifest": manifest,
         "manifest_path": str(directory / MANIFEST_NAME) if manifest_present else None,
+        "stage_label": manifest.get("stage_label") if manifest else None,
         "actions": _actions(
             adapter=adapter,
             quantized=quantized,
@@ -195,6 +312,8 @@ def describe(directory: Path) -> dict[str, Any]:
             supported=supported,
             params=params,
             model_type=model_type,
+            stage=manifest.get("stage") if manifest else None,
+            manifest=document,
         ),
     }
 

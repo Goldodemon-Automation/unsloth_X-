@@ -34,11 +34,12 @@ from core.advanced.scaling import (
     growth_policy,
 )
 
-STAGE_KINDS = ("merge", "scale", "train", "quantize", "benchmark")
+STAGE_KINDS = ("merge", "scale", "train", "automated", "quantize", "benchmark")
 STAGE_LABELS = {
     "merge": "Merge",
     "scale": "Scale",
     "train": "Train",
+    "automated": "Automated train",
     "quantize": "Quantize",
     "benchmark": "Benchmark",
 }
@@ -63,6 +64,14 @@ QUANT_BYTES_PER_PARAM: dict[str, float] = {
 _RECOVERY_TOKENS_REFERENCE = 194_000_000_000
 
 _DEFAULT_TRAIN = {"steps": 60, "batch_size": 1, "sequence_length": 2048}
+
+# The bounds the automated engine itself enforces (core/labs/automated_training.py);
+# the planner mirrors them so a chain is refused here rather than at run time.
+_AUTOMATED_RUNS = {
+    "runs_per_round": (8, 2, 72),
+    "rounds": (2, 1, 12),
+    "continue_runs": (4, 2, 72),
+}
 
 
 class PipelineError(ValueError):
@@ -335,6 +344,67 @@ def _plan_train(stage: dict[str, Any], spec: Mapping[str, Any], current: Optiona
     return current
 
 
+def _plan_automated(stage: dict[str, Any], spec: Mapping[str, Any], current: Optional[int]) -> Optional[int]:
+    """Price an automated-training stage: rounds of saved candidates.
+
+    The engine samples a subset of the dataset pool each round, trains and
+    benchmarks ``runs_per_round`` candidates, continue-trains the round winner
+    ``continue_runs`` times, and keeps one checkpoint per round. The plan is
+    therefore ``(runs_per_round + continue_runs) * rounds`` training runs, each
+    saved at the current fp16 size. The stage retrains the same parameter count
+    unless a preceding scale stage already changed it.
+    """
+    source = spec.get("source")
+    if _local_dir(source) is None:
+        return _blocked(
+            stage,
+            "An automated stage retrains a checkpoint, so its source must be a local "
+            "folder. Set the pipeline source (or this stage's source) to the downloaded "
+            "checkpoint first.",
+            current,
+        )
+
+    values: dict[str, int] = {}
+    for key, (default, minimum, maximum) in _AUTOMATED_RUNS.items():
+        raw = spec.get(key, default)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            return _blocked(stage, f"{key} must be a number.", current)
+        value = int(raw)
+        if not minimum <= value <= maximum:
+            return _blocked(
+                stage,
+                f"{key} must be between {minimum} and {maximum}; got {value}.",
+                current,
+            )
+        values[key] = value
+
+    runs = (values["runs_per_round"] + values["continue_runs"]) * values["rounds"]
+    stage["details"] = {
+        "source": source,
+        "runs_per_round": values["runs_per_round"],
+        "rounds": values["rounds"],
+        "continue_runs": values["continue_runs"],
+        "training_runs": runs,
+        "saved_candidates": runs,
+    }
+    stage["params_after"] = current
+    if current:
+        # One fp16 checkpoint per saved candidate; the arithmetic every other
+        # stage here uses to price a checkpoint on disk.
+        stage["output_bytes"] = int(current * 2 * runs)
+    else:
+        stage["warnings"].append(
+            "The checkpoint's parameter count is unknown, so the size of the saved "
+            "candidates cannot be estimated."
+        )
+    stage["warnings"].append(
+        "The real peak is one run at a time: the engine trains and benchmarks a "
+        f"candidate, keeps the round winner, and moves on. This chain prices all {runs} "
+        "saved candidates at their fp16 size; it does not add up concurrent runs."
+    )
+    return current
+
+
 def _plan_quantize(stage: dict[str, Any], spec: Mapping[str, Any], current: Optional[int]) -> Optional[int]:
     level = str(spec.get("level") or "q4_k_m").lower()
     if level not in QUANT_BYTES_PER_PARAM:
@@ -421,7 +491,7 @@ def preflight(spec: Mapping[str, Any]) -> dict[str, Any]:
         stage = _stage(kind, index)
         stage["params_before"] = current
         effective = dict(raw)
-        if kind == "scale" and not effective.get("source"):
+        if kind in ("scale", "automated") and not effective.get("source"):
             effective["source"] = source
         before = current
         if kind == "merge":
@@ -430,6 +500,8 @@ def preflight(spec: Mapping[str, Any]) -> dict[str, Any]:
             current = _plan_scale(stage, effective, current)
         elif kind == "train":
             current = _plan_train(stage, effective, current)
+        elif kind == "automated":
+            current = _plan_automated(stage, effective, current)
         elif kind == "quantize":
             current = _plan_quantize(stage, effective, current)
             quantized_at = index
