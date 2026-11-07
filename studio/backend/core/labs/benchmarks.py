@@ -18,12 +18,13 @@ path is checked against the Studio output folder before it is read.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 _MAX_RECORDS = 500
 _ID = re.compile(r"^[a-f0-9]{16,32}$")
@@ -478,3 +479,68 @@ def annotate(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
         record["vs_pinned"] = verdict(record, pins, references)
     return records
+
+
+# ---------------------------------------------------------------------------
+# Picking the best of several runs
+# ---------------------------------------------------------------------------
+#
+# An automated round trains more than one candidate and needs to say which one
+# came out ahead. That decision is pure arithmetic over records that already
+# exist, so it lives here rather than in the loop: no filesystem, no pins, and
+# nothing to mock. A record's candidate scores are the mean the rank uses,
+# because a checkpoint that wins one suite and loses another still needs a
+# single number, and ``_scores`` already dropped the non-numeric entries.
+
+
+def _record_score(record: Mapping[str, Any]) -> Optional[float]:
+    """The mean of this record's finite candidate scores, or ``None``.
+
+    A record carries one score per eval suite. The mean of those candidate
+    scores is the one number the ranking compares. Non-numeric entries are
+    ignored by ``_scores``, and non-finite ones (``NaN``, ``inf``) are dropped
+    here, so a suite that failed to report a usable number cannot poison the
+    mean. A record with no finite score at all is *unscored*: it is not zero,
+    and it must not rank as if it were the worst result.
+    """
+    if not isinstance(record, Mapping):
+        return None
+    values = [
+        float(value)
+        for value in _scores(record.get("candidate_scores")).values()
+        if math.isfinite(value)
+    ]
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def rank_records(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Order records best-first: the higher mean candidate score wins.
+
+    Sorting is by mean candidate score, descending. A record with no finite
+    score goes last, not first, because "unknown" is not "worst". Ties keep
+    the order the caller supplied: ``sorted`` is stable, and every score is
+    finite, so there is nothing to compare beyond the score. The input records
+    are never changed and a new list is returned.
+    """
+
+    def key(record: Mapping[str, Any]) -> tuple[int, float]:
+        score = _record_score(record)
+        if score is None:
+            return (1, 0.0)
+        return (0, -score)
+
+    return sorted(records, key = key)
+
+
+def best_record(records: Iterable[Mapping[str, Any]]) -> Optional[dict[str, Any]]:
+    """The top-ranked record, or ``None`` when nothing was supplied.
+
+    This is the pick an automated round keeps: the checkpoint that scored best
+    on the mean of its candidate suites. It is ``rank_records`` in one step,
+    and it shares that rule -- higher mean wins, unscored last, ties keep the
+    caller's order.
+    """
+    ranked = rank_records(records)
+    return ranked[0] if ranked else None

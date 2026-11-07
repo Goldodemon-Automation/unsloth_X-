@@ -145,6 +145,17 @@ FEATURES: tuple[dict[str, Any], ...] = (
         "status": "beta",
         "studio": False,
     },
+    {
+        "id": "automated-training",
+        "label": "Automated training",
+        "description": (
+            "Sample 2-8 datasets by category (code, syntax or reasoning), train 2-72 "
+            "runs across CMT, CPT and FFT, benchmark each one, keep the best and "
+            "continue-train it 2-72 more times over repeated rounds."
+        ),
+        "status": "alpha",
+        "studio": True,
+    },
 )
 
 FEATURE_IDS: tuple[str, ...] = tuple(feature["id"] for feature in FEATURES)

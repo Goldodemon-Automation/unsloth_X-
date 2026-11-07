@@ -1008,3 +1008,102 @@ export async function runArchSwap(spec: ArchSwapSpec): Promise<LabsJob> {
   });
   return readJson<LabsJob>(response, "arch swap run");
 }
+
+export type AutomatedTrainingCategory =
+  | "code"
+  | "syntax"
+  | "reasoning"
+  | "general";
+
+export type AutomatedTrainingMethod = "cmt" | "cpt" | "fft";
+
+export interface AutomatedTrainingDatasetSpec {
+  path?: string;
+  repo_id?: string;
+  name?: string;
+  category?: AutomatedTrainingCategory;
+  eval_fraction?: number;
+}
+
+export interface AutomatedTrainingSpec {
+  source: string;
+  datasets: AutomatedTrainingDatasetSpec[];
+  methods?: AutomatedTrainingMethod[];
+  datasets_per_round?: number;
+  runs_per_round?: number;
+  rounds?: number;
+  continue_runs?: number;
+  seed?: number;
+  steps_per_run?: number;
+  preset?: string;
+  benchmark?: { suites?: string[]; limit?: number; batch_size?: number };
+  training_kwargs?: Record<string, unknown>;
+}
+
+export interface AutomatedTrainingRunStep {
+  index: number;
+  method: AutomatedTrainingMethod;
+  datasets: string[];
+  steps: number;
+}
+
+export interface AutomatedTrainingRound {
+  index: number;
+  datasets: string[];
+  runs: AutomatedTrainingRunStep[];
+  continue_runs: number;
+}
+
+export interface AutomatedPreset {
+  id: string;
+  label: string;
+  description: string;
+  spec: Partial<AutomatedTrainingSpec>;
+}
+
+export interface AutomatedTrainingPlan {
+  runnable: boolean;
+  blocked_reason?: string | null;
+  rounds: AutomatedTrainingRound[];
+  warnings: string[];
+  projection: {
+    total_train_runs: number;
+    datasets_per_round: number;
+    rounds: number;
+  };
+  presets: AutomatedPreset[];
+}
+
+export async function listAutomatedTrainingPresets(
+  signal?: AbortSignal,
+): Promise<{ presets: AutomatedPreset[] }> {
+  const response = await authFetch(`${BASE}/automated/presets`, {
+    method: "GET",
+    signal,
+  });
+  return readJson<{ presets: AutomatedPreset[] }>(
+    response,
+    "automated presets",
+  );
+}
+
+export async function planAutomatedTraining(
+  spec: AutomatedTrainingSpec,
+  signal?: AbortSignal,
+): Promise<AutomatedTrainingPlan> {
+  const response = await authFetch(`${BASE}/automated/plan`, {
+    ...jsonRequest({ spec }, "POST"),
+    signal,
+  });
+  return readJson<AutomatedTrainingPlan>(response, "automated plan");
+}
+
+export async function runAutomatedTraining(
+  spec: AutomatedTrainingSpec,
+  outputDir?: string,
+): Promise<LabsJob> {
+  const response = await authFetch(`${BASE}/automated/run`, {
+    ...jsonRequest({ spec, output_dir: outputDir }, "POST"),
+  });
+  return readJson<LabsJob>(response, "automated run");
+}

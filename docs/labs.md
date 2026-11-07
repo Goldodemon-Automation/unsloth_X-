@@ -44,6 +44,7 @@ not copy the list into the frontend.
 | `manifest-viewer` | feature | The raw `run_manifest.json` beside an artifact |
 | `scale-from-artifact` | feature | Hand one artifact's path to the Scaler |
 | `training-continuation` | feature | Make an artifact the Training model in one click |
+| `automated-training` | studio | The Automated training loop: sample datasets, run CMT/CPT/FFT trainings, benchmark each and continue the best |
 
 Each row in the Settings tab toggles one of these. A feature that is off says so
 on its own page (`LabsOffCard`) rather than disappearing.
@@ -59,6 +60,37 @@ The studio reuses the existing `eval_harness`/`eval_runner` pair. It does not
 add a second benchmark implementation, so the suites and the `lm-eval` install
 check stay in one place. A delta under 1.5 points is labelled within noise, the
 same convention the post-training Regression Guard uses.
+
+## Automated training
+
+`core/labs/automated_training.py` is the loop that searches instead of asking
+for one setting. Each round it:
+
+1. Samples 2–8 datasets by category: code, syntax or reasoning.
+2. Runs 2–72 training runs across CMT, CPT and FFT.
+3. Benchmarks every output with the Benchmark studio.
+4. Keeps the best checkpoint, continues training it 2–72 more times, and
+   repeats for N rounds.
+
+Every number is user-selectable, and presets exist for a quick first run, so
+those ranges are defaults rather than a hard-coded plan. The loop stops at the
+round count the user gave; it does not decide on its own that the search is
+done. It writes the usual `run_manifest.json` and benchmark records, so an
+abandoned round is still traceable.
+
+The three methods are not interchangeable, and the loop says so:
+
+* **CMT** runs directly: it owns its datasets, per-dataset splits and eval, so
+  it needs no extra trainer settings.
+* **CPT** and **FFT** need `training_kwargs` for the dataset, method and
+  parameters the trainer expects, because they post a normal training start
+  rather than the CMT route.
+
+A category that cannot be sampled, or a method whose `training_kwargs` are
+missing, is reported rather than skipped silently. The Best-pick helpers in
+`benchmarks.py` (`_record_score`, `rank_records`, `best_record`) are the pure
+rule it uses to choose between outputs: the higher mean candidate score wins,
+unscored records go last, and ties keep the input order.
 
 ## CMT is one job and one experiment
 
