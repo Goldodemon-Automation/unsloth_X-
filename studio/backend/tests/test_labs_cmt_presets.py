@@ -146,3 +146,67 @@ def test_plan_with_a_preset_still_reports_runnable(tmp_path):
     assert report["runnable"] is True
     assert report["training"]["max_steps"] == 150
     assert report["training"]["patience"] == 5
+
+
+# ---------------------------------------------------------------------------
+# PRESET_IDS / preset_values: the machine-readable view of the same table
+# ---------------------------------------------------------------------------
+
+
+def test_preset_ids_is_derived_from_the_preset_keys():
+    assert cmt.PRESET_IDS == tuple(PRESET_IDS)
+    assert tuple(cmt.PRESETS) == cmt.PRESET_IDS
+    assert tuple(preset["id"] for preset in cmt.presets()) == cmt.PRESET_IDS
+
+
+def test_preset_values_returns_a_copy_that_cannot_mutate_the_table():
+    values = cmt.preset_values("balanced")
+    assert values == cmt.PRESETS["balanced"]["values"]
+    values["max_steps"] = 999_999
+    values["smuggled"] = True
+    assert cmt.PRESETS["balanced"]["values"]["max_steps"] == 100
+    assert "smuggled" not in cmt.PRESETS["balanced"]["values"]
+    assert cmt.preset_values("balanced")["max_steps"] == 100
+    assert "smuggled" not in cmt.preset_values("balanced")
+    # Copies are per call, not shared between callers.
+    assert cmt.preset_values("balanced") is not cmt.preset_values("balanced")
+
+
+def test_preset_values_unknown_id_raises_and_lists_every_valid_id():
+    with pytest.raises(ValueError) as excinfo:
+        cmt.preset_values("turbo")
+    message = str(excinfo.value)
+    assert "turbo" in message
+    for preset_id in cmt.PRESET_IDS:
+        assert preset_id in message
+
+
+def test_preset_values_accepts_a_padded_id():
+    assert cmt.preset_values("  code-heavy  ") == cmt.PRESETS["code-heavy"]["values"]
+
+
+@pytest.mark.parametrize("preset_id", PRESET_IDS)
+def test_presets_and_preset_values_agree_for_every_id(preset_id):
+    listed = cmt.presets()
+    payload = next(preset for preset in listed if preset["id"] == preset_id)
+    values = cmt.preset_values(preset_id)
+    # Same field set and same numbers, including the per-dataset eval fraction.
+    assert payload["values"] == values
+    assert set(payload) == {"id", "label", "description", "values"}
+    assert set(payload["values"]) == set(cmt.PRESETS[preset_id]["values"])
+    assert payload["label"] == cmt.PRESETS[preset_id]["label"]
+    assert payload["description"] == cmt.PRESETS[preset_id]["description"]
+    # Agreement is by value, not by a shared mutable object.
+    assert payload["values"] is not values
+
+
+@pytest.mark.parametrize("preset_id", PRESET_IDS)
+def test_normalise_merges_the_same_values_preset_values_reports(tmp_path, preset_id):
+    request = cmt._normalise(_spec(tmp_path, preset = preset_id))
+    values = cmt.preset_values(preset_id)
+    assert request["preset"] == preset_id
+    for key, value in values.items():
+        if key == "eval_fraction":
+            assert all(entry["eval_fraction"] == value for entry in request["datasets"])
+        else:
+            assert request[key] == value

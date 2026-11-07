@@ -58,9 +58,12 @@ _SLUG = re.compile(r"[^a-z0-9_-]+")
 # inside the bounds _normalise enforces, so a preset can never make a request
 # invalid on its own. ``eval_fraction`` is per dataset, not a top-level field, so
 # it is read here as the fallback for each dataset entry.
+#
+# The id is the dict key, not a field inside the entry, so a preset cannot drift
+# from the name it is looked up by. ``_preset_payload`` below is the one place
+# that turns an entry into the {id, label, description, values} shape callers see.
 PRESETS: dict[str, dict[str, Any]] = {
     "quick-check": {
-        "id": "quick-check",
         "label": "Quick check",
         "description": (
             "A short smoke run: 40 steps, effective batch 4, checks every 10 steps. "
@@ -76,7 +79,6 @@ PRESETS: dict[str, dict[str, Any]] = {
         },
     },
     "balanced": {
-        "id": "balanced",
         "label": "Balanced",
         "description": (
             "The everyday mix: 100 steps, effective batch 8, checks every 20 steps "
@@ -92,7 +94,6 @@ PRESETS: dict[str, dict[str, Any]] = {
         },
     },
     "code-heavy": {
-        "id": "code-heavy",
         "label": "Code heavy",
         "description": (
             "Tuned for code corpora: a higher learning rate, checks every 15 steps and "
@@ -109,7 +110,6 @@ PRESETS: dict[str, dict[str, Any]] = {
         },
     },
     "reasoning-heavy": {
-        "id": "reasoning-heavy",
         "label": "Reasoning heavy",
         "description": (
             "A longer run: 150 steps, a higher learning rate and more patience, for "
@@ -127,12 +127,43 @@ PRESETS: dict[str, dict[str, Any]] = {
     },
 }
 
-_PRESET_IDS: tuple[str, ...] = ("quick-check", "balanced", "code-heavy", "reasoning-heavy")
+# Derived from PRESETS itself, so the id list and the entries can never disagree.
+PRESET_IDS: tuple[str, ...] = tuple(PRESETS)
+
+
+def _preset_payload(preset_id: str) -> dict[str, Any]:
+    """The one definition of a preset's public shape.
+
+    ``presets()``, ``preset_values()`` and ``_normalise`` all read through here, so
+    the id/label/description/values a caller sees cannot drift between them.
+    Returns a deep copy, so nothing a caller does can reach module state.
+    """
+    key = str(preset_id).strip()
+    preset = PRESETS.get(key)
+    if preset is None:
+        raise ValueError(
+            f"Unknown CMT preset {key!r}. Valid presets are: {', '.join(PRESET_IDS)}."
+        )
+    return {
+        "id": key,
+        "label": preset["label"],
+        "description": preset["description"],
+        "values": copy.deepcopy(preset["values"]),
+    }
 
 
 def presets() -> list[dict[str, Any]]:
     """JSON-safe copies of the named presets, so callers cannot mutate module state."""
-    return [copy.deepcopy(PRESETS[preset_id]) for preset_id in _PRESET_IDS]
+    return [_preset_payload(preset_id) for preset_id in PRESET_IDS]
+
+
+def preset_values(preset_id: str) -> dict[str, Any]:
+    """A deep copy of one preset's ``values``, ready to merge into a spec.
+
+    Raises ValueError naming every valid id, so an unknown id fails the same way
+    ``_normalise`` does instead of surfacing a bare KeyError.
+    """
+    return _preset_payload(preset_id)["values"]
 
 
 # ---------------------------------------------------------------------------
@@ -168,14 +199,12 @@ def _normalise(spec: Mapping[str, Any]) -> dict[str, Any]:
     preset_values: dict[str, Any] = {}
     if raw_preset not in (None, ""):
         preset_id = str(raw_preset).strip()
-        preset = PRESETS.get(preset_id)
-        if preset is None:
-            raise ValueError(
-                f"Unknown CMT preset {preset_id!r}. Valid presets are: {', '.join(_PRESET_IDS)}."
-            )
+        # One source for the defaults: the same helper the presets endpoints read,
+        # so a preset can never mean one thing here and another there. It raises
+        # ValueError listing PRESET_IDS for an unknown id.
+        preset_values = _preset_payload(preset_id)["values"]
         # A preset supplies defaults only: an explicit spec field below still
         # overrides it, and an unset field falls through to the existing default.
-        preset_values = dict(preset["values"])
 
     effective: dict[str, Any] = dict(spec)
     for key, value in preset_values.items():
