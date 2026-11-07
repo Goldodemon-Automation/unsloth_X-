@@ -28,6 +28,7 @@ Two honesty rules matter here:
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
@@ -46,6 +47,92 @@ _SUPPORTED_SUFFIXES = (".jsonl", ".json", ".parquet", ".csv", ".txt")
 _HUB_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+$")
 
 _SLUG = re.compile(r"[^a-z0-9_-]+")
+
+
+# ---------------------------------------------------------------------------
+# Named presets
+# ---------------------------------------------------------------------------
+
+# Four ready-made starting points. A preset only supplies defaults for fields a
+# caller leaves unset; every explicit spec field still wins. The numbers stay
+# inside the bounds _normalise enforces, so a preset can never make a request
+# invalid on its own. ``eval_fraction`` is per dataset, not a top-level field, so
+# it is read here as the fallback for each dataset entry.
+PRESETS: dict[str, dict[str, Any]] = {
+    "quick-check": {
+        "id": "quick-check",
+        "label": "Quick check",
+        "description": (
+            "A short smoke run: 40 steps, effective batch 4, checks every 10 steps. "
+            "Use it to prove the datasets, checkpoint and pipeline work before a full run."
+        ),
+        "values": {
+            "max_steps": 40,
+            "batch_size": 1,
+            "gradient_accumulation": 4,
+            "eval_every": 10,
+            "patience": 2,
+            "eval_fraction": 0.10,
+        },
+    },
+    "balanced": {
+        "id": "balanced",
+        "label": "Balanced",
+        "description": (
+            "The everyday mix: 100 steps, effective batch 8, checks every 20 steps "
+            "with moderate patience. A sensible default for general text."
+        ),
+        "values": {
+            "max_steps": 100,
+            "batch_size": 1,
+            "gradient_accumulation": 8,
+            "eval_every": 20,
+            "patience": 4,
+            "eval_fraction": 0.10,
+        },
+    },
+    "code-heavy": {
+        "id": "code-heavy",
+        "label": "Code heavy",
+        "description": (
+            "Tuned for code corpora: a higher learning rate, checks every 15 steps and "
+            "tighter patience. Supply your own code datasets; CMT never downloads any."
+        ),
+        "values": {
+            "max_steps": 100,
+            "batch_size": 1,
+            "gradient_accumulation": 8,
+            "learning_rate": 1.5e-4,
+            "eval_every": 15,
+            "patience": 3,
+            "eval_fraction": 0.10,
+        },
+    },
+    "reasoning-heavy": {
+        "id": "reasoning-heavy",
+        "label": "Reasoning heavy",
+        "description": (
+            "A longer run: 150 steps, a higher learning rate and more patience, for "
+            "reasoning-style data that needs time to show a held-out gain."
+        ),
+        "values": {
+            "max_steps": 150,
+            "batch_size": 1,
+            "gradient_accumulation": 8,
+            "learning_rate": 2e-4,
+            "eval_every": 20,
+            "patience": 5,
+            "eval_fraction": 0.10,
+        },
+    },
+}
+
+_PRESET_IDS: tuple[str, ...] = ("quick-check", "balanced", "code-heavy", "reasoning-heavy")
+
+
+def presets() -> list[dict[str, Any]]:
+    """JSON-safe copies of the named presets, so callers cannot mutate module state."""
+    return [copy.deepcopy(PRESETS[preset_id]) for preset_id in _PRESET_IDS]
 
 
 # ---------------------------------------------------------------------------
@@ -76,14 +163,33 @@ def _integer(value: Any, field: str, *, minimum: int, maximum: int, default: int
 
 
 def _normalise(spec: Mapping[str, Any]) -> dict[str, Any]:
-    source = str(spec.get("source") or "").strip()
+    raw_preset = spec.get("preset")
+    preset_id: Optional[str] = None
+    preset_values: dict[str, Any] = {}
+    if raw_preset not in (None, ""):
+        preset_id = str(raw_preset).strip()
+        preset = PRESETS.get(preset_id)
+        if preset is None:
+            raise ValueError(
+                f"Unknown CMT preset {preset_id!r}. Valid presets are: {', '.join(_PRESET_IDS)}."
+            )
+        # A preset supplies defaults only: an explicit spec field below still
+        # overrides it, and an unset field falls through to the existing default.
+        preset_values = dict(preset["values"])
+
+    effective: dict[str, Any] = dict(spec)
+    for key, value in preset_values.items():
+        if effective.get(key) in (None, ""):
+            effective[key] = value
+
+    source = str(effective.get("source") or "").strip()
     if not source:
         raise ValueError("CMT needs a base checkpoint or Hub id.")
-    mode = str(spec.get("mode") or "cpt").strip().lower()
+    mode = str(effective.get("mode") or "cpt").strip().lower()
     if mode not in ("cpt", "finetune"):
         raise ValueError("mode must be 'cpt' or 'finetune'.")
 
-    raw_datasets = spec.get("datasets")
+    raw_datasets = effective.get("datasets")
     if not isinstance(raw_datasets, list) or len(raw_datasets) < MIN_DATASETS:
         raise ValueError(f"CMT needs at least {MIN_DATASETS} datasets.")
     if len(raw_datasets) > MAX_DATASETS:
@@ -126,7 +232,7 @@ def _normalise(spec: Mapping[str, Any]) -> dict[str, Any]:
             )
         seen.add(identity)
         eval_fraction = _number(
-            raw.get("eval_fraction", DEFAULT_EVAL_FRACTION),
+            raw.get("eval_fraction", preset_values.get("eval_fraction", DEFAULT_EVAL_FRACTION)),
             f"Dataset {index} eval fraction",
             minimum=0.0,
             maximum=0.5,
@@ -147,7 +253,7 @@ def _normalise(spec: Mapping[str, Any]) -> dict[str, Any]:
             }
         )
 
-    added_override = spec.get("added_params")
+    added_override = effective.get("added_params")
     added: Optional[int] = None
     if added_override not in (None, ""):
         added = int(
@@ -159,31 +265,36 @@ def _normalise(spec: Mapping[str, Any]) -> dict[str, Any]:
             )
         )
 
-    return {
+    normalised = {
         "source": source,
         "mode": mode,
         "datasets": datasets,
         "added_params": added,
         "method": "depth",
-        "insert_strategy": str(spec.get("insert_strategy") or "even"),
-        "max_steps": _integer(spec.get("max_steps"), "max_steps", minimum=1, maximum=100_000, default=100),
-        "batch_size": _integer(spec.get("batch_size"), "batch_size", minimum=1, maximum=512, default=1),
+        "insert_strategy": str(effective.get("insert_strategy") or "even"),
+        "max_steps": _integer(effective.get("max_steps"), "max_steps", minimum=1, maximum=100_000, default=100),
+        "batch_size": _integer(effective.get("batch_size"), "batch_size", minimum=1, maximum=512, default=1),
         "gradient_accumulation": _integer(
-            spec.get("gradient_accumulation"), "gradient_accumulation", minimum=1, maximum=512, default=8
+            effective.get("gradient_accumulation"), "gradient_accumulation", minimum=1, maximum=512, default=8
         ),
         "max_seq_length": _integer(
-            spec.get("max_seq_length"), "max_seq_length", minimum=128, maximum=131_072, default=2048
+            effective.get("max_seq_length"), "max_seq_length", minimum=128, maximum=131_072, default=2048
         ),
         "learning_rate": _number(
-            spec.get("learning_rate", 2e-4), "learning_rate", minimum=1e-8, maximum=10.0
+            effective.get("learning_rate", 2e-4), "learning_rate", minimum=1e-8, maximum=10.0
         ),
-        "eval_every": _integer(spec.get("eval_every"), "eval_every", minimum=1, maximum=10_000, default=20),
-        "patience": _integer(spec.get("patience"), "patience", minimum=1, maximum=100, default=4),
-        "seed": _integer(spec.get("seed"), "seed", minimum=0, maximum=2**31 - 1, default=3407),
+        "eval_every": _integer(effective.get("eval_every"), "eval_every", minimum=1, maximum=10_000, default=20),
+        "patience": _integer(effective.get("patience"), "patience", minimum=1, maximum=100, default=4),
+        "seed": _integer(effective.get("seed"), "seed", minimum=0, maximum=2**31 - 1, default=3407),
         "max_train_rows": _integer(
-            spec.get("max_train_rows"), "max_train_rows", minimum=100, maximum=2_000_000, default=MAX_TRAIN_ROWS
+            effective.get("max_train_rows"), "max_train_rows", minimum=100, maximum=2_000_000, default=MAX_TRAIN_ROWS
         ),
     }
+    # Echo the preset only when one was actually chosen, so the no-preset path
+    # stays byte-identical for callers that compare exact dicts.
+    if preset_id is not None:
+        normalised["preset"] = preset_id
+    return normalised
 
 
 # ---------------------------------------------------------------------------

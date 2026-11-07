@@ -26,6 +26,15 @@ import {
   planCmt,
   runCmt,
 } from "../api";
+import {
+  applyCmtPreset,
+  CMT_PRESET_BASELINE,
+  cmtPresetForValues,
+  cmtPresetValues,
+  CMT_PRESETS,
+  type CmtPreset,
+  type CmtPresetValues,
+} from "../lib/cmt-presets";
 import { HubPickerField, type PickerMode } from "./hub-picker-field";
 import { LabsPanel } from "./labs-panel";
 
@@ -97,6 +106,27 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Read the current form strings as the numeric values the presets compare. */
+function tuningFromValues(input: {
+  steps: string;
+  batch: string;
+  accum: string;
+  evalEvery: string;
+  patience: string;
+  learningRate: string;
+}): CmtPresetValues {
+  return {
+    max_steps: Number(input.steps) || CMT_PRESET_BASELINE.max_steps,
+    batch_size: Number(input.batch) || CMT_PRESET_BASELINE.batch_size,
+    gradient_accumulation:
+      Number(input.accum) || CMT_PRESET_BASELINE.gradient_accumulation,
+    eval_every: Number(input.evalEvery) || CMT_PRESET_BASELINE.eval_every,
+    patience: Number(input.patience) || CMT_PRESET_BASELINE.patience,
+    learning_rate:
+      Number(input.learningRate) || CMT_PRESET_BASELINE.learning_rate,
+  };
+}
+
 async function waitForCmt(
   job: LabsJob,
   onProgress: (message: string) => void,
@@ -148,6 +178,29 @@ export function CmtPanel(): ReactElement {
   const [status, setStatus] = useState<string | null>(null);
   const [result, setResult] = useState<CmtResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [simple, setSimple] = useState(true);
+
+  const activePreset = cmtPresetForValues(
+    tuningFromValues({
+      steps,
+      batch,
+      accum,
+      evalEvery,
+      patience,
+      learningRate,
+    }),
+  );
+
+  const applyPreset = (preset: CmtPreset) => {
+    const values = cmtPresetValues(preset);
+    setSteps(String(values.max_steps));
+    setBatch(String(values.batch_size));
+    setAccum(String(values.gradient_accumulation));
+    setEvalEvery(String(values.eval_every));
+    setPatience(String(values.patience));
+    setLearningRate(String(values.learning_rate));
+    setPlan(null);
+  };
 
   useEffect(() => {
     if (!source && selectedModel) setSource(selectedModel);
@@ -174,7 +227,7 @@ export function CmtPanel(): ReactElement {
           Math.min(0.5, (Number(row.evalPercent) || 0) / 100),
         ),
       }));
-    return {
+    const spec: CmtSpec = {
       source: source.trim(),
       datasets,
       mode,
@@ -187,6 +240,19 @@ export function CmtPanel(): ReactElement {
       eval_every: Number(evalEvery) || 20,
       patience: Number(patience) || 4,
     };
+    // Only mark the preset while the running values still match it, so the
+    // backend never fills in a value the user has edited away.
+    const presetId = cmtPresetForValues(
+      tuningFromValues({
+        steps,
+        batch,
+        accum,
+        evalEvery,
+        patience,
+        learningRate,
+      }),
+    )?.id;
+    return applyCmtPreset(spec, presetId);
   }, [
     accum,
     added,
@@ -249,6 +315,62 @@ export function CmtPanel(): ReactElement {
       title={t("labs.cmt.title")}
       description={t("labs.cmt.description")}
     >
+      <div className="flex flex-col gap-2 rounded-xl border border-border/70 bg-background/40 p-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-ui-10 uppercase tracking-[0.05em] text-muted-foreground">
+            Preset
+          </span>
+          {CMT_PRESETS.map((preset) => (
+            <button
+              key={preset.id}
+              type="button"
+              aria-pressed={activePreset?.id === preset.id}
+              title={preset.description}
+              onClick={() => applyPreset(preset)}
+              className={cn(
+                "rounded-full border px-3 py-1 text-ui-11 transition-colors",
+                activePreset?.id === preset.id
+                  ? "border-border bg-muted text-foreground"
+                  : "border-border/60 text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {preset.label}
+            </button>
+          ))}
+          <Badge variant="outline" className="text-ui-9">
+            {activePreset?.label ?? "Custom"}
+          </Badge>
+          <div className="ml-auto flex items-center gap-1.5">
+            {(
+              [
+                ["simple", "Simple"],
+                ["advanced", "Advanced"],
+              ] as const
+            ).map(([level, label]) => (
+              <button
+                key={level}
+                type="button"
+                aria-pressed={(level === "simple") === simple}
+                onClick={() => setSimple(level === "simple")}
+                className={cn(
+                  "rounded-full border px-3 py-1 text-ui-11 transition-colors",
+                  (level === "simple") === simple
+                    ? "border-border bg-muted text-foreground"
+                    : "border-border/60 text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <p className="text-ui-10 text-muted-foreground/70">
+          {activePreset
+            ? activePreset.description
+            : "Custom values: no preset is sent, so the numbers below are used as written."}
+        </p>
+      </div>
+
       <div className="grid gap-3 @2xl/train-card:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="flex min-w-0 flex-col gap-1.5">
           <span className="text-ui-10 uppercase tracking-[0.05em] text-muted-foreground">
@@ -387,32 +509,54 @@ export function CmtPanel(): ReactElement {
         </p>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-3 @3xl/train-card:grid-cols-6">
-        {(
-          [
-            [t("labs.cmt.added"), added, setAdded, "4.6M"],
-            [t("labs.cmt.steps"), steps, setSteps, "100"],
-            [t("labs.cmt.batch"), batch, setBatch, "1"],
-            [t("labs.cmt.accum"), accum, setAccum, "8"],
-            [t("labs.cmt.sequence"), sequence, setSequence, "2048"],
-            [t("labs.cmt.lr"), learningRate, setLearningRate, "0.0002"],
-          ] as const
-        ).map(([label, value, setter, placeholder]) => (
-          <label key={label} className="flex min-w-0 flex-col gap-1">
-            <span className="text-ui-10 text-muted-foreground">{label}</span>
+      {simple ? (
+        <div className="grid gap-3 sm:grid-cols-3 @3xl/train-card:grid-cols-6">
+          <label className="flex min-w-0 flex-col gap-1">
+            <span className="text-ui-10 text-muted-foreground">
+              {t("labs.cmt.steps")}
+            </span>
             <input
               className={INPUT_CLASS}
               inputMode="decimal"
-              value={value}
+              value={steps}
               onChange={(event) => {
-                setter(event.target.value);
+                setSteps(event.target.value);
                 setPlan(null);
               }}
-              placeholder={placeholder}
+              placeholder="100"
             />
           </label>
-        ))}
-      </div>
+        </div>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-3 @3xl/train-card:grid-cols-6">
+          {(
+            [
+              [t("labs.cmt.added"), added, setAdded, "4.6M"],
+              [t("labs.cmt.steps"), steps, setSteps, "100"],
+              [t("labs.cmt.batch"), batch, setBatch, "1"],
+              [t("labs.cmt.accum"), accum, setAccum, "8"],
+              [t("labs.cmt.sequence"), sequence, setSequence, "2048"],
+              [t("labs.cmt.lr"), learningRate, setLearningRate, "0.0002"],
+              ["Eval every", evalEvery, setEvalEvery, "20"],
+              ["Patience", patience, setPatience, "4"],
+            ] as const
+          ).map(([label, value, setter, placeholder]) => (
+            <label key={label} className="flex min-w-0 flex-col gap-1">
+              <span className="text-ui-10 text-muted-foreground">{label}</span>
+              <input
+                className={INPUT_CLASS}
+                inputMode="decimal"
+                value={value}
+                onChange={(event) => {
+                  setter(event.target.value);
+                  setPlan(null);
+                }}
+                placeholder={placeholder}
+              />
+            </label>
+          ))}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         <Button
           size="sm"

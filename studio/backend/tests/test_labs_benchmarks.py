@@ -277,3 +277,79 @@ def test_pinning_rejects_an_unknown_record(tmp_path, monkeypatch):
         benchmarks.pin_record("a" * 32)
     with pytest.raises(ValueError):
         benchmarks.unpin("../../escape")
+
+
+# ---------------------------------------------------------------------------
+# Picking the best of several runs
+# ---------------------------------------------------------------------------
+
+
+def _plain(name: str, candidate_scores: dict) -> dict:
+    return {"id": name, "candidate_scores": candidate_scores}
+
+
+def test_record_score_means_the_candidate_scores():
+    record = _plain("a", {"mmlu": 0.40, "gsm8k": 0.20})
+    assert benchmarks._record_score(record) == pytest.approx(0.30)
+
+
+def test_record_score_is_none_without_a_usable_number():
+    assert benchmarks._record_score({"candidate_scores": {}}) is None
+    assert benchmarks._record_score({"candidate_scores": {"mmlu": "high"}}) is None
+    assert benchmarks._record_score({}) is None
+    assert benchmarks._record_score({"candidate_scores": None}) is None
+
+
+def test_record_score_ignores_non_finite_and_non_numeric_values():
+    record = {
+        "candidate_scores": {
+            "good": 0.50,
+            "nan": float("nan"),
+            "inf": float("inf"),
+            "label": "n/a",
+        }
+    }
+    # Only the finite number counts, so the mean stays 0.50 and not NaN.
+    assert benchmarks._record_score(record) == pytest.approx(0.50)
+    assert benchmarks._record_score({"candidate_scores": {"nan": float("nan")}}) is None
+
+
+def test_rank_records_sorts_by_score_descending():
+    low = _plain("low", {"mmlu": 0.10})
+    high = _plain("high", {"mmlu": 0.90})
+    mid = _plain("mid", {"mmlu": 0.50})
+    ranked = benchmarks.rank_records([low, high, mid])
+    assert [record["id"] for record in ranked] == ["high", "mid", "low"]
+
+
+def test_rank_records_puts_unscored_records_last():
+    scored = _plain("scored", {"mmlu": 0.10})
+    blank = _plain("blank", {})
+    missing = {"id": "missing"}
+    ranked = benchmarks.rank_records([blank, scored, missing])
+    assert [record["id"] for record in ranked] == ["scored", "blank", "missing"]
+
+
+def test_rank_records_keeps_the_input_order_for_ties():
+    first = _plain("first", {"mmlu": 0.50})
+    second = _plain("second", {"gsm8k": 0.50})
+    third = _plain("third", {"a": 0.25, "b": 0.75})
+    ranked = benchmarks.rank_records([first, second, third])
+    assert [record["id"] for record in ranked] == ["first", "second", "third"]
+
+
+def test_rank_records_does_not_mutate_the_input():
+    records = [_plain("low", {"mmlu": 0.10}), _plain("high", {"mmlu": 0.90})]
+    snapshot = [dict(record) for record in records]
+    ranked = benchmarks.rank_records(records)
+    assert records == snapshot
+    assert [record["id"] for record in records] == ["low", "high"]
+    assert ranked is not records
+    assert ranked[0] is records[1]
+
+
+def test_best_record_picks_the_top_and_none_for_empty():
+    records = [_plain("low", {"mmlu": 0.10}), _plain("high", {"mmlu": 0.90})]
+    assert benchmarks.best_record(records)["id"] == "high"
+    assert benchmarks.best_record([]) is None
+    assert benchmarks.best_record(iter(records))["id"] == "high"

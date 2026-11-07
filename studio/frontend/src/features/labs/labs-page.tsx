@@ -12,6 +12,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useState } from "react";
 import { ArchSwapPanel } from "./components/arch-swap-panel";
 import { ArtifactsPanel } from "./components/artifacts-panel";
+import { AutomatedTrainingPanel } from "./components/automated-training-panel";
 import { BenchmarksPanel } from "./components/benchmarks-panel";
 import { CmtPanel } from "./components/cmt-panel";
 import { JanitorPanel } from "./components/janitor-panel";
@@ -30,6 +31,7 @@ type StudioTab =
   | "artifacts"
   | "pipelines"
   | "benchmarks"
+  | "automated"
   | "cmt"
   | "surgery"
   | "swap"
@@ -40,6 +42,7 @@ const TABS: ReadonlyArray<readonly [StudioTab, TranslationKey]> = [
   ["artifacts", "labs.tab.artifacts"],
   ["pipelines", "labs.tab.pipelines"],
   ["benchmarks", "labs.tab.benchmarks"],
+  ["automated", "labs.tab.automated"],
   ["cmt", "labs.tab.cmt"],
   ["surgery", "labs.tab.surgery"],
   ["swap", "labs.tab.swap"],
@@ -158,6 +161,11 @@ export function LabsPage(): ReactElement {
             {tab === "benchmarks" ? (
               <LabsFeatureGate feature="benchmarks">
                 <BenchmarksPanel />
+              </LabsFeatureGate>
+            ) : null}
+            {tab === "automated" ? (
+              <LabsFeatureGate feature="automated-training">
+                <AutomatedTrainingPanel />
               </LabsFeatureGate>
             ) : null}
             {tab === "cmt" ? (

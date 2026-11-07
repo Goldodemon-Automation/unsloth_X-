@@ -60,6 +60,10 @@ _COST_MODEL: dict[str, dict[str, Any]] = {
     # only the inserted blocks. The optimizer state is small, but the model,
     # activations and the saved expanded copy are not.
     "cmt": {"vram": 3.00, "ram": 1.50, "disk": 2.50, "gpu": True, "cpu": False},
+    # Automated training schedules whole rounds of CMT/CPT/FFT runs and
+    # benchmarks each candidate, so its peak is the largest single run it
+    # schedules plus the benchmark's resident model. GPU-only, like CMT.
+    "automated-training": {"vram": 3.50, "ram": 1.50, "disk": 2.50, "gpu": True, "cpu": False},
     # Auto-scale expands a checkpoint and saves it, with no training after it:
     # the same growth as CMT without the optimizer or the activations.
     "autoscale": {"vram": 3.00, "ram": 1.00, "disk": 1.50, "gpu": True, "cpu": True},
