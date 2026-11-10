@@ -145,6 +145,9 @@ and device suites are named where they live: `test_advanced_scaling*.py`, `test_
 `test_device_targets.py`, `test_accelerator_budget.py`, `test_compute_target_env.py`,
 `test_compute_route.py` and `test_npu_assist.py`.
 
+`?perf=1` in the Studio's URL turns on the instrumentation layer; `reportLines()` then lists the slowest
+measurements, including one span per route mount.
+
 A suite that looks mysteriously red on Windows is usually line endings: `.gitattributes` asks for LF
 under `studio/frontend/`, `core.autocrlf=true` checks out CRLF, and several tests pin exact source text.
 
@@ -159,6 +162,7 @@ under `studio/frontend/`, `core.autocrlf=true` checks out CRLF, and several test
 | [docs/compute-targets.md](docs/compute-targets.md) | CPU, integrated-GPU and NPU training, the budget, and troubleshooting |
 | [docs/igpu.md](docs/igpu.md) | Intel iGPUs: the XPU wheel, pinning one GPU, symptom-first fixes |
 | [docs/ui-performance.md](docs/ui-performance.md) | The perf layer: what it measures and how to read it |
+| [docs/security.md](docs/security.md) | Threat model, the controls that exist, and the three open items |
 | [docs/theming.md](docs/theming.md) | Palettes and accent tokens |
 | [docs/README.md](docs/README.md) | Repository map and the local CRLF trap |
 
