@@ -274,6 +274,11 @@ class GGUFHeaderCache:
     file changes its size or its mtime, so it lands on a different key and is parsed
     again; a file that did not change keeps its answer.
 
+    The same caveat every stat-keyed cache carries: a writer that rewrites the file
+    preserving BOTH its size and its mtime is invisible here. Model weights are
+    written once, and re-hashing the file to find out would cost more than the
+    header read this cache exists to avoid.
+
     A parse that RAISES is never stored. A missing file, an unreadable file and a
     corrupt header are all answers that can change the moment the file is fixed, and
     memoizing one of them would hand the next caller a stale verdict. The error
