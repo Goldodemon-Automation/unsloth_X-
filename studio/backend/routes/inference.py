@@ -81,6 +81,7 @@ from urllib.parse import quote as _urlquote, unquote as _urlunquote
 from utils.models import extract_model_size_b as _extract_model_size_b
 from utils.models.checkpoints import is_full_finetune_output
 
+from utils import scoped_link
 from utils.api_errors import (
     ANTHROPIC_TYPE_BY_STATUS,
     anthropic_error_body,
@@ -4380,15 +4381,67 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
 </html>"""
 
 
-async def _authenticate_header_or_query(request: Request, token: Optional[str]) -> str:
-    """Resolve the bearer token from the Authorization header or the ``?token=``
-    query param (needed for <img src> / <iframe>, which can't send custom
-    headers), validate it, and return the subject. Raises 401 when absent.
+# Canvas and artifact routes are fetched without a header -- an <img src>, an <iframe>, a native
+# save of a sandbox file -- so a caller that cannot send Authorization mints a short-lived link
+# instead of putting a session bearer in the query string, where it outlives the click in shell
+# history, in a reverse proxy's access log and in the ``Referer`` of whatever the page links to.
+# A link names one subject, in one scope, for minutes; its own secret and scope, so a library
+# download link never opens these routes and a canvas link never downloads there. Seconds, not
+# hours: the caller mints one, follows it at once, and a link that leaks in a log is worthless by
+# the time anyone reads the log.
+_CANVAS_LINK_TTL = 300
+_CANVAS_LINK_SECRET = _secrets.token_bytes(32)
+_CANVAS_LINK_SCOPE = "canvas"
+
+
+def _sign_canvas_link(subject: str) -> str:
+    """A link token that opens the canvas/artifact routes as ``subject``."""
+    return scoped_link.mint(
+        _CANVAS_LINK_SECRET, _CANVAS_LINK_SCOPE, subject, ttl_s = _CANVAS_LINK_TTL
+    )
+
+
+def _canvas_link_subject(link: str) -> Optional[str]:
+    """The subject a valid, unexpired canvas link was minted for, else None."""
+    try:
+        claims = scoped_link.verify(_CANVAS_LINK_SECRET, link, _CANVAS_LINK_SCOPE)
+    except scoped_link.ScopedLinkError:
+        return None
+    return claims["sub"]
+
+
+async def _authenticate_header_or_query(
+    request: Request, token: Optional[str], link: Optional[str] = None
+) -> str:
+    """Resolve the bearer token from the Authorization header or a short-lived ``?link=``
+    (needed for <img src> / <iframe>, which can't send custom headers), validate it,
+    and return the subject. Raises 401 when absent.
+
+    ``?token=`` is refused: a session bearer in a URL survives the click in history, in
+    a proxy's access log and in the ``Referer`` of whatever the page links to, where a
+    link names one subject for minutes and nothing else.
 
     Routed through ``credentials_for_token`` so a scope that covers this path serves it
     without a key, the way the routes behind ``security`` already do."""
+    if token and token.strip():
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Canvas links no longer take ?token=. Pass a short-lived ?link= "
+                "(?token= must not carry a session bearer)."
+            ),
+        )
+    # A link is the whole credential, so a caller that has one needs no bearer; a header
+    # still wins, because a browser that sends one is already authenticated.
+    header = request.headers.get("authorization") or ""
+    bearer = header[7:].strip() if header.lower().startswith("bearer ") else ""
+    if not bearer and link and link.strip():
+        subject = _canvas_link_subject(link.strip())
+        if subject is None:
+            raise HTTPException(status_code = 401, detail = "Invalid or expired canvas link.")
+        return subject
     from auth.authentication import subject_for_header_or_query_token
-    return await subject_for_header_or_query_token(request, token)
+    return await subject_for_header_or_query_token(request, None)
 
 
 @studio_router.get("/artifact-preview-frame", include_in_schema = False)
@@ -37509,6 +37562,7 @@ async def list_sandbox_files(
     session_id: str,
     request: Request,
     token: Optional[str] = None,
+    link: Optional[str] = None,
     session: Optional[str] = None,
 ):
     """Where this chat's files are, and what is in there.
@@ -37516,7 +37570,7 @@ async def list_sandbox_files(
     The path answers "where did my file go"; before this the only way to find
     one was to search the filesystem by hand.
     """
-    await _authenticate_header_or_query(request, token)
+    await _authenticate_header_or_query(request, token, link)
 
     from starlette.concurrency import run_in_threadpool
 
@@ -37572,6 +37626,7 @@ async def open_sandbox_file(
     request: Request,
     file: str,
     token: Optional[str] = None,
+    link: Optional[str] = None,
     session: Optional[str] = None,
 ):
     """Open one of this chat's sandbox files with the OS default app.
@@ -37580,7 +37635,7 @@ async def open_sandbox_file(
     the desktop app. Only document and media types open: the files are
     model-written, and a script or app would run rather than be viewed.
     """
-    await _authenticate_header_or_query(request, token)
+    await _authenticate_header_or_query(request, token, link)
     # It launches an app on the host's desktop, like the library and model reveals.
     account_access.require_installation_owner()
 
@@ -37610,6 +37665,7 @@ async def reveal_sandbox_dir(
     session_id: str,
     request: Request,
     token: Optional[str] = None,
+    link: Optional[str] = None,
     session: Optional[str] = None,
     file: Optional[str] = None,
 ):
@@ -37620,7 +37676,7 @@ async def reveal_sandbox_dir(
     The file manager is the backend host's, so this only means anything when the
     backend runs on the user's own machine, which is the desktop app.
     """
-    await _authenticate_header_or_query(request, token)
+    await _authenticate_header_or_query(request, token, link)
 
     from starlette.concurrency import run_in_threadpool
 
@@ -37723,6 +37779,7 @@ async def serve_sandbox_file(
     filename: str,
     request: Request,
     token: Optional[str] = None,
+    link: Optional[str] = None,
     session: Optional[str] = None,
 ):
     """
@@ -37733,11 +37790,12 @@ async def serve_sandbox_file(
     or image/svg+xml would be same-origin script execution. nosniff plus a
     Content-Disposition filename is what makes serving them safe.
 
-    Accepts auth via an Authorization header or a query token. Unsloth uses an
-    authenticated fetch and object URL; query auth remains for older clients.
+    Accepts auth via an Authorization header or a short-lived ``?link=``; a
+    session bearer in ``?token=`` is refused. Unsloth uses an authenticated
+    fetch and object URL; the link is for callers that can send no header.
     """
-    # ── Authentication (header or query param) ──────────────────
-    await _authenticate_header_or_query(request, token)
+    # ── Authentication (header or ?link=) ───────────────────────
+    await _authenticate_header_or_query(request, token, link)
 
     # ── Filename sanitization + path containment ────────────────
     import stat as _stat

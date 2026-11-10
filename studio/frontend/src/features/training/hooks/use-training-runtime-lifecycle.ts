@@ -249,7 +249,11 @@ function createPollScheduler(
   };
 
   async function tick(): Promise<void> {
-    if (disposed || ticking) {
+    if (disposed) {
+      return;
+    }
+    if (ticking) {
+      // Another tick is running; it reschedules the timer when it finishes.
       return;
     }
     ticking = true;
@@ -287,14 +291,15 @@ function createPollScheduler(
           state.failed = true;
         }
         state.dueAt = Date.now() + delayFor(state);
+        const finished = state.spec.finished();
         if (
           shouldStop({
-            finished: state.spec.finished(),
+            finished,
             attempts: state.failures,
             maxAttempts: options.maxAttempts,
           })
         ) {
-          state.stopReason = "budget";
+          state.stopReason = finished ? "finished" : "budget";
           state.armed = false;
         }
       }
@@ -576,6 +581,8 @@ export function useTrainingRuntimeLifecycle(): void {
     };
 
     let scheduler: PollScheduler | null = null;
+    const isStatusStreamStopped = () =>
+      scheduler !== null && scheduler.isStopped("status");
 
     scheduler = createPollScheduler(
       [
@@ -617,7 +624,7 @@ export function useTrainingRuntimeLifecycle(): void {
             if (!s.hasHydrated || s.isHydrating) {
               return false;
             }
-            return isIdle() || isTerminal() || scheduler?.isStopped("status");
+            return isIdle() || isTerminal() || isStatusStreamStopped();
           },
           request: () => pollStatus(),
         },

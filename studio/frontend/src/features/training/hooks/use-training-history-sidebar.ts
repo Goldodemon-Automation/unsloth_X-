@@ -189,7 +189,7 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
       return;
     }
 
-    let timer: ReturnType<typeof setInterval> | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const start = () => {
       if (timer !== null) {
         return;

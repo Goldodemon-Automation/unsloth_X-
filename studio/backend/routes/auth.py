@@ -8,7 +8,6 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 import base64
 import importlib.util
-import ipaddress
 import math
 import os
 import shlex
@@ -38,6 +37,7 @@ from auth import storage, hashing, policy
 from loggers import get_logger
 from storage import sqlite_gate
 from utils.account_context import OWNER_ACCOUNT_ID
+from utils.client_ip import client_ip
 from auth.authentication import (
     authenticated_via_desktop_jwt,
     authenticated_without_credential,
@@ -235,73 +235,25 @@ _UNKNOWN_LOGIN_USER = "\x00unknown-user"
 _DESKTOP_LOGIN_USER = "\x00desktop-login"
 
 
-def _trust_forwarded_for() -> bool:
-    """Honour X-Forwarded-For only when UNSLOTH_STUDIO_TRUST_FORWARDED is set. Off by default so a
-    direct caller can't spoof the header."""
-    return os.environ.get("UNSLOTH_STUDIO_TRUST_FORWARDED", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-
-
-def _normalize_forwarded_addr(value: str) -> str:
-    """Parse an XFF / Forwarded `for=` value into a bare IP (port-stripped)."""
-    value = (value or "").strip().strip('"')
-    if not value or value.lower() == "unknown":
-        return ""
-    if value.startswith("["):
-        # Bracketed IPv6, optionally with port.
-        end = value.find("]")
-        if end <= 0:
-            return ""
-        host = value[1:end]
-    elif value.count(":") == 1:
-        # IPv4:port. Bare IPv6 has multiple colons → else branch.
-        head, _, tail = value.rpartition(":")
-        host = head if tail.isdigit() and head else value
-    else:
-        host = value
-    try:
-        return str(ipaddress.ip_address(host))
-    except ValueError:
-        return ""
-
-
-def _forwarded_for_from_element(element: str) -> str:
-    """Pick the `for=` token out of a single ``Forwarded`` element."""
-    for tok in element.split(";"):
-        key, sep, val = tok.strip().partition("=")
-        if sep and key.lower() == "for":
-            return _normalize_forwarded_addr(val)
-    return ""
-
-
 def _client_ip(request: Request | None) -> str:
-    if request is None:
-        return "_unknown"
-    if _trust_forwarded_for():
-        xff = request.headers.get("x-forwarded-for", "")
-        if xff:
-            # First entry is the originating client.
-            normalized = _normalize_forwarded_addr(xff.split(",", 1)[0])
-            if normalized:
-                return normalized
-        fwd = request.headers.get("forwarded", "")
-        if fwd:
-            # First element only; multi-element headers can't fork buckets.
-            normalized = _forwarded_for_from_element(fwd.split(",", 1)[0])
-            if normalized:
-                return normalized
-    return (request.client.host if request.client else None) or "_unknown"
+    """The login limiter's client address: ``utils.client_ip``'s rule, never a private one.
+
+    This used to be its own copy that took the LEFTMOST ``X-Forwarded-For`` hop, while the shared
+    credential lockout (``auth.rate_limit.client_key``) took the rightmost. Behind a proxy that
+    appends a hop, the same request was therefore two different clients to the two throttles: one
+    bucket could be dodged by taking the other path, and an innocent client could be locked out by
+    a stranger's failures. One resolver for both is the fix; the module docstring there documents
+    the trust model and why the rightmost untrusted hop is the one that can't be spoofed.
+    """
+    return client_ip(request)
 
 
 def _bucket_key(request: Request | None, username: str) -> tuple[str, str]:
-    return (_client_ip(request), (username or "").casefold())
+    return (client_ip(request), (username or "").casefold())
 
 
 def _unknown_user_key(request: Request | None) -> tuple[str, str]:
-    return (_client_ip(request), _UNKNOWN_LOGIN_USER)
+    return (client_ip(request), _UNKNOWN_LOGIN_USER)
 
 
 def _desktop_login_key(request: Request | None) -> tuple[str, str]:
@@ -309,7 +261,7 @@ def _desktop_login_key(request: Request | None) -> tuple[str, str]:
     # this route's own too. Sharing those with /login couples them in the direction that matters most:
     # cloudflared and the desktop shell both reach the backend over loopback, so they are ONE address, and
     # thirty password guesses through the tunnel would 429 the shell's valid secret exchange.
-    return (_client_ip(request) + _DESKTOP_LOGIN_USER, _DESKTOP_LOGIN_USER)
+    return (client_ip(request) + _DESKTOP_LOGIN_USER, _DESKTOP_LOGIN_USER)
 
 
 def _prune_bucket(bucket: deque, now: float) -> None:
