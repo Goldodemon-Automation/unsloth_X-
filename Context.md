@@ -532,3 +532,39 @@ guessed at:
 One agent on this wave was cancelled by the harness mid-verification. Its two files and the trainer
 edit were on disk and complete; I re-ran the suite (13 tests), read the diff, and then made the two
 hardening changes above myself before committing — a cancelled agent is not a finished one.
+
+## Round three and the mark (v1.4.0)
+
+Three areas at once, because they were the three the last verification pass left open, plus the
+branding the fork needed.
+
+**Security.** A read-only audit of the auth stack, request surface, path/command handling, secret
+storage and the desktop shell produced six findings with file:line and, just as usefully, a list of the
+controls that already existed -- login throttling, constant-time secret comparison, hashed-and-rotated
+refresh tokens, AES-GCM token storage, SSRF pinning, no cookies anywhere. Three were fixed here: CORS
+combined a wildcard origin with `allow_credentials=True` (which makes Starlette reflect the caller's
+Origin), `/refresh` and `/change-password` counted no failures, and the preview page plus the Tauri CSP
+were the last places inline script was permitted by a blanket rule. Three are recorded unfixed with the
+reason: the `?token=` query string needs a scoped link rather than a one-line edit, the host allow-list
+needs a policy decision about LAN/tunnel modes, and the two client-IP resolvers disagree about which
+XFF hop to trust. The sign-in limiter was deliberately *not* stacked on: it is richer than a per-IP
+counter and stacking would lock innocent usernames that share an address.
+
+**Speed.** Startup: SDK imports only some endpoints need now happen inside them, with a source-level
+guard so a new module-scope import fails a test. Browsing: a `(path, size, mtime_ns)` fingerprint,
+bounded at 2048 entries, keys the cache inventory so two identical calls walk once. Intel: bf16 on
+AMX/AVX512-BF16 CPUs instead of blanket fp32, and `xpu.py` says which PyTorch build is installed and
+pins `ONEAPI_DEVICE_SELECTOR` for hybrid machines.
+
+**The mark.** `images/logo-x-minus*.svg`, four constructions of X-in-blue + dash-in-lighter-blue, with
+`images/logo-options.html` to pick from. The one-ink file is `currentColor` and only works inlined --
+an SVG through `<img>` cannot inherit it and paints black; that is stated in the file, the options page
+and the README, because it is the kind of thing that gets discovered in production otherwise.
+
+The README states the colour identity outright: upstream is green `#17b88b`, this fork is blue
+`#9ceaf0`. Everything else in the README was brought up to date with v1.2.x-v1.4.0.
+
+One test this series had broken is fixed here too: `test_desktop_auth`'s router-stub guard exists to
+catch a new route module in `main.py`, and it caught `routes.compute` -- but its pattern only saw
+`from routes.x import`, not `import routes.browser as`, so the stub table had a second hole. Both
+spellings are matched now.
