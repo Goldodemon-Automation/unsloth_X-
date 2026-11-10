@@ -1,4 +1,4 @@
-<img src="images/logo-x-minus.svg" alt="Unsloth X8" width="150" align="right" />
+<img src="images/logo-x-minus-icon.svg" alt="Unsloth X8" width="104" align="right" />
 
 # Unsloth X8
 
@@ -24,21 +24,26 @@ green, it is upstream's theme, not this fork's.
 | Ink on the accent | white | dark `#0f1114` (white on `#9ceaf0` scores ~1.3:1) |
 | Mark | the Unsloth wordmark | the **X–** mark below |
 
-The mark is the fork in one glyph: an **X** in blue, a **–** in a lighter blue, apart from it.
-Four constructions, one for each place it has to live; [images/logo-options.html](images/logo-options.html)
-shows them all, on light and dark, at the sizes they are meant for.
+The mark is the fork in one glyph: an **X** in a blue gradient, a **–** in a lighter one, stacked on a
+black plate. Stacked rather than side by side because it is the construction that still reads at 16
+pixels, which is the size a favicon and a sidebar actually get. [images/logo-options.html](images/logo-options.html)
+shows every construction, on light and dark, at the sizes they are meant for.
 
 | File | Use |
 | --- | --- |
-| [images/logo-x-minus.svg](images/logo-x-minus.svg) | Horizontal, two inks — README headers, splash screens |
-| [images/logo-x-minus-badge.svg](images/logo-x-minus-badge.svg) | App icon — favicon, desktop icon, store listing, avatar |
-| [images/logo-x-minus-stacked.svg](images/logo-x-minus-stacked.svg) | Stacked — the tight square that still reads at 16px |
-| [images/logo-x-minus-mono.svg](images/logo-x-minus-mono.svg) | One ink, `currentColor` — inline it to inherit the theme; as an `<img>` it paints black |
+| [images/logo-x-minus-icon.svg](images/logo-x-minus-icon.svg) | **The mark.** Stacked X above the dash on a black plate, both in gradients. Used for the README header, the app icon, the favicon, the sidebar, the startup screen and every desktop icon |
+| [images/logo-x-minus.svg](images/logo-x-minus.svg) | Alternate: horizontal, two inks, no plate — worth it where a square would be wrong (a wide banner, a slide footer) |
+| [images/logo-x-minus-mono.svg](images/logo-x-minus-mono.svg) | Alternate: one ink, `currentColor` — inline it to inherit the theme; as an `<img>` it paints black |
+
+The raster sizes are generated, not hand-exported: `python scripts/make_brand_assets.py` draws the
+mark once and writes the favicon, the PWA icons, the sidebar and startup-screen images, and the Tauri
+icons (`.ico` included). Change a colour in that script and every icon follows.
 
 | Colour | Hex | Where |
 | --- | --- | --- |
-| X, blue | `#2563EB` (deep `#1D4ED8`) | the X |
-| Dash, lighter blue | `#7DD3FC` | the – |
+| X, blue gradient | `#1D4ED8` → `#60A5FA` | the X |
+| Dash, lighter blue gradient | `#38BDF8` → `#7DD3FC` | the – |
+| Plate | `#000000` | behind the mark |
 | Badge plate | `#0B1220` | behind the app icon |
 | UI accent | `#9CEAF0` | primary buttons, switches, active rows |
 

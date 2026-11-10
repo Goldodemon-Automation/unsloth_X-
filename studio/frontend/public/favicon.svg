@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Unsloth X8</title>
+  <desc>The X- mark: X above a dash, on a black plate, X in a blue gradient and the dash in a lighter one.</desc>
+  <defs>
+    <!-- Same geometry as scripts/make_brand_assets.py, which draws every raster size from these numbers. -->
+    <linearGradient id="xBlue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1D4ED8"/>
+      <stop offset="1" stop-color="#60A5FA"/>
+    </linearGradient>
+    <linearGradient id="dashBlue" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#7DD3FC"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="32" fill="#000000"/>
+  <!-- X above, dash below: the stacked form is the one that still reads at 16px. -->
+  <g fill="none" stroke="url(#xBlue)" stroke-width="12" stroke-linecap="round">
+    <path d="M47 35 L81 69"/>
+    <path d="M81 35 L47 69"/>
+  </g>
+  <path d="M46 92 L82 92" fill="none" stroke="url(#dashBlue)" stroke-width="12" stroke-linecap="round"/>
+</svg>

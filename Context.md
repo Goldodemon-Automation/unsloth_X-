@@ -568,3 +568,23 @@ One test this series had broken is fixed here too: `test_desktop_auth`'s router-
 catch a new route module in `main.py`, and it caught `routes.compute` -- but its pattern only saw
 `from routes.x import`, not `import routes.browser as`, so the stub table had a second hole. Both
 spellings are matched now.
+
+## The mark, revised (the pick)
+
+The picked identity is the stacked construction (X above the dash) rendered the way the badge option
+was: a black plate, the X in a `#1D4ED8` → `#60A5FA` gradient, the dash in a lighter `#38BDF8` →
+`#7DD3FC` one. Stacked because it is the form that still reads at 16px, which is the size a favicon and
+the sidebar actually get.
+
+`scripts/make_brand_assets.py` is the single source of the rasters: it draws the mark once at 1024 and
+writes the favicon (PNG + SVG + ICO), the PWA icons, the sidebar's circle logo, the startup/update
+screens' sticker, the hub avatar, and the Tauri icons for Windows, Linux and macOS. Changing a colour
+there changes every icon, which is the point -- hand-exported icon sets drift within a week.
+
+`images/logo-x-minus-icon.svg` carries the same geometry for anything that wants vector. The earlier
+constructions (horizontal, stacked-no-plate, one-ink) stay in `images/` as alternates, and
+`images/logo-options.html` now leads with the pick.
+
+In the app: `index.html` asks for the SVG favicon first, then the 32px PNG, then the ICO; the sidebar,
+startup screen, update screen, browser new-tab shortcut and hub avatar keep their existing paths and
+now carry the new bytes, so nothing had to change but the images themselves.
