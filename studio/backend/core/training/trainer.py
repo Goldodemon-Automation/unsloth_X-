@@ -1379,6 +1379,14 @@ class UnslothTrainer:
                 argument.kind is inspect.Parameter.VAR_KEYWORD
                 for argument in parameters.values()
             )
+            # bf16 in hardware (AMX on Sapphire Rapids+, AVX512-BF16 on Cooper Lake/Ice Lake+) is
+            # faster than fp32 and half the memory, so those machines should not be forced onto fp32
+            # by the blanket "CPUs emulate bf16" rule. The probe reads /proc/cpuinfo only; where it
+            # cannot measure -- Windows, macOS -- it answers False and the old rule stands.
+            from utils.cpu_features import bf16_summary, cpu_flags, supports_fast_bf16
+
+            host_flags = cpu_flags(platform = sys.platform)
+            fast_bf16 = supports_fast_bf16(host_flags, platform = sys.platform)
             plan = plan_cpu_training(
                 usable_cpus = _usable_cpus(),
                 available_memory_bytes = available,
@@ -1386,7 +1394,9 @@ class UnslothTrainer:
                 platform = sys.platform,
                 supports_sdpa = accepts_attn_implementation
                 and hasattr(torch.nn.functional, "scaled_dot_product_attention"),
+                fast_bf16 = fast_bf16,
             )
+            logger.info(bf16_summary(host_flags, platform = sys.platform))
         except Exception as error:  # noqa: BLE001 - tuning is best effort, never fatal
             logger.debug("CPU training tuning plan skipped: %s", error)
 

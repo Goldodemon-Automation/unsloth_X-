@@ -16,8 +16,25 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from core.training.cpu_tuning import plan_cpu_training
+from utils.cpu_features import bf16_summary, cpu_flags, supports_fast_bf16
 
 GB = 1024**3
+
+# A trimmed /proc/cpuinfo in the shape the kernels actually emit: x86 spells the feature line
+# "flags", arm64 spells it "Features", and both repeat it once per processor.
+X86_CPUINFO = """processor\t: 0
+vendor_id\t: GenuineIntel
+model name\t: Intel(R) Xeon(R) Gold 6430
+flags\t\t: fpu vme de pse msr avx2 avx512f avx512_bf16 amx_tile amx_bf16
+
+processor\t: 1
+vendor_id\t: GenuineIntel
+flags\t\t: fpu vme de pse msr avx2 avx512f avx512_bf16 amx_tile amx_bf16
+"""
+
+ARM64_CPUINFO = """processor\t: 0
+BogoMIPS\t: 48.00
+Features\t: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics asimdhp\n"""
 
 
 def plan(**measurements):
@@ -166,3 +183,104 @@ def test_every_reason_is_a_plain_sentence():
         for reason in tuned.reasons:
             assert " " in reason
             assert "_" not in reason
+
+
+def test_cpu_flags_read_the_x86_flags_line_and_lowercase_it():
+    flags = cpu_flags(platform = "linux", cpuinfo_text = X86_CPUINFO)
+    assert "amx_bf16" in flags
+    assert "avx512_bf16" in flags
+    assert "avx2" in flags
+    # The union over both processors is the host's set, and only the flag words are kept.
+    assert "vendor_id" not in flags
+    assert all(flag == flag.lower() for flag in flags)
+
+
+def test_cpu_flags_read_the_arm64_features_line():
+    flags = cpu_flags(platform = "linux", cpuinfo_text = ARM64_CPUINFO)
+    assert "asimd" in flags
+    assert "aes" in flags
+    assert "bogomips" not in flags
+    assert "amx_bf16" not in flags
+
+
+def test_cpu_flags_without_injected_text_are_empty_on_windows_and_macos():
+    # Unmeasurable, not "no features": neither platform has a cpuinfo file worth reading.
+    assert cpu_flags(platform = "win32") == frozenset()
+    assert cpu_flags(platform = "darwin") == frozenset()
+    assert cpu_flags(platform = "linux", cpuinfo_text = "") == frozenset()
+
+
+def test_supports_fast_bf16_covers_each_hardware_generation():
+    # AMX-BF16: Sapphire Rapids and newer. AVX512-BF16 plus AVX512F: Cooper Lake / Ice Lake.
+    assert supports_fast_bf16(frozenset({"amx_bf16"})) is True
+    assert supports_fast_bf16(frozenset({"avx512_bf16", "avx512f"})) is True
+    # AVX512-BF16 alone cannot execute without the AVX512 foundation set.
+    assert supports_fast_bf16(frozenset({"avx512_bf16"})) is False
+    # AVX2 alone is every mainstream x86 CPU since Haswell: bf16 here is emulated.
+    assert supports_fast_bf16(frozenset({"avx2", "fma"})) is False
+    # Apple Silicon (M1 and newer) runs bf16 natively; Intel Macs do not.
+    assert supports_fast_bf16(frozenset(), platform = "darwin", machine = "arm64") is True
+    assert supports_fast_bf16(frozenset(), platform = "darwin", machine = "x86_64") is False
+    # Empty means unmeasurable, and the safe answer there is fp32.
+    assert supports_fast_bf16(frozenset()) is False
+
+
+def test_supports_fast_bf16_reads_the_injected_cpuinfo():
+    assert supports_fast_bf16(cpu_flags(platform = "linux", cpuinfo_text = X86_CPUINFO)) is True
+    assert supports_fast_bf16(cpu_flags(platform = "linux", cpuinfo_text = ARM64_CPUINFO)) is False
+
+
+def test_bf16_summary_is_a_prose_sentence_for_every_case():
+    cases = (
+        bf16_summary(frozenset({"amx_bf16"}), platform = "linux", machine = "x86_64"),
+        bf16_summary(
+            frozenset({"avx512_bf16", "avx512f"}), platform = "linux", machine = "x86_64"
+        ),
+        bf16_summary(frozenset({"avx512_bf16"}), platform = "linux", machine = "x86_64"),
+        bf16_summary(frozenset(), platform = "darwin", machine = "arm64"),
+        bf16_summary(frozenset(), platform = "win32", machine = "AMD64"),
+        bf16_summary(frozenset({"avx2", "fma"}), platform = "linux", machine = "x86_64"),
+    )
+    for sentence in cases:
+        assert " " in sentence
+        assert "_" not in sentence
+    assert cases[0].startswith("This CPU has AMX-BF16")
+    assert "AVX512-BF16" in cases[1]
+    assert "AVX512F" in cases[2]
+    assert "Apple Silicon" in cases[3]
+    # The empty set is unmeasurable, so its sentence must not claim the CPU lacks bf16.
+    assert "could not be measured" in cases[4]
+    assert "no bf16" in cases[5]
+
+
+def test_bf16_summary_never_raises_on_a_malformed_flag_argument():
+    assert bf16_summary(None)
+    assert bf16_summary(42)  # not iterable: still a sentence, not an exception
+
+
+def test_plan_uses_bfloat16_when_the_cpu_has_fast_bf16():
+    tuned = plan(available_memory_bytes = 10 * GB, fp32_weight_bytes = 4 * GB, fast_bf16 = True)
+    assert tuned.dtype == "bfloat16"
+    assert any("hardware" in reason for reason in tuned.reasons)
+    # The reason names the hardware, not the memory, because the weights did fit.
+    assert not any("cannot fit" in reason for reason in tuned.reasons)
+
+
+def test_the_memory_reason_wins_over_the_hardware_reason_when_fp32_does_not_fit():
+    tuned = plan(
+        available_memory_bytes = 10 * GB,
+        fp32_weight_bytes = 9 * GB,
+        fast_bf16 = True,
+    )
+    assert tuned.dtype == "bfloat16"
+    assert any("cannot fit" in reason for reason in tuned.reasons)
+    assert not any("hardware" in reason for reason in tuned.reasons)
+
+
+def test_fast_bf16_defaults_to_false_and_leaves_the_existing_dtype_rule_unchanged():
+    fits = plan(available_memory_bytes = 10 * GB, fp32_weight_bytes = 8 * GB - 1)
+    does_not_fit = plan(available_memory_bytes = 10 * GB, fp32_weight_bytes = 8 * GB + 1)
+    assert fits.dtype == "float32"
+    assert does_not_fit.dtype == "bfloat16"
+    assert plan().dtype == "float32"
+    assert plan(fast_bf16 = False).dtype == "float32"

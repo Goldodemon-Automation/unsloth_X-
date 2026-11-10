@@ -47,11 +47,18 @@ def plan_cpu_training(
     fp32_weight_bytes: int | None,
     platform: str | None = None,
     supports_sdpa: bool = True,
+    fast_bf16: bool = False,
 ) -> CpuTrainingPlan:
     """Build the CPU training plan from host measurements.
 
     Every measurement may be None ("unknown"), and every rule below then picks the conservative
     answer: one thread, zero dataloader workers, eager attention, fp32, no checkpointing.
+
+    ``fast_bf16`` is the one measurement that is not a number: the loader probes the CPU with
+    ``utils.cpu_features`` and passes the answer in, so this planner stays a pure function of its
+    arguments. It defaults to False because on most x86 CPUs bf16 is emulated through fp32 and a
+    bf16 run is therefore slower at half the memory; only AMX-BF16, AVX512-BF16 and Apple Silicon
+    make bf16 the faster choice.
     """
     reasons: list[str] = []
 
@@ -154,11 +161,22 @@ def plan_cpu_training(
     # activation headroom inside the available RAM), the same one _load_cpu_model applied before
     # this module existed. The loader now asks this plan instead of deciding locally, so this
     # module is the single place that decides the CPU load dtype and the two cannot drift.
+    # Memory is checked first and wins: when fp32 cannot fit, bf16 is the only runnable dtype,
+    # so the reason must name the memory squeeze even on hardware where bf16 is also faster.
     if not cpu_fp32_weights_fit(fp32_weight_bytes, available_memory_bytes):
         dtype = "bfloat16"
         reasons.append(
             "The frozen base loads in bfloat16 because the fp32 weights cannot fit in the "
             "available memory."
+        )
+    elif fast_bf16:
+        # Hardware bf16 (AMX-BF16, AVX512-BF16, Apple Silicon): the same run is faster than fp32
+        # and takes half the memory, so the tolerance argument that keeps fp32 elsewhere does
+        # not apply here.
+        dtype = "bfloat16"
+        reasons.append(
+            "The frozen base loads in bfloat16 because this CPU runs bf16 in hardware, which is "
+            "faster than fp32 at half the memory."
         )
     else:
         dtype = "float32"
