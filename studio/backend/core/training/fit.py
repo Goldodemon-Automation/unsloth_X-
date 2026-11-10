@@ -63,7 +63,9 @@ def _target_budget_gb(spec: Mapping[str, Any]) -> tuple[Optional[float], Optiona
 
     Only consulted when the caller names a `compute_target`, so an estimate that does not name a
     device keeps its old behaviour exactly -- including the "did not report a size" verdict, which is
-    how a host with no accelerator reads. Naming one is what makes this useful on the targets the
+    how a host with no accelerator reads. `POST /api/train/fit` always names one (the request's, else
+    the stored choice, else "auto"), because in the app the device *is* known; a direct caller of
+    `estimate()` opts in by passing the key. Naming one is what makes this useful on the targets the
     plain probe cannot describe: `torch.cuda.get_device_properties` answers nothing on an Intel XPU,
     and on an integrated GPU it answers with the carve-out rather than the shared pool behind it.
 
@@ -86,8 +88,17 @@ def _target_budget_gb(spec: Mapping[str, Any]) -> tuple[Optional[float], Optiona
         return None, "unresolved", [str(error)]
 
     integrated = target.kind == "igpu"
+    # The GPU the target resolved to, not the first integrated one on the box: with two of them the
+    # first card's reservation sizes a run aimed at the second.
+    index = None
+    device = str(getattr(target, "device", "") or "")
+    if ":" in device:
+        try:
+            index = int(device.split(":", 1)[1])
+        except ValueError:
+            index = None
     dedicated = (
-        accelerator_budget.carveout_bytes(getattr(probe, "gpus", ()))
+        accelerator_budget.carveout_bytes(getattr(probe, "gpus", ()), index = index)
         if integrated
         else target.memory_bytes
     )
@@ -95,16 +106,17 @@ def _target_budget_gb(spec: Mapping[str, Any]) -> tuple[Optional[float], Optiona
         integrated = integrated,
         dedicated_bytes = dedicated,
         system_memory_bytes = getattr(probe, "system_memory_bytes", None),
+        kind = target.kind,
     )
     usable = report.get("usable_bytes")
     source = f"target:{target.kind}"
     notes = [report["notes"]] if report.get("notes") else []
     if target.kind == "cpu":
-        # A CPU run's ceiling is RAM, and only part of it: the fit check should plan against what is
-        # free, not against the installed total that the OS and the dataset pipeline also need.
+        # The budget is free RAM, which already excludes what the OS holds; the note says so instead
+        # of repeating a caution that would now over-state the shortfall.
         notes.append(
-            "A CPU run competes with the operating system for this memory; expect the real ceiling "
-            "to be a few GB lower."
+            "A CPU run shares this memory with the operating system and the dataset pipeline; the "
+            "figure above is what is free right now, and it moves while the run does."
         )
     return (float(usable) / GB if usable else None), source, notes
 

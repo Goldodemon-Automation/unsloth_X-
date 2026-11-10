@@ -222,3 +222,29 @@ def test_every_documented_key_list_is_reachable():
 @pytest.mark.parametrize("kind", ["", "  ", "GPU", "qualcomm", "mps"])
 def test_unknown_targets_set_nothing_rather_than_guessing(kind):
     assert ab.accelerator_environment(kind) == {}
+
+def test_a_cpu_budget_says_ram_and_uses_the_free_figure():
+    report = ab.budget_report(
+        integrated = False,
+        dedicated_bytes = 40 * GB,
+        system_memory_bytes = 64 * GB,
+        kind = "cpu",
+    )
+
+    assert report["usable_bytes"] == 40 * GB
+    # The sentence used to read "This GPU has 40.0 GB of its own memory" for a CPU.
+    assert "GPU" not in report["notes"]
+    assert "CPU" in report["notes"]
+    assert "40.0 GB" in report["notes"]
+
+
+def test_the_carveout_follows_the_gpu_the_target_names():
+    gpus = [
+        {"index": 0, "integrated": True, "memory_bytes": int(0.5 * GB)},
+        {"index": 1, "integrated": True, "memory_bytes": 2 * GB},
+    ]
+
+    # Two integrated parts: the first one's reservation must not size a run aimed at the second.
+    assert ab.carveout_bytes(gpus) == int(0.5 * GB)
+    assert ab.carveout_bytes(gpus, index = 1) == 2 * GB
+    assert ab.carveout_bytes(gpus, index = 2) is None

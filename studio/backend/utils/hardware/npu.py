@@ -382,8 +382,25 @@ def _apple_probe() -> dict[str, Any]:
 
 
 def _probe_microsoft() -> dict[str, Any]:
-    """Windows ML is a provider, not a device: it drives NPUs other vendors' PCI entries own."""
+    """Windows ML is a provider, not a device: it drives NPUs other vendors' PCI entries own.
+
+    A bare marker rather than a full device entry because this is also the published answer to
+    ``detect_npu_device("microsoft")``, which callers compare key for key, so it cannot grow the
+    device keys itself. ``_matrix_entry()`` completes it for the aggregate.
+    """
     return {"present": False, "vendor": "microsoft", "reason": "not_pci_visible"}
+
+
+def _matrix_entry(vendor: str, device: dict[str, Any]) -> dict[str, Any]:
+    """One ``detect_npu()`` entry in the shape ``_device()`` promises.
+
+    ``_probe_microsoft()`` answers with a marker (see above) and the aggregate's probe-failure
+    path builds its own dict, so the shared shape is filled here through ``_device()``: nothing
+    looping over ``devices`` should have to special-case one vendor.
+    """
+    if "supported" in device:
+        return device
+    return _device(vendor, device.get("pci_id"), device)
 
 
 _PROBES: dict[str, Callable[[], dict[str, Any]]] = {
@@ -439,6 +456,7 @@ def detect_npu() -> dict[str, Any]:
                 "reason": "probe_failed",
                 "error": str(exc),
             }
+        device = _matrix_entry(vendor, device)
         if device.get("reason") == "probe_failed":
             failed = True
         devices.append(device)

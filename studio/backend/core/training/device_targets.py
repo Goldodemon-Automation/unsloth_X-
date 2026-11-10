@@ -116,6 +116,9 @@ class TargetProbe:
     cpu_name: Optional[str] = None
     cpu_cores: Optional[int] = None
     system_memory_bytes: Optional[int] = None
+    # Free RAM beside the installed total: a CPU run competes with the OS for the difference, and the
+    # trainer already loads its base against `available` (core/training/trainer.py).
+    system_memory_available_bytes: Optional[int] = None
     torch_available: bool = False
     torch_device: Optional[str] = None
     gpus: list = field(default_factory = list)
@@ -135,7 +138,7 @@ class TargetProbe:
         probe = cls()
         probe.cpu_name = _cpu_name()
         probe.cpu_cores = _cpu_cores()
-        probe.system_memory_bytes = _system_memory_bytes()
+        probe.system_memory_bytes, probe.system_memory_available_bytes = _system_memory_bytes()
         probe.torch_available = importlib.util.find_spec("torch") is not None
         probe.bnb_available = importlib.util.find_spec("bitsandbytes") is not None
         probe.triton_available = importlib.util.find_spec("triton") is not None
@@ -185,12 +188,15 @@ def _cpu_cores() -> Optional[int]:
         return None
 
 
-def _system_memory_bytes() -> Optional[int]:
+def _system_memory_bytes() -> tuple[Optional[int], Optional[int]]:
+    """(installed, available) bytes; either may be None when psutil cannot answer."""
     try:
         import psutil
-        return int(psutil.virtual_memory().total)
+
+        memory = psutil.virtual_memory()
+        return int(memory.total), int(memory.available)
     except Exception:
-        return None
+        return None, None
 
 
 def _vendor_from_name(name: str) -> str:
@@ -256,15 +262,18 @@ def _torch_devices() -> tuple[Optional[str], list]:
             for index in range(torch.xpu.device_count()):
                 properties = torch.xpu.get_device_properties(index)
                 name = str(getattr(properties, "name", "") or "")
+                integrated = looks_integrated(name, vendor = "intel")
                 gpus.append(
                     {
                         "index": index,
                         "name": name,
                         "vendor": _vendor_from_name(name) or "intel",
-                        "integrated": looks_integrated(name, vendor = "intel"),
+                        "integrated": integrated,
+                        # An Arc A770 reports its own memory: only an integrated part shares the
+                        # host's. Hardcoding True here made the same payload say both.
+                        "unified": integrated,
                         "memory_bytes": int(getattr(properties, "total_memory", 0) or 0) or None,
                         "arch": getattr(properties, "architecture", None),
-                        "unified": True,
                     }
                 )
             return "xpu", gpus
@@ -284,8 +293,10 @@ def _torch_devices() -> tuple[Optional[str], list]:
             )
             return "mps", gpus
     except Exception:
-        # A wedged driver reports nothing; the caller then sees a CPU-only host, which is what it is.
-        return None, gpus
+        # A wedged driver reports nothing. Returning the devices read before the failure would hand
+        # back a dGPU row whose `device` falls through to "cpu" and which the caller still calls
+        # supported -- and the fit check would then size a 24 GB card that cannot be read.
+        return None, []
     return "cpu", gpus
 
 
@@ -440,7 +451,9 @@ def list_training_targets(probe: Optional[TargetProbe] = None) -> list:
             kind = "cpu",
             name = probe.cpu_name or "CPU",
             vendor = _vendor_from_name(probe.cpu_name or "") or "other",
-            memory_bytes = probe.system_memory_bytes,
+            # Free RAM, not installed: planning against the total is how a CPU run is sized for memory
+            # the operating system and the dataset pipeline already hold.
+            memory_bytes = probe.system_memory_available_bytes or probe.system_memory_bytes,
             unified_memory = True,
             # The compatibility path, not a fallback: a CPU run is slow but real, and it is the only
             # device every installation has.

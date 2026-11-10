@@ -6,7 +6,7 @@ limits it states rather than hides.
 
 | Target | What it is | Training status |
 | --- | --- | --- |
-| `cpu` | The processor, no accelerator | **Supported, slow.** The CoRA/QLoRA recipe on stock `transformers` + `peft`; no measurement is quoted, only the order of magnitude. |
+| `cpu` | The processor, no accelerator | **Supported, slow.** The CoRA/QLoRA recipe on stock `transformers` + `peft`; its budget is *free* RAM, not the installed total. |
 | `igpu` | Intel Arc/Xe, AMD APU (RDNA2+), Apple Silicon | **Supported, memory-bound.** Same kernels as a discrete card; the budget is shared with the OS. |
 | `dgpu` | NVIDIA, AMD Radeon/Instinct, Intel Arc Pro | **Supported.** The normal case, unchanged. |
 | `npu` | AMD XDNA1/2, Intel NPU 3/4, Qualcomm Hexagon, Apple ANE | **Not trainable.** Exposed honestly, usable as an assist device. |
@@ -85,8 +85,8 @@ module. Setting them later changes nothing.
 | Target | Sets |
 | --- | --- |
 | `cpu` | `UNSLOTH_TRAINING_DEVICE=cpu`, `TORCHDYNAMO_DISABLE=1`, `TORCH_COMPILE_DISABLE=1`, `UNSLOTH_COMPILE_DISABLE=1` |
-| `igpu` (Intel) | `UNSLOTH_TRAINING_DEVICE=igpu`, `PYTORCH_XPU_ALLOC_CONF=expandable_segments:True`, `SYCL_CACHE_PERSISTENT=1`, `SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS=1`, `UNSLOTH_SKIP_PIN_MEMORY=1`, `UNSLOTH_IGPU=1`, plus the three compile switches |
-| `igpu` (AMD) | `UNSLOTH_TRAINING_DEVICE=igpu`, `PYTORCH_HIP_ALLOC_CONF=expandable_segments:True`, `TORCH_BLAS_PREFER_HIPBLASLT=0`, `UNSLOTH_SKIP_PIN_MEMORY=1`, `UNSLOTH_IGPU=1`, plus the three compile switches |
+| `igpu` (Intel) | `PYTORCH_XPU_ALLOC_CONF=expandable_segments:True`, `SYCL_CACHE_PERSISTENT=1`, `SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS=1`, `UNSLOTH_SKIP_PIN_MEMORY=1`, `UNSLOTH_IGPU=1`, plus the three compile switches. No device pin: the card is chosen through `CUDA_VISIBLE_DEVICES`/`ZE_AFFINITY_MASK`, and Unsloth's `igpu` pin raises when no integrated backend answers, which would kill a run whose child lost the GPU |
+| `igpu` (AMD) | `PYTORCH_HIP_ALLOC_CONF=expandable_segments:True`, `TORCH_BLAS_PREFER_HIPBLASLT=0`, `UNSLOTH_SKIP_PIN_MEMORY=1`, `UNSLOTH_IGPU=1`, plus the three compile switches. No device pin, for the same reason |
 | `npu` | `UNSLOTH_TRAINING_DEVICE=npu`, `UNSLOTH_NPU_DEVICE=1`, the three compile switches |
 | `dgpu` | nothing: the stock allocator split reuses freed blocks sooner, and a forced `cuda` would break an AMD host where the same card reports as `hip` |
 

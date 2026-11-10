@@ -26,6 +26,8 @@ from core.inference.flm_files import (
     read_model_files,
 )
 from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable
+# Kept as a module attribute, not imported inside the helper: it is the fallback the older
+# single-vendor answer still provides, and callers (and tests) swap this name out directly.
 from utils.hardware.npu import detect_amd_npu
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.process_lifetime import (
@@ -217,6 +219,64 @@ def _kill_tree(process: subprocess.Popen) -> None:
     terminate_pid(process.pid, timeout = 5.0, owner_verified = True)
 
 
+def _npu_matrix() -> Optional[dict[str, Any]]:
+    """``detect_npu()``'s aggregate, or None when this checkout has no matrix (or it raises)."""
+    # Imported here rather than with the module, so this module imports on a host with no NPU
+    # stack; an older checkout simply has no ``detect_npu`` to import.
+    try:
+        from utils.hardware.npu import detect_npu
+    except Exception:  # noqa: BLE001 -- no matrix in this checkout
+        return None
+    try:
+        summary = detect_npu()
+    except Exception as exc:  # noqa: BLE001 -- the AMD-only probe still has an answer
+        logger.warning("NPU matrix detection failed, using the AMD probe: %s", exc)
+        return None
+    return summary if isinstance(summary, dict) else None
+
+
+def _matrix_hardware(summary: dict[str, Any]) -> dict[str, Any]:
+    """One matrix answer in the keys ``status()`` and ``_require_supported()`` read."""
+    primary = summary.get("primary") or {}
+    return {
+        "present": bool(summary.get("present")),
+        "supported": bool(summary.get("supported")),
+        # The flag, not the hardware: _require_supported() names it in its refusal.
+        "enabled": bool(summary.get("enabled")),
+        "family": primary.get("family"),
+        "name": primary.get("name"),
+        "driver": primary.get("driver"),
+        "driver_version": primary.get("driver_version"),
+        "firmware_version": primary.get("firmware_version"),
+        "device_node": primary.get("device_node"),
+    }
+
+
+def _detect_npu_hardware() -> dict[str, Any]:
+    """The NPU this backend could drive, in the keys ``status()`` and ``_require_supported()`` read.
+
+    One matrix, so a device the Studio reports is a device inference can use: an Intel, Qualcomm or
+    Apple NPU is in ``detect_npu()`` and invisible to the AMD-only probe, so a matrix with a usable
+    NPU decides, and ``family``/``name``/driver detail come off the device a UI would lead with.
+    ``supported`` stays the aggregate's answer, so a present but unusable NPU reaches the caller as
+    present and unsupported rather than as absent.
+
+    ``detect_amd_npu()`` keeps the last word only where it is authoritative: when the matrix has no
+    usable NPU and the AMD-only probe does find hardware, its answer is returned as today, because
+    it is the same PCI walk as the matrix's AMD device and the answer existing callers read key for
+    key. It is the whole answer for a checkout older than the matrix, or one that raises.
+    """
+    summary = _npu_matrix()
+    matrix = _matrix_hardware(summary) if summary is not None else None
+    if matrix is not None and matrix["supported"]:
+        return matrix
+    # A module global read, so a caller that swapped the probe in still controls the answer.
+    legacy = detect_amd_npu()
+    if matrix is None or legacy.get("present"):
+        return legacy
+    return matrix
+
+
 def _positive_int(value: Any) -> Optional[int]:
     try:
         number = int(value)
@@ -276,7 +336,7 @@ class LemonadeNpuBackend:
 
     def hardware(self) -> dict[str, Any]:
         if self._hardware is None:
-            self._hardware = detect_amd_npu()
+            self._hardware = _detect_npu_hardware()
         return self._hardware
 
     @property

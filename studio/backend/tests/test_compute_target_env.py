@@ -43,7 +43,7 @@ def test_an_npu_target_pins_the_library_to_the_npu():
     assert environ["UNSLOTH_NPU_DEVICE"] == "1"
 
 
-def test_an_igpu_target_carries_its_shared_memory_flag():
+def test_an_igpu_target_sets_the_shared_memory_flags_but_no_device_pin():
     environ = {}
 
     env_mod.apply_compute_target_environment(
@@ -51,9 +51,13 @@ def test_an_igpu_target_carries_its_shared_memory_flag():
         environ = environ,
     )
 
-    assert environ["UNSLOTH_TRAINING_DEVICE"] == "igpu"
+    # The flags are what an integrated part needs; the pin is deliberately absent because unsloth's
+    # "igpu" resolves by *raising* when no integrated backend answers, and a child that lost the GPU
+    # would then die here instead of reporting the device it used.
+    assert "UNSLOTH_TRAINING_DEVICE" not in environ
     assert environ["UNSLOTH_IGPU"] == "1"
     assert environ["UNSLOTH_SKIP_PIN_MEMORY"] == "1"
+    assert environ["PYTORCH_XPU_ALLOC_CONF"] == "expandable_segments:True"
 
 
 def test_a_discrete_target_overrides_nothing():

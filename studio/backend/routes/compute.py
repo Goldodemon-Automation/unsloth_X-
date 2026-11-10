@@ -9,17 +9,21 @@ in words a person can act on. Both are reads of already-measured state -- `Targe
 one probe, and it is on a worker thread because a wedged driver blocks.
 
 Auth-gated like `/api/system`, and for the same reason: the payload fingerprints the host (device
-names, memory sizes). It is also polled by the Train page, so every handler here must stay a cheap
-read; nothing in this module starts a runtime, loads a model or imports torch.
+names, memory sizes). The Train page polls it, so the probe is cached for a minute and nothing here
+starts a runtime or loads a model. It does reach torch indirectly -- `TargetProbe.detect()` asks
+torch which accelerators answer, which is the whole point -- so the work is bounded and reused, not
+absent.
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import asdict
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from auth import policy
 from auth.authentication import get_current_subject
 from core.training.device_targets import (
     TrainingTarget,
@@ -35,6 +39,20 @@ from utils.hardware import accelerator_budget
 router = APIRouter()
 logger = get_logger(__name__)
 
+# The Train page polls /targets, and one payload runs a torch device probe, psutil twice and six
+# runtime PATH scans (~30 ms here). Hardware does not change between two polls a second apart, so the
+# answer is reused for the same minute the hardware inventory uses; a POST invalidates it so a
+# deliberate change is reflected at once.
+_PROBE_TTL_S = 60.0
+_probe_cache: dict = {"at": 0.0, "probe": None, "npu": None}
+_probe_lock = asyncio.Lock()
+
+
+def _invalidate_probe_cache() -> None:
+    _probe_cache["at"] = 0.0
+    _probe_cache["probe"] = None
+    _probe_cache["npu"] = None
+
 
 class TargetChoice(BaseModel):
     """A requested target. Free-form on purpose: the registry owns the accepted spellings and its
@@ -45,6 +63,21 @@ class TargetChoice(BaseModel):
 
 def _probe() -> TargetProbe:
     return TargetProbe.detect()
+
+
+def _cached_probe_and_npu() -> tuple[TargetProbe, dict]:
+    """(probe, NPU capability) from one probe, reused inside the TTL.
+
+    The capability used to re-run the NPU detection the probe had already done, so a single GET
+    detected NPUs twice and re-scanned PATH for every runtime.
+    """
+    now = time.monotonic()
+    if _probe_cache["probe"] is not None and now - _probe_cache["at"] < _PROBE_TTL_S:
+        return _probe_cache["probe"], _probe_cache["npu"]
+    probe = _probe()
+    npu = _npu_capability()
+    _probe_cache.update(at = now, probe = probe, npu = npu)
+    return probe, npu
 
 
 def _budget_for(target: TrainingTarget, probe: TargetProbe) -> dict:
@@ -86,7 +119,7 @@ def _npu_capability() -> dict:
 
 
 def _payload() -> dict:
-    probe = _probe()
+    probe, npu = _cached_probe_and_npu()
     payload = training_target_payload(probe)
     stored = compute_target_settings.get_selected_compute_target()
     try:
@@ -100,7 +133,7 @@ def _payload() -> dict:
     payload["requested"] = stored
     payload["resolved"] = resolved.id
     payload["budget"] = _budget_for(resolved, probe)
-    payload["npu"] = _npu_capability()
+    payload["npu"] = npu
     return payload
 
 
@@ -114,7 +147,7 @@ async def list_compute_targets(current_subject: str = Depends(get_current_subjec
     return await asyncio.to_thread(_payload)
 
 
-@router.post("/target")
+@router.post("/target", dependencies = [Depends(policy.require_owner)])
 async def choose_compute_target(
     choice: TargetChoice, current_subject: str = Depends(get_current_subject)
 ) -> dict:
@@ -127,6 +160,7 @@ async def choose_compute_target(
         stored = await asyncio.to_thread(
             compute_target_settings.set_selected_compute_target, choice.target
         )
+        _invalidate_probe_cache()
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
     payload = training_target_payload()
@@ -163,6 +197,8 @@ async def npu_assist_plan(
         plan_npu_assist,
         cap,
         requested = requested,
+        # resolve_training_target always returns a target (the CPU row is always supported), so None
+        # only means the registry itself failed; treating that as the CPU is the honest fallback.
         primary_kind = getattr(primary, "kind", "cpu"),
         eval_enabled = eval_enabled,
         qat = qat,

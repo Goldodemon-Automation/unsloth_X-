@@ -120,15 +120,18 @@ def forced_training_device():
 
 @functools.cache
 def get_device_type():
-    # MLX first: torch is never imported on the MLX runtime, so claiming "cuda" here would NameError in
+    forced = forced_training_device()
+    # An explicit pin outranks MLX, and has to come first or selecting the CPU on an Apple Silicon host
+    # silently trains on the GPU: MLX is detected from the interpreter, not from what the run asked
+    # for. Only "cpu" is a pin MLX cannot serve; "igpu"/"npu"/"cuda" fall through to the probes below.
+    if forced == "cpu":
+        return "cpu"
+    # MLX next: torch is never imported on the MLX runtime, so claiming "cuda" here would NameError in
     # get_device_count. Matches unsloth/__init__.py and unsloth_zoo.device_type.
     if _IS_MLX:
         return "mlx"
-    forced = forced_training_device()
     # "igpu" is resolved to the accelerator that actually exists, since the kernels are the same ones
     # a discrete card runs; only the memory budget differs, and that is the caller's business.
-    if forced == "cpu":
-        return "cpu"
     if forced == "npu":
         return "npu"
     if forced == "igpu":

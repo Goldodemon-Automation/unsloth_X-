@@ -40,11 +40,14 @@ _PRIMARY_LABELS = {
     "npu": "the NPU",
 }
 _DEFAULT_PRIMARY_LABEL = "the primary compute device"
+_NOT_MEASURED = "not_measured"
 # Tokens the capability probe may refuse with, in the order the UI prefers to explain them.
 _REFUSAL_REASONS = ("disabled", "absent", "no_runtime", "no_supported_task")
 # Reasons a probe can report that are not part of the refusal contract but must still be visible.
 _EXTRA_REFUSAL_REASONS = ("unsupported_family",)
-_NOT_MEASURED = "not_measured"
+# Every token `NpuAssistPlan.refused_reason` can carry, probe reasons plus the planner's own. Published
+# because a UI has to translate them, and an incomplete list is how one reaches a user as snake_case.
+REFUSAL_TOKENS = _REFUSAL_REASONS + _EXTRA_REFUSAL_REASONS + ("no_backward_pass", "npu_is_primary", _NOT_MEASURED)
 _DEGRADED_CAPABILITY = {"mode": "unavailable", "reasons": [_NOT_MEASURED]}
 
 

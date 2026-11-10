@@ -8,9 +8,9 @@ time by torch, SYCL, the allocator and Unsloth's own device module: setting them
 changes nothing. It is a separate module from the worker so it can be tested without importing the
 worker's torch/transformers stack, and so the parent process can reason about the same mapping.
 
-The target is a *request*, and a request that cannot be honoured is a warning attached to the run
-rather than an exception: a job that dies here leaves the user with a stack trace and no progress
-bar, which is strictly worse than a job that says "running on the CPU instead" in its log.
+The target is a *request*. Everything written here is either a default the loader reads or a pin that
+cannot fail, because a job that dies in this function leaves the user a stack trace and no progress
+bar -- strictly worse than a job whose log names the device it actually used.
 """
 
 from __future__ import annotations
@@ -22,11 +22,15 @@ from typing import MutableMapping, Optional
 # device_targets so a subprocess that cannot build a probe can still honour a target.
 COMPUTE_TARGET_KINDS = ("cpu", "igpu", "dgpu", "npu")
 
-# The library-level override each target needs. "dgpu" writes nothing: auto-detection already picks
-# the discrete card, and forcing "cuda" here would break an AMD host, where the same card is "hip".
+# The library-level override each target needs. Two targets write nothing:
+#   "dgpu" -- auto-detection already picks the discrete card, and forcing "cuda" would break an AMD
+#             host, where the same card reports as "hip".
+#   "igpu" -- the Studio picks the card through CUDA_VISIBLE_DEVICES/ZE_AFFINITY_MASK, and unsloth's
+#             "igpu" pin *raises* when no integrated backend answers. A run started while the iGPU was
+#             visible, whose child then masks it, would die with a stack trace instead of the warning
+#             this module promises; the shared-memory flags below are the part it actually needs.
 _DEVICE_OVERRIDES = {
     "cpu": "cpu",
-    "igpu": "igpu",
     "npu": "npu",
 }
 

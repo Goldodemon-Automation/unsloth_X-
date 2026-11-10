@@ -1525,6 +1525,22 @@ def _detect_hardware_locked() -> DeviceType:
     # Probe torch once per pass: a failed probe is expensive and a second can disagree.
     torch_ok = _has_torch()
 
+    # The training subprocess pins its device through UNSLOTH_TRAINING_DEVICE (set by
+    # core/training/compute_target_env.py), and only unsloth's own device_type used to read it. That
+    # left this module -- which decides `cpu_training_host()`, the optimizer a run is normalised to
+    # and the GPU list the loader receives -- reporting CUDA on a host whose run had been pinned to
+    # the CPU, so one process ran in two device modes at once. Honouring the pin here makes it reach
+    # the code that actually chooses the loader. Same precedent as UNSLOTH_FORCE_XPU below.
+    if os.environ.get("UNSLOTH_TRAINING_DEVICE", "").strip().lower() == "cpu":
+        DEVICE = DeviceType.CPU
+        CHAT_ONLY = True
+        # A deliberate choice, not a missing device: the token says so, or the sidebar offers a
+        # "your GPU is broken" hint for a decision the user just made.
+        CHAT_ONLY_REASON = "pinned_to_cpu"
+        CHAT_ONLY_DETAIL = None
+        print("Hardware detected: CPU -- pinned by UNSLOTH_TRAINING_DEVICE=cpu")
+        return DEVICE
+
     if torch_ok:
         import torch
 

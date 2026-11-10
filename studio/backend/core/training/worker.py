@@ -4171,7 +4171,13 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     from .training import is_apple_silicon_training_platform, should_use_mlx_training_backend
 
-    mlx_backend_requested = is_apple_silicon_training_platform()
+    from core.training.compute_target_env import target_kind as _target_kind
+
+    # A run pinned to the CPU must not take the MLX fast path: on Apple Silicon that path is chosen
+    # from the interpreter, not from what the run asked for, so selecting the CPU would silently train
+    # on the GPU and the fit check would have sized it against RAM. The pin is the whole point.
+    cpu_pinned = _target_kind(config.get("compute_target")) == "cpu"
+    mlx_backend_requested = is_apple_silicon_training_platform() and not cpu_pinned
 
     mlx_transformers_activated = False
     if mlx_backend_requested and _is_current_process_apple_silicon():

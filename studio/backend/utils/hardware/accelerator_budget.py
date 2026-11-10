@@ -192,16 +192,20 @@ def apply_accelerator_environment(
     return applied
 
 
-def carveout_bytes(gpus: object) -> Optional[int]:
+def carveout_bytes(gpus: object, index: Optional[int] = None) -> Optional[int]:
     """The reservation the driver reports for an integrated GPU, from probe entries shaped
     ``{"integrated": bool, "memory_bytes": int | None}``.
 
     Shared by the compute route and the fit check so the two cannot disagree about which number is
     the carve-out; the caller passes whatever its probe produced and gets None when nothing says.
+    ``index`` names the GPU the target resolved to: on a host with two integrated parts, taking the
+    first one silently sizes a run against the other card's reservation.
     """
     for gpu in gpus or ():  # type: ignore[union-attr]
         try:
             if not gpu.get("integrated"):
+                continue
+            if index is not None and gpu.get("index") not in (None, index):
                 continue
             memory = gpu.get("memory_bytes")
         except AttributeError:
@@ -217,6 +221,7 @@ def budget_report(
     dedicated_bytes: Optional[int],
     system_memory_bytes: Optional[int],
     fraction: float = SHARED_MEMORY_FRACTION,
+    kind: str = "dgpu",
 ) -> dict:
     """JSON-ready view of the budget decision, with the sentence the UI shows.
 
@@ -229,6 +234,21 @@ def budget_report(
         system_memory_bytes = system_memory_bytes,
         fraction = fraction,
     )
+    if kind == "cpu":
+        # A CPU's budget is the RAM it can actually take. Quoting the installed total, or calling it a
+        # GPU with its own memory, is how a CPU run gets planned for memory the OS already holds.
+        notes = (
+            f"Training runs on the CPU: {_gb(dedicated_bytes if dedicated_bytes is not None else usable)}"
+            f" GB of the machine's {_gb(system_memory_bytes)} GB of RAM is free for it."
+        )
+        return {
+            "integrated": False,
+            "dedicated_bytes": None,
+            "system_memory_bytes": system_memory_bytes,
+            "shared_fraction": None,
+            "usable_bytes": dedicated_bytes if dedicated_bytes is not None else usable,
+            "notes": notes,
+        }
     if integrated and usable is not None:
         notes = (
             f"This GPU shares system memory: {_gb(usable)} GB of the machine's "

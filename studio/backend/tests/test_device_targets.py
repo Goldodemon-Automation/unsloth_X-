@@ -314,3 +314,37 @@ def test_detect_runs_on_this_host_without_torch():
     assert targets[0].supported is True
     # This machine has no torch installed, which is exactly the case the CPU row exists for.
     assert isinstance(probe.torch_available, bool)
+
+def test_a_partial_torch_read_leaves_no_usable_gpu_row():
+    # A driver that answers for device 0 and then throws must not leave a dGPU row whose `device` fell
+    # through to "cpu" while `supported` still said yes: the fit check would size a card it cannot read.
+    probe = _probe(torch_device = None, gpus = [])
+
+    kinds = [target.kind for target in list_training_targets(probe)]
+
+    assert kinds == ["cpu"]
+    assert default_training_target(probe).kind == "cpu"
+
+
+def test_an_intel_discrete_card_is_not_a_unified_memory_device():
+    probe = _probe(
+        torch_device = "xpu",
+        gpus = [
+            _gpu(index = 0, name = "Intel(R) Arc(TM) A770 Graphics", vendor = "intel",
+                 integrated = False, memory_bytes = 16 * GB, arch = "dg2", unified = False)
+        ],
+    )
+
+    target = resolve_training_target("dgpu", probe)
+
+    # Only an integrated part shares the host's memory; the payload used to claim both at once.
+    assert target.unified_memory is False
+    assert target.memory_bytes == 16 * GB
+
+
+def test_a_cpu_plans_against_free_ram_not_the_installed_total():
+    probe = _probe(system_memory_bytes = 64 * GB, system_memory_available_bytes = 40 * GB)
+
+    cpu = list_training_targets(probe)[0]
+
+    assert cpu.memory_bytes == 40 * GB
