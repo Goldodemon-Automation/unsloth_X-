@@ -140,6 +140,33 @@ export function TrainingPresetSection(): ReactElement {
     (entry) => entry.id === computeTargets.resolved,
   );
 
+  // Where the device's recommendation disagrees with the wizard's fields. The check
+  // is sized by it exactly when there is something to change; the wizard's values
+  // themselves are never rewritten.
+  const diffFor = (target: ComputeTarget | null | undefined) =>
+    target
+      ? recommendationDiff(
+          { batchSize, gradientAccumulation, gradientCheckpointing },
+          target,
+        )
+      : [];
+
+  /** The fit request the wizard's fields imply, for the device named `computeTarget`. */
+  const fitRequest = (model: string, computeTarget: string | null) => ({
+    model,
+    method: trainingMethod,
+    loadIn4Bit: trainingMethod === "qlora",
+    maxSeqLength: contextLength,
+    batchSize,
+    gradientAccumulation,
+    loraRank,
+    gradientCheckpointing,
+    gpuMemoryGb: gpu.available ? gpu.memoryTotalGb : null,
+    // Sent so the estimate describes the device the run will actually use: an integrated GPU
+    // plans against shared memory, a CPU run against RAM.
+    computeTarget,
+  });
+
   const use = (
     preset: StoredTrainingPreset | (typeof BUILTIN_PRESETS)[number],
   ) => {
@@ -165,32 +192,15 @@ export function TrainingPresetSection(): ReactElement {
       return;
     }
     const target = repicked ?? activeTarget;
-    const differs = target
-      ? recommendationDiff(
-          { batchSize, gradientAccumulation, gradientCheckpointing },
-          target,
-        )
-      : [];
+    const differs = diffFor(target);
     setChecking(true);
     setError(null);
     try {
+      const computeTarget = repicked
+        ? repicked.id
+        : (computeTargets?.requested ?? computeTargets?.resolved ?? null);
       const sized = withTargetRecommendation(
-        {
-          model: selectedModel,
-          method: trainingMethod,
-          loadIn4Bit: trainingMethod === "qlora",
-          maxSeqLength: contextLength,
-          batchSize,
-          gradientAccumulation,
-          loraRank,
-          gradientCheckpointing,
-          gpuMemoryGb: gpu.available ? gpu.memoryTotalGb : null,
-          // Sent so the estimate describes the device the run will actually use: an integrated GPU
-          // plans against shared memory, a CPU run against RAM.
-          computeTarget: repicked
-            ? repicked.id
-            : (computeTargets?.requested ?? computeTargets?.resolved ?? null),
-        },
+        fitRequest(selectedModel, computeTarget),
         target,
         // The device's sizing is requested only where it disagrees with the wizard's
         // fields; otherwise the check keeps sending exactly what the wizard shows.
@@ -273,6 +283,7 @@ export function TrainingPresetSection(): ReactElement {
         {saving ? (
           <span className="flex items-center gap-1">
             <input
+              // biome-ignore lint/a11y/noAutofocus: the row opens to name the preset.
               autoFocus={true}
               value={name}
               onChange={(event) => setName(event.target.value)}
@@ -340,17 +351,7 @@ export function TrainingPresetSection(): ReactElement {
                   // device just picked recommends a different sizing than the wizard's
                   // fields, re-run the check with that recommendation applied and show
                   // the muted line; otherwise clear the stale report, as before.
-                  const differs =
-                    chosen && picked
-                      ? recommendationDiff(
-                          {
-                            batchSize,
-                            gradientAccumulation,
-                            gradientCheckpointing,
-                          },
-                          picked,
-                        )
-                      : [];
+                  const differs = chosen ? diffFor(picked) : [];
                   if (fit && picked && differs.length > 0) {
                     void check(picked);
                   } else {

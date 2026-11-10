@@ -20,11 +20,15 @@ export interface UseComputeTargetsResult extends ComputeTargetsSnapshot {
   /** Ask again, bypassing the cache; joins a probe that is already in flight. */
   refresh: () => void;
   /**
-   * Ask again from scratch: clears the cached error and the "already probed" latch, then starts a
-   * fresh probe even when one is in flight, so an error state cannot stick to the surface.
+   * Ask again from scratch: starts a fresh probe even when one is in flight, so an error state
+   * cannot stick to the surface. The cached error stays put until that probe settles -- the notice
+   * ranks a failure above a retry in flight -- and only a successful read clears it.
    */
   retry: () => void;
-  /** Ask the backend to train on `target`; resolves true once the cache holds the reply. */
+  /**
+   * Ask the backend to train on `target`; resolves true once the cache holds a fresh payload,
+   * budget and NPU capability included.
+   */
   choose: (id: string) => Promise<boolean>;
 }
 
@@ -39,7 +43,14 @@ let generation = 0;
 const listeners = new Set<(snapshot: ComputeTargetsSnapshot) => void>();
 
 function snapshot(): ComputeTargetsSnapshot {
-  return { data: cached, error: lastError, loading: pending !== null };
+  // Loading while a probe is in flight, and before any probe has been attempted: the first render
+  // lands before the effect can start one, and an inactive hook never starts one at all, so
+  // without the second half those paints answer "none" and the card comes up blank.
+  return {
+    data: cached,
+    error: lastError,
+    loading: pending !== null || !attempted,
+  };
 }
 
 /** Push the module state to every mounted hook, so both surfaces agree. */
@@ -99,7 +110,11 @@ function withResolved(
   return target ? { ...data, resolved: target.id } : null;
 }
 
-/** The cached answer with the backend's reply folded in. */
+/**
+ * The cached answer with the backend's reply folded in. The POST reply carries no `budget` or
+ * `npu`, so this merge is only the instant repaint; `choose` re-reads the whole payload right
+ * after, and that read is what those two fields are rendered from.
+ */
 function withChosen(
   data: ComputeTargetsResponse,
   result: SetComputeTargetResult,
@@ -140,10 +155,10 @@ export function useComputeTargets(active = true): UseComputeTargetsResult {
   }, []);
 
   const retry = useCallback(() => {
-    // `refresh` joins a probe already in flight; retry clears the cached error and the latch,
-    // then probes from scratch so a failed read is never the answer the surface settles on.
-    attempted = false;
-    lastError = null;
+    // `refresh` joins a probe already in flight; retry probes from scratch so a failed read is
+    // never the answer the surface settles on. The cached error is kept until that probe settles:
+    // the notice ranks a failure above a retry in flight, so "Try again" must keep the message
+    // and its button instead of flashing back to "checking". A successful read clears it.
     fetchOnce(true);
   }, []);
 
@@ -160,10 +175,11 @@ export function useComputeTargets(active = true): UseComputeTargetsResult {
       if (cached) {
         cached = withChosen(cached, result);
         publish();
-      } else {
-        // Nothing cached to fold the reply into, so read the whole picture.
-        fetchOnce();
       }
+      // The POST reply carries no budget or NPU capability, and both follow the chosen device, so
+      // re-read the whole payload instead of inventing the missing fields or leaving the previous
+      // device's sentences on screen. Forced: the POST makes any probe already in flight stale.
+      await fetchOnce(true);
       return true;
     } catch (error) {
       cached = previous;

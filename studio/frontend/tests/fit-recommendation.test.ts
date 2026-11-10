@@ -8,14 +8,12 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 // The helpers are pure, but the module they live in fetches: stub the two network
 // imports so the test drives the real helpers with no server and no auth state.
-const fitApi =
-  loadWithStubs<typeof import("../src/features/training/api/fit-api.ts")>(
-    new URL("../src/features/training/api/fit-api.ts", import.meta.url),
-    {
-      "@/features/auth": { authFetch: async () => new Response("{}") },
-      "@/lib/format-fastapi-error": { readFastApiError: async () => "error" },
-    },
-  );
+const fitApi = loadWithStubs<
+  typeof import("../src/features/training/api/fit-api.ts")
+>(new URL("../src/features/training/api/fit-api.ts", import.meta.url), {
+  "@/features/auth": { authFetch: async () => new Response("{}") },
+  "@/lib/format-fastapi-error": { readFastApiError: async () => "error" },
+});
 
 // What the registry recommends for an integrated GPU: batch 1, accumulation 8,
 // bfloat16, checkpointing on (backend core/training/device_targets.py).

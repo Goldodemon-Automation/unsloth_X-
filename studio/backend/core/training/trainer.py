@@ -104,6 +104,7 @@ from utils.models.diffusion_lm import (
 from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.unsloth_mirror import unsloth_public_mirror
 from utils.models.model_config import _env_offline
+from utils.hub_metadata_cache import client_scope, model_info_cached, token_scope
 from utils.datasets import format_and_template_dataset
 from utils.datasets.cells import csv_as_text_kwargs
 from utils.datasets.chat_templates import get_training_chat_template
@@ -1652,10 +1653,24 @@ class UnslothTrainer:
                 try:
                     from huggingface_hub import model_info as hf_model_info
 
-                    model_info_kwargs = {"token": hf_token or None}
-                    if model_revision:
-                        model_info_kwargs["revision"] = model_revision
-                    info = hf_model_info(metadata_name, **model_info_kwargs)
+                    def _fetch_gate_info(repo: str, revision: Optional[str]):
+                        model_info_kwargs = {"token": hf_token or None}
+                        if revision:
+                            model_info_kwargs["revision"] = revision
+                        return hf_model_info(repo, **model_info_kwargs)
+
+                    # The same repo answers the same question for minutes, so reuse the
+                    # last answer instead of spending a Hub round-trip per load. The
+                    # scope keeps one answer out of another's reach: the credential
+                    # (a private repo is invisible without a token, so sharing would
+                    # change the verdict, not just skip the call) and the Hub client
+                    # itself (a swapped or stubbed client is asking a new question).
+                    info = model_info_cached(
+                        _fetch_gate_info,
+                        metadata_name,
+                        model_revision,
+                        scope = f"{token_scope(hf_token)}|{client_scope(hf_model_info)}",
+                    )
                     # model_info works on gated repos (metadata is public); info.gated flags acceptance.
                     if info.gated and not hf_token:
                         friendly = (

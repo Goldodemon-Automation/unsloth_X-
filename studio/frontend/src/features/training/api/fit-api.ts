@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: NRC-3
 // Copyright 2026-present the X8 authors. All rights reserved. See /LICENSE-NRC-3.md
 
-import type { ComputeTargetRecommendation } from "@/features/compute-targets/types";
 import { authFetch } from "@/features/auth";
+import type { ComputeTargetRecommendation } from "@/features/compute-targets/types";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import type { GradientCheckpointing, TrainingMethod } from "@/types/training";
 
@@ -106,8 +106,9 @@ export function withTargetRecommendation<T extends FitRecommendationInput>(
   gradientAccumulation: number;
   dtypeApplied: boolean;
 } {
-  const recommendation = target?.recommended ?? null;
-  if (!options?.apply || !recommendation) {
+  const applied = options?.apply === true;
+  const recommendation = applied ? (target?.recommended ?? null) : null;
+  if (!recommendation) {
     return {
       ...input,
       batchSize: input.batchSize,
@@ -139,7 +140,9 @@ export function recommendationDiff(
   target: RecommendationSource | null | undefined,
 ): RecommendationDiffEntry[] {
   const recommendation = target?.recommended ?? null;
-  if (!recommendation) return [];
+  if (!recommendation) {
+    return [];
+  }
   const diff: RecommendationDiffEntry[] = [];
   if (input.batchSize !== recommendation.batch_size) {
     diff.push({

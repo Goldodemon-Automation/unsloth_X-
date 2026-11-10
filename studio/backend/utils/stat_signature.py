@@ -31,6 +31,12 @@ Never raises: a missing, non-directory, or unreadable root yields
 gone, so absence is stable and a root that disappears reads as changed against
 any signature it had while it existed. An EMPTY directory is not absent: it
 signs as a real (empty) tree.
+
+:func:`file_signature` signs a single file the same way, and
+:class:`SignatureCache` is the bounded memo that turns these signatures into
+reusable answers: it stores a value derived from file CONTENT under the
+metadata signature that content had, so "hash this dataset again" costs one
+walk instead of a re-read of every byte.
 """
 
 from __future__ import annotations
@@ -38,8 +44,10 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import threading
+from collections import OrderedDict
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 # What a missing or unreadable root signs as. Plain text, not hex, so it can
 # never be confused for a digest of a real tree.
@@ -177,3 +185,123 @@ def is_unchanged(root: Path, previous: str) -> bool:
     ``max_entries`` compares unequal and costs a re-walk, never a stale hit.
     """
     return previous == directory_signature(root)
+
+
+def file_signature(path: Path) -> str:
+    """``"<size>:<mtime_ns>"`` for ONE file, or :data:`ABSENT_SIGNATURE`.
+
+    The single-file companion to :func:`directory_signature`, with the same
+    promise: metadata only, and never raises. It exists so a value derived
+    from one file's BYTES -- an expensive thing to recompute -- can be
+    memoized on that file's stat, even when the tree around it is too big (or
+    too busy) to sign in one bounded walk.
+
+    The same caveat applies: a writer that rewrites a file at the same size and
+    the same mtime is invisible here. That is the price of not re-reading the
+    bytes to decide whether the bytes need re-reading.
+    """
+    try:
+        info = os.stat(Path(path))
+    except (OSError, ValueError):
+        return ABSENT_SIGNATURE
+    return f"{int(info.st_size)}:{int(info.st_mtime_ns)}"
+
+
+def _cache_key(path: Any) -> str:
+    """One spelling per file, so ``./a`` and ``a`` are the same memo entry.
+
+    ``normcase`` folds the case a case-insensitive filesystem already folds, so
+    two spellings of one path cannot occupy two entries (and evict each other).
+    """
+    try:
+        return os.path.normcase(os.path.abspath(os.fspath(path)))
+    except (TypeError, ValueError, OSError):
+        return str(path)
+
+
+class SignatureCache:
+    """A bounded, thread-safe memo of values keyed on ``(path, signature)``.
+
+    The shape is always the same: a value that is expensive to derive from
+    file CONTENT, stored under the cheap METADATA fingerprint that content had
+    when the value was derived. Asking again with the same signature is the
+    claim "nothing on disk moved", so the stored value is still true; asking
+    with a different signature (or after :meth:`invalidate`) misses and the
+    caller recomputes.
+
+    Three guarantees are enforced here rather than left to callers, because
+    the wrong behaviour is silent:
+
+    * :data:`ABSENT_SIGNATURE` is never a key. A path that could not be stat'd
+      says nothing about the content, and memoizing under "absent" is how an
+      unknown turns into a confidently wrong answer.
+    * ``None`` is never stored, so ``None`` unambiguously means "not memoized"
+      and a caller can never mistake a miss for a value.
+    * The cache is bounded and evicts least-recently-used first. An unbounded
+      memo over a directory walk is the same defect as the unbounded walk.
+
+    Signatures from different producers must not be mixed for the same path:
+    a :func:`directory_signature` (a hex digest) and a :func:`file_signature`
+    (``size:mtime``) never compare equal, so they occupy distinct keys, but the
+    values stored under them must be of the same kind.
+    """
+
+    def __init__(self, max_entries: int = 64) -> None:
+        self.max_entries = max(1, int(max_entries))
+        self._entries: "OrderedDict[Tuple[str, str], Any]" = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, path: Any, signature: Optional[str]) -> Any:
+        """The memoized value for *(path, signature)*, or ``None`` on a miss."""
+        if not signature or signature == ABSENT_SIGNATURE:
+            return None
+        key = (_cache_key(path), signature)
+        with self._lock:
+            try:
+                value = self._entries.pop(key)
+            except KeyError:
+                return None
+            # Re-insert: OrderedDict order is the eviction order, so a hit is
+            # also a "this one is still in use".
+            self._entries[key] = value
+            return value
+
+    def put(self, path: Any, signature: Optional[str], value: Any) -> bool:
+        """Memoize *value*; returns False when the entry was refused.
+
+        Refused for ``None`` values and :data:`ABSENT_SIGNATURE` signatures:
+        both mean "nothing known", which is exactly what must not be stored.
+        """
+        if value is None or not signature or signature == ABSENT_SIGNATURE:
+            return False
+        key = (_cache_key(path), signature)
+        with self._lock:
+            self._entries.pop(key, None)
+            self._entries[key] = value
+            while len(self._entries) > self.max_entries:
+                self._entries.popitem(last = False)
+        return True
+
+    def invalidate(self, path: Any = None) -> None:
+        """Forget every entry for *path*, or everything when *path* is None.
+
+        A directory takes its contents with it: a memo about a file below the
+        path is a memo about the path, so invalidating a dataset root must not
+        leave its per-file hashes behind.
+        """
+        with self._lock:
+            if path is None:
+                self._entries.clear()
+                return
+            target = _cache_key(path)
+            below = target + os.sep
+            for key in [
+                key
+                for key in self._entries
+                if key[0] == target or key[0].startswith(below)
+            ]:
+                del self._entries[key]
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)

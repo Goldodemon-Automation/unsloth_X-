@@ -273,6 +273,8 @@ def test_a_host_with_no_intel_gpu_gets_none_and_pays_for_no_probe(client, host, 
 
 
 def test_the_runtime_status_is_read_once_per_probe_cache_window(client, monkeypatch):
+    from routes import compute
+
     calls = _counting_runtime(monkeypatch)
 
     assert client.get("/api/compute/targets").status_code == 200
@@ -283,8 +285,6 @@ def test_the_runtime_status_is_read_once_per_probe_cache_window(client, monkeypa
 
     # The route's own invalidator is what the POST /target handler calls, so emptying the cache here
     # is the deliberate-change path: the next poll must re-read rather than reuse the old answer.
-    from routes import compute
-
     compute._invalidate_probe_cache()
 
     assert client.get("/api/compute/targets").status_code == 200

@@ -111,7 +111,7 @@ def test_a_tampered_payload_is_refused(clock):
     # The original signature no longer covers the claims...
     with pytest.raises(ScopedLinkError):
         scoped_link.verify(_SECRET, f"{_encoder(forged)}.{original_signature}", _SCOPE)
-    # ...and the items segment cannot be moved under a signature minted for another item.
+    # ...and a signature minted for another item does not cover these claims.
     other = scoped_link.mint(_SECRET, _SCOPE, "unsloth", {"item": "upload:other"}, ttl_s = 60)
     moved = f"{token.split('.')[0]}.{other.split('.')[1]}"
     with pytest.raises(ScopedLinkError):
@@ -139,8 +139,8 @@ def test_a_link_signed_with_another_secret_is_refused(clock):
         {"scope": _SCOPE, "sub": "s", "exp": 10**12, "nonce": "n"},  # no issued time
         {"scope": _SCOPE, "sub": "s", "iat": 1, "nonce": "n"},  # no expiry: never accepted
         {"scope": _SCOPE, "sub": "s", "iat": 1, "exp": "soon", "nonce": "n"},  # wrong type
-        {"scope": _SCOPE, "sub": "s", "iat": 1, "exp": True, "nonce": "n"},  # bool is not seconds
-        {"scope": _SCOPE, "sub": "s", "iat": 10, "exp": 10, "nonce": "n"},  # expires at once
+        {"scope": _SCOPE, "sub": "s", "iat": 10**12, "exp": True, "nonce": "n"},  # bool is not seconds
+        {"scope": _SCOPE, "sub": "s", "iat": 10**12, "exp": 10**12, "nonce": "n"},  # exp <= iat
     ],
 )
 def test_claims_that_are_not_a_link_are_refused(claims):

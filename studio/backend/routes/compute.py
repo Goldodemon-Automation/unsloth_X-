@@ -209,18 +209,54 @@ def _npu_capability() -> dict:
         }
 
 
+def _resolve_primary(
+    probe: TargetProbe | None = None,
+) -> tuple[str, TrainingTarget, str | None]:
+    """(requested, resolved, fallback_reason) for this session's stored compute target.
+
+    The only place a stored choice turns into a device, because two routes name that device and they
+    cannot be allowed to disagree: `/targets` publishes it as `resolved` under the picker, and
+    `/npu/assist` hands it to the planner, which puts it in every sentence the NPU card shows. When the
+    assist route resolved `auto` for itself, a machine with a dGPU and a stored `cpu` got "the backward
+    pass runs on the discrete GPU" directly under a picker reading CPU.
+
+    The settings read happens here, per call, so a choice made in another tab is answered on the next
+    poll while the hardware facts behind it stay cached. A remembered choice this machine can no longer
+    serve (an eGPU was unplugged) falls back to the default and returns the reason, so neither route can
+    strand the page and neither can resolve differently under the same failure.
+    """
+    stored = compute_target_settings.get_selected_compute_target()
+    try:
+        return stored, resolve_training_target(stored, probe), None
+    except TrainingTargetError as exc:
+        logger.info("Stored compute target %r is unavailable here: %s", stored, exc)
+        return stored, resolve_training_target(None, probe), str(exc)
+
+
+def _assist_inputs() -> tuple[dict, TrainingTarget | None]:
+    """(NPU capability, primary training device) for the assist preview, in one worker-thread pass.
+
+    Both come from `_cached_probe_state()`, so the preview's `capability` is the same measured answer
+    `/targets` publishes as `npu` rather than a second NPU detection pass, and the device comes from
+    `_resolve_primary()`, so it is the device the picker is showing. Returns the target as None if the
+    registry cannot answer at all, which the route words as the CPU: the one device every host has.
+    """
+    probe, cap, _gpu_runtime = _cached_probe_state()
+    try:
+        return cap, _resolve_primary(probe)[1]
+    except Exception as exc:  # noqa: BLE001 - a plan is still answerable without a primary device
+        logger.debug("Primary training device unavailable for the assist plan: %s", exc)
+        return cap, None
+
+
 def _payload() -> dict:
     probe, npu, gpu_runtime = _cached_probe_state()
     payload = training_target_payload(probe)
-    stored = compute_target_settings.get_selected_compute_target()
-    try:
-        resolved = resolve_training_target(stored, probe)
-    except TrainingTargetError as exc:
-        # A remembered choice that this machine can no longer serve (an eGPU was unplugged) must not
-        # strand the page: fall back to the default and say so with the stored value still visible.
-        logger.info("Stored compute target %r is unavailable here: %s", stored, exc)
-        resolved = resolve_training_target(None, probe)
-        payload["fallback_reason"] = str(exc)
+    stored, resolved, fallback_reason = _resolve_primary(probe)
+    if fallback_reason is not None:
+        # A choice this machine can no longer serve must not strand the page: resolve to the default,
+        # keep `requested` showing what was asked for, and say why it did not win.
+        payload["fallback_reason"] = fallback_reason
     payload["requested"] = stored
     payload["resolved"] = resolved.id
     payload["budget"] = _budget_for(resolved, probe)
@@ -281,14 +317,14 @@ async def npu_assist_plan(
     refusal that names the reason, which is the whole point of exposing the mode -- a user who asks
     for NPU-only training deserves to be told no vendor ships a backward pass, not to be silently
     put on the assist path.
+
+    The device every sentence names is this session's stored compute target, resolved through the same
+    function `/targets` uses, so the card cannot contradict the picker above it. `requested` here is the
+    NPU mode, not that target: the two answers travel together in one response as `mode` and `resolved`.
     """
     from core.training.npu_assist import plan_npu_assist
 
-    cap = await asyncio.to_thread(_npu_capability)
-    try:
-        primary = await asyncio.to_thread(resolve_training_target, None, None)
-    except Exception:  # noqa: BLE001 - a plan is still answerable without a primary device
-        primary = None
+    cap, primary = await asyncio.to_thread(_assist_inputs)
     plan = await asyncio.to_thread(
         plan_npu_assist,
         cap,
@@ -307,4 +343,7 @@ async def npu_assist_plan(
         "refused_reason": plan.refused_reason,
         "notes": list(plan.notes),
         "capability": cap,
+        # The device the sentences above name, spelled exactly as `/targets` spells it. Published so a
+        # UI (and a test) can check the card against the picker instead of trusting the prose.
+        "resolved": getattr(primary, "id", None),
     }

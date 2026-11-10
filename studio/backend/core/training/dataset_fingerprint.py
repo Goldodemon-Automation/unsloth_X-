@@ -9,8 +9,52 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from utils.stat_signature import (
+    ABSENT_SIGNATURE,
+    SignatureCache,
+    directory_signature,
+    file_signature,
+    is_degraded,
+)
+
 SCHEMA = "dataset-files-v1"
 _CHUNK = 4 * 1024 * 1024
+
+# How many memoized answers each cache keeps. A Start hashes the dataset and the
+# tokenizer, and one tree entry covers every file in that tree, so a small bound
+# already spans the restarts a user does back to back. Past the bound the least
+# recently used entry goes, and the cost of a miss is the old cost of every call:
+# a re-hash.
+CACHE_ENTRIES = 64
+
+# Per-file content hashes, keyed on (file, size:mtime_ns). Surviving a sibling's
+# rewrite is the point: an unchanged file must not be re-read because something
+# else in the tree moved.
+_FILE_HASHES = SignatureCache(max_entries = CACHE_ENTRIES)
+
+# Whole-tree hash entries, keyed on (root, directory_signature). This is what
+# makes a second Start over an untouched dataset cost one stat walk.
+_TREE_ENTRIES = SignatureCache(max_entries = CACHE_ENTRIES)
+
+
+def invalidate_hash_cache(path: Optional[str] = None) -> None:
+    """Drop memoized hashes for *path*, or for every path when it is None.
+
+    Only needed when something outside this module's view can rewrite bytes
+    without moving a size or an mtime; the signatures catch everything else.
+    """
+    _FILE_HASHES.invalidate(path)
+    _TREE_ENTRIES.invalidate(path)
+
+
+class DatasetChangedWhileHashing(OSError):
+    """A file kept changing while it was read, so no version of it was hashed.
+
+    An ``OSError`` so the existing "could not be read" path answers it as
+    ``unavailable``: a dataset being rewritten under the run has no fingerprint
+    yet, and saying so beats recording a digest of half of one version and half
+    of another.
+    """
 
 
 def _sha256_file(path: Path) -> str:
@@ -22,6 +66,54 @@ def _sha256_file(path: Path) -> str:
                 break
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _sha256_file_stable(path: Path) -> str:
+    """The file's sha256, memoized on its metadata and never on a torn read."""
+    return _file_digest(path)[0]
+
+
+def _size_of(signature: str) -> int:
+    """The size half of a :func:`file_signature`, which is ``"<size>:<mtime_ns>"``."""
+    try:
+        return int(signature.split(":", 1)[0])
+    except (AttributeError, ValueError):
+        return 0
+
+
+def _file_digest(path: Path) -> tuple[str, int]:
+    """(sha256, size) for one file, memoized on its metadata, never torn.
+
+    The signature is taken before the read AND after it. If it moved, the digest
+    in hand covers a mix of two versions and belongs to neither, so it is
+    neither returned as the answer nor memoized; one retry gets a clean read of
+    the new version, and a file that keeps moving raises rather than producing a
+    number. Only a digest bracketed by one unchanged signature is returned and
+    stored, which is what makes a later hit truthful: the stored digest was
+    observed under the very signature it is filed under.
+
+    The size is returned from that same accepting signature, not from a separate
+    stat: a file that grew while it was read has a size that does not describe
+    the bytes that were hashed, and recording the two side by side would make an
+    entry that contradicts itself.
+    """
+    for _ in range(2):
+        before = file_signature(path)
+        memoized = _FILE_HASHES.get(path, before)
+        if memoized is not None:
+            digest, size = memoized
+            return str(digest), int(size)
+        digest = _sha256_file(path)
+        if file_signature(path) == before:
+            size = _size_of(before)
+            _FILE_HASHES.put(path, before, (digest, size))
+            return digest, size
+        _FILE_HASHES.invalidate(path)
+    raise DatasetChangedWhileHashing(
+        f"{Path(path).name} changed while it was being hashed, so it has no "
+        "stable fingerprint right now. Start the run again once nothing is "
+        "writing to the dataset."
+    )
 
 
 def _payload_sha(payload: Any) -> str:
@@ -54,6 +146,63 @@ def _files_under(root: Path) -> list[Path]:
     )
 
 
+def _dataset_entries(root: Path) -> tuple[list[dict[str, Any]], int]:
+    """(*root*'s per-file hash entries, total bytes), reusing the tree memo.
+
+    The memo is consulted only under a COMPLETE ``directory_signature`` for
+    *root*. A degraded signature (a walk cut at the entry bound) covers only the
+    first names it visited, so a change outside that prefix would leave the
+    signature equal and serve a stale whole-tree hash; a partial key is not a
+    key. Such trees still get the per-file memo, whose keys are exact stats.
+
+    The signature is taken again after the walk and the result is stored only if
+    it did not move, the same rule single files get: an entry set assembled while
+    the tree was changing describes no tree that ever existed on disk, and must
+    not be the thing a later call trusts.
+    """
+    is_directory = root.is_dir()
+    signature = directory_signature(root) if is_directory else ABSENT_SIGNATURE
+    reusable = is_directory and signature != ABSENT_SIGNATURE and not is_degraded(signature)
+    if reusable:
+        memoized = _TREE_ENTRIES.get(root, signature)
+        if memoized is not None:
+            rows, total_bytes = memoized
+            return (
+                [
+                    {"path": rel, "size_bytes": size, "sha256": sha}
+                    for rel, size, sha in rows
+                ],
+                int(total_bytes),
+            )
+    entries: list[dict[str, Any]] = []
+    total_bytes = 0
+    for file in _files_under(root):
+        sha256, size = _file_digest(file)
+        total_bytes += size
+        entries.append(
+            {
+                "path": (
+                    file.relative_to(root).as_posix() if is_directory else file.name
+                ),
+                "size_bytes": size,
+                "sha256": sha256,
+            }
+        )
+    if reusable and entries and directory_signature(root) == signature:
+        _TREE_ENTRIES.put(
+            root,
+            signature,
+            (
+                tuple(
+                    (entry["path"], entry["size_bytes"], entry["sha256"])
+                    for entry in entries
+                ),
+                total_bytes,
+            ),
+        )
+    return entries, total_bytes
+
+
 def fingerprint_source(
     source: Optional[str],
     *,
@@ -79,27 +228,11 @@ def fingerprint_source(
             "A Hub dataset needs a local snapshot before it can be fingerprinted.",
         )
     try:
-        files = _files_under(root)
-        if not files:
-            return _unavailable(text, "The dataset path contains no files to hash.")
-        entries = []
-        total_bytes = 0
-        for file in files:
-            size = file.stat().st_size
-            total_bytes += size
-            entries.append(
-                {
-                    "path": (
-                        file.relative_to(root).as_posix()
-                        if root.is_dir()
-                        else file.name
-                    ),
-                    "size_bytes": size,
-                    "sha256": _sha256_file(file),
-                }
-            )
+        entries, total_bytes = _dataset_entries(root)
     except OSError as error:
         return _unavailable(text, f"The dataset files could not be read: {error}")
+    if not entries:
+        return _unavailable(text, "The dataset path contains no files to hash.")
 
     selection = {
         "subset": subset,
@@ -203,7 +336,7 @@ def fingerprint_tokenizer(source: Optional[str]) -> dict[str, Any]:
                 {
                     "path": file.name,
                     "size_bytes": file.stat().st_size,
-                    "sha256": _sha256_file(file),
+                    "sha256": _sha256_file_stable(file),
                 }
             )
     except OSError as error:
