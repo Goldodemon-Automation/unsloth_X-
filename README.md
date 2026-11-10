@@ -98,6 +98,20 @@ device is selected. The full reference, including the environment each target se
 
 ---
 
+## Install
+
+The desktop app ships as a signed Windows installer on each release. Download it from
+[Releases](https://github.com/Goldodemon-Automation/unsloth_X-/releases/latest):
+
+| Asset | Use it when |
+| --- | --- |
+| `Unsloth_<version>_x64-cpu-gpu-setup.exe` | **Default.** Probes the machine and installs whatever it can run |
+| `Unsloth_<version>_x64-gpu-setup.exe` | You want the CUDA stack pinned and a GPU is guaranteed |
+| `Unsloth_<version>_x64-cpu-setup.exe` | A machine with no GPU, or you want no CUDA download at all |
+
+Linux and macOS build from source below; the same release carries the notes each build was made from.
+Older tags on this repository are source milestones — `v1.4.0` is the first with an installer attached.
+
 ## Run it
 
 ### Colab (free T4)

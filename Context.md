@@ -605,3 +605,28 @@ raises anything:
 
 The dash also carries a solid `#38BDF8` path under its gradient path, so a renderer that ignores the
 paint server still draws the dash instead of leaving a gap where the mark's second half should be.
+
+## Releases needed something to install (v1.4.0 and after)
+
+The releases had been notes-only. `release-x8.yml` refuses to publish an unsigned Windows installer --
+correctly, because the updater verifies a signature against the pubkey baked into the build, and an
+unsigned build installs once and never updates. Two things were missing, not one:
+
+1. **No `TAURI_SIGNING_PRIVATE_KEY` secret** on this repository, and no private half for the pubkey in
+   `tauri.conf.json`. The `.gitignore` already reserved `studio/src-tauri/x8-updater.key`, so the
+   intended workflow was there; the key had never been generated here. It has been now: the private
+   half is in the repository secret and on disk (ignored), the `.pub` is committed, and the config's
+   `pubkey` names it. **This is an identity change**: builds made before it verify updates against the
+   old key and ignore these. No desktop build had ever been published from this repository, so nothing
+   installed is affected.
+2. **The workflow and the updater endpoint still named `GoldodemonINC/unsloth_8X`** -- in the header
+   comment, in the `latest.json` asset URL, and in the post-upload check that compares the published
+   manifest against an expected URL. A build published from here would have handed every client a
+   manifest pointing into another repository's release, where the asset name and the signature do not
+   exist. All three name `Goldodemon-Automation/unsloth_X-` now.
+
+Verified end to end: `gh workflow run "Release X8 Desktop (Windows)" -f version=1.4.0` built all three
+flavors in ~17 minutes and the release now carries `Unsloth_1.4.0_x64-{cpu,cpu-gpu,gpu}-setup.exe`,
+their `.sig` files, and a `latest.json` whose signature and URL were read back from the published
+asset. Earlier tags cannot be backfilled honestly: their commits embed the old pubkey, so a build from
+them would be signed with a key those builds do not trust. `v1.4.0` is the first installable build.
