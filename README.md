@@ -6,7 +6,7 @@ The upstream project is the fastest way to fine-tune open models on one GPU. Thi
 
 > **Branch:** `x8-main` is the branch this fork is developed on. `main` mirrors the imported upstream tree.
 >
-> **Releases:** [v1.0.0 … v1.2.0](https://github.com/Goldodemon-Automation/unsloth_X-/releases) — see [Releases](#releases) below.
+> **Releases:** [v1.0.0 … v1.2.1](https://github.com/Goldodemon-Automation/unsloth_X-/releases) — see [Releases](#releases) below.
 
 ---
 
@@ -24,7 +24,7 @@ The upstream project is the fastest way to fine-tune open models on one GPU. Thi
 | **Integrated GPUs** | Intel Arc/Xe, AMD APUs and Apple Silicon train with a budget built from the memory they *share* with the system, not the small carve-out the driver reports. |
 | **NPU, honestly** | Vendor-neutral detection (AMD XDNA, Intel NPU 3/4, Qualcomm Hexagon, Apple ANE) and a runtime matrix. What an NPU can do for a run is planned, not promised: tokenizing, checkpoint scoring and QAT calibration, with the backward pass on another device. |
 | **Device picker** | One list of every device with its memory, kind and capability, plus a recommended precision in the capability card, in the Train wizard, remembered per installation. |
-| **Faster UI** | A perf layer (`src/lib/perf/`) measures marks, long tasks and interaction latency on demand, off unless enabled, so a speed change can be proven instead of assumed. |
+| **Faster UI** | Run history renders a first screen and grows as you scroll instead of re-mounting every card on each poll, with stable keys and a memoised card; a perf layer (`src/lib/perf/`) measures marks, long tasks and interaction latency so the next change can be proven instead of assumed. |
 | **Licensing** | Additions original to this fork are under [NRC-3](LICENSE-NRC-3.md); inherited code keeps its upstream license. |
 
 ### The two Scaler directions
@@ -176,6 +176,7 @@ This fork's own release series starts at **v1**, and each release carries notes 
 | [`v1.0.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.0.0) | CPU and integrated-GPU training: the compute-target registry, the shared-memory budget, the Train-wizard device picker, and the target's environment applied before torch loads. |
 | [`v1.1.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.1.0) | NPU support: vendor-neutral detection, the runtime matrix, and NPU-assisted training that plans what an NPU can really do instead of claiming a backward pass. |
 | [`v1.2.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.0) | The UI pass: a "what can this machine do" card for the device decision, and a perf layer (`src/lib/perf/`) that measures marks, long tasks and interaction latency on demand. |
+| [`v1.2.1`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.1) | The first change the perf layer paid for: a windowed, memoised run history; plus the corrections an audit of the release notes against the code turned up. |
 
 Releases are tags on `x8-main`. They are independent of the wheel version in `unsloth/_version.py`,
 which tracks the upstream package this fork imports.
