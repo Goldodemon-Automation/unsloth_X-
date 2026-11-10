@@ -180,6 +180,10 @@ const REASON_SENTENCES: Record<string, string | undefined> = {
   npu_is_primary:
     "This machine's NPU is its main accelerator, and training needs a device with a backward pass.",
   no_runtime: "The runtime this device needs is not installed.",
+  // Emitted by the registry when a GPU is listed but PyTorch is absent from this environment, which
+  // is a repairable install rather than a missing device -- the distinction the user needs.
+  torch_missing:
+    "PyTorch is not installed in this environment, so this GPU cannot be used for training yet.",
 };
 
 export function describeReason(reason: string): string {

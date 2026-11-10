@@ -78,8 +78,8 @@ export function TrainingPresetSection(): ReactElement {
 
   // The NPU is never the primary device, so what it can do here is decided once and offered beside
   // the picker rather than hidden in settings: it changes how the run is arranged.
-  // "full" is reachable from the card on purpose: asking for it is how the UI can answer with the
-  // reason no NPU can train a model yet, instead of never offering the mode.
+  // The card offers "assist" and "off" today; the request type also carries "full" because the route
+  // explains that refusal, and a future control (or a caller above this section) can ask for it.
   const [npuRequested, setNpuRequested] = useState<NpuAssistRequested>("auto");
   const npuAssist = useNpuTrainingAssist({
     requested: npuRequested,

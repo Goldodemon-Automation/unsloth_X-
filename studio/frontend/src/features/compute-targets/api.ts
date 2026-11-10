@@ -17,6 +17,8 @@ const TARGET_PATH = "/api/compute/target";
 export interface SetComputeTargetResult {
   target: ComputeTarget;
   resolved: ComputeTargetId;
+  /** What was asked for ("auto" or a target id), which is what the run should keep meaning. */
+  requested?: ComputeTargetId | "auto";
 }
 
 /** What this machine can train on, how much memory each device has and what it supports. */

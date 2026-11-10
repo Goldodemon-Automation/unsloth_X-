@@ -6,7 +6,7 @@ limits it states rather than hides.
 
 | Target | What it is | Training status |
 | --- | --- | --- |
-| `cpu` | The processor, no accelerator | **Supported, slow.** The CoRA/QLoRA recipe on stock `transformers` + `peft`. |
+| `cpu` | The processor, no accelerator | **Supported, slow.** The CoRA/QLoRA recipe on stock `transformers` + `peft`; no measurement is quoted, only the order of magnitude. |
 | `igpu` | Intel Arc/Xe, AMD APU (RDNA2+), Apple Silicon | **Supported, memory-bound.** Same kernels as a discrete card; the budget is shared with the OS. |
 | `dgpu` | NVIDIA, AMD Radeon/Instinct, Intel Arc Pro | **Supported.** The normal case, unchanged. |
 | `npu` | AMD XDNA1/2, Intel NPU 3/4, Qualcomm Hexagon, Apple ANE | **Not trainable.** Exposed honestly, usable as an assist device. |
@@ -32,9 +32,9 @@ This is the one number that decides whether an integrated-GPU run fits, and it i
 driver reports.
 
 `torch.xpu`/`torch.cuda` return the **carve-out** for an integrated GPU — the slice reserved in the
-BIOS or by the driver, often 512 MB. The driver then allocates well past it out of system RAM. So the
-real ceiling is the smaller of the driver's shared cap and the RAM the run can take without starving
-the machine:
+BIOS or by the driver, often 512 MB. The driver then allocates well past it out of system RAM, so the
+carve-out is a floor rather than a ceiling. Unsloth plans against the larger of that reservation and
+the RAM the run can take without starving the machine:
 
 ```
 usable = max(carveout, system_memory * 0.6)
@@ -46,9 +46,10 @@ similar; the extra tenth is headroom for the dataset pipeline and the UI. Below 
 describing what the driver allows; above 0.7 a background allocation can commit the machine into swap
 mid-run, which is worse than refusing at fit time.
 
-The fit check (`core/training/fit.py`) uses it whenever the request names a `compute_target`, and
-reports where the ceiling came from (`budget_source`) plus the sentence the UI shows
-(`target_notes`) — "This GPU shares system memory: 38.4 GB of the machine's 64.0 GB is usable for
+The fit check (`core/training/fit.py`) uses it whenever the request names a `compute_target` — the
+target's own ceiling outranks a `gpu_memory_gb` the page sent, because the page's figure is the one
+torch reported, and that is the carve-out on an integrated part — and reports where the ceiling came
+from (`budget_source`) plus the sentence the UI shows (`target_notes`) — "This GPU shares system memory: 38.4 GB of the machine's 64.0 GB is usable for
 training, 60% of it." A bare `0.5 GB` beside a 3 GB model reads as a refusal on a 16 GB laptop unless
 it also says the card shares that RAM.
 
@@ -84,8 +85,8 @@ module. Setting them later changes nothing.
 | Target | Sets |
 | --- | --- |
 | `cpu` | `UNSLOTH_TRAINING_DEVICE=cpu`, `TORCHDYNAMO_DISABLE=1`, `TORCH_COMPILE_DISABLE=1`, `UNSLOTH_COMPILE_DISABLE=1` |
-| `igpu` (Intel) | `UNSLOTH_TRAINING_DEVICE=igpu`, `PYTORCH_XPU_ALLOC_CONF=expandable_segments:True`, `SYCL_CACHE_PERSISTENT=1`, `SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS=1`, `UNSLOTH_SKIP_PIN_MEMORY=1`, `UNSLOTH_IGPU=1` |
-| `igpu` (AMD) | `UNSLOTH_TRAINING_DEVICE=igpu`, `PYTORCH_HIP_ALLOC_CONF=expandable_segments:True`, `TORCH_BLAS_PREFER_HIPBLASLT=0`, `UNSLOTH_SKIP_PIN_MEMORY=1`, `UNSLOTH_IGPU=1` |
+| `igpu` (Intel) | `UNSLOTH_TRAINING_DEVICE=igpu`, `PYTORCH_XPU_ALLOC_CONF=expandable_segments:True`, `SYCL_CACHE_PERSISTENT=1`, `SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS=1`, `UNSLOTH_SKIP_PIN_MEMORY=1`, `UNSLOTH_IGPU=1`, plus the three compile switches |
+| `igpu` (AMD) | `UNSLOTH_TRAINING_DEVICE=igpu`, `PYTORCH_HIP_ALLOC_CONF=expandable_segments:True`, `TORCH_BLAS_PREFER_HIPBLASLT=0`, `UNSLOTH_SKIP_PIN_MEMORY=1`, `UNSLOTH_IGPU=1`, plus the three compile switches |
 | `npu` | `UNSLOTH_TRAINING_DEVICE=npu`, `UNSLOTH_NPU_DEVICE=1`, the three compile switches |
 | `dgpu` | nothing: the stock allocator split reuses freed blocks sooner, and a forced `cuda` would break an AMD host where the same card reports as `hip` |
 
@@ -95,7 +96,7 @@ cannot claim to have applied somebody else's setting.
 
 `UNSLOTH_TRAINING_DEVICE` is the library-level override and it is **opt-in on purpose**. Unsloth's
 kernels assume an accelerator, and a silent CPU fallback would turn a broken driver into a run that is
-50-100x slower instead of a run that refuses. `UNSLOTH_TRAINING_DEVICE=igpu` resolves to whichever
+50-100x slower (an estimate, not a measurement) instead of a run that refuses. `UNSLOTH_TRAINING_DEVICE=igpu` resolves to whichever
 accelerator backend is usable (`xpu`, `cuda`/`hip`, `mps`) and refuses rather than quietly training on
 the CPU when none answers.
 

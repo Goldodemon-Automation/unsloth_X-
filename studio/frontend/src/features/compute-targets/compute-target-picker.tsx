@@ -32,8 +32,10 @@ const IDLE_CLASS =
   "border-border/60 text-foreground hover:bg-accent/60 disabled:hover:bg-transparent";
 const BLOCKED_CLASS =
   "cursor-not-allowed border-border/40 text-muted-foreground opacity-60";
+// `max-w-36` rather than a hand-set width in brackets: the named scale follows --spacing, so the
+// memory column grows with the interface-font setting instead of staying fixed beside scaled text.
 const SHORT_VALUE_CLASS =
-  "max-w-[9rem] truncate text-ui-10 tabular-nums text-muted-foreground";
+  "max-w-36 truncate text-ui-10 tabular-nums text-muted-foreground";
 
 /** Which way an arrow key moves the selection, or null for every other key. */
 function arrowStep(key: string): number | null {

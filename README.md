@@ -23,7 +23,7 @@ The upstream project is the fastest way to fine-tune open models on one GPU. Thi
 | **CPU training** | A host with no accelerator trains the CoRA/QLoRA recipe on stock `transformers` + `peft`. Explicitly chosen, never a silent fallback, and labelled with what it costs. |
 | **Integrated GPUs** | Intel Arc/Xe, AMD APUs and Apple Silicon train with a budget built from the memory they *share* with the system, not the small carve-out the driver reports. |
 | **NPU, honestly** | Vendor-neutral detection (AMD XDNA, Intel NPU 3/4, Qualcomm Hexagon, Apple ANE) and a runtime matrix. What an NPU can do for a run is planned, not promised: tokenizing, checkpoint scoring and QAT calibration, with the backward pass on another device. |
-| **Device picker** | One list of every device with its capability and a recommended batch/dtype, in the Train wizard, remembered per installation. |
+| **Device picker** | One list of every device with its memory, kind and capability, plus a recommended precision in the capability card, in the Train wizard, remembered per installation. |
 | **Faster UI** | A perf layer (`src/lib/perf/`) measures marks, long tasks and interaction latency on demand, off unless enabled, so a speed change can be proven instead of assumed. |
 | **Licensing** | Additions original to this fork are under [NRC-3](LICENSE-NRC-3.md); inherited code keeps its upstream license. |
 

@@ -2272,6 +2272,16 @@ async def start_training(
 
     await asyncio.to_thread(_validate_decision_request, request, via_api_key)
     compute_target = await asyncio.to_thread(_resolved_compute_target, request)
+    # An integrated GPU cannot train in 4-bit: bitsandbytes ships no kernels for one, so a 4-bit load
+    # there dequantizes on the CPU every step -- slower than fp16 and using the memory it was meant to
+    # save. The capability report says so, and saying it is not enough: a request that carries
+    # load_in_4bit would otherwise run the slow path and blame the hardware.
+    if compute_target is not None and compute_target.kind == "igpu" and request.load_in_4bit:
+        request.load_in_4bit = False
+        logger.info(
+            "4-bit training is unavailable on an integrated GPU (%s); training in 16-bit instead.",
+            compute_target.name,
+        )
     if request.drafter is not None and request.drafter.enabled:
         from core.training.training import should_use_mlx_training_backend
         if should_use_mlx_training_backend():

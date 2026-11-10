@@ -8,8 +8,8 @@ Two problems live here, and they share one cause: an integrated GPU is not a sma
 **Budget.** ``torch.xpu``/``torch.cuda`` report the *carve-out* on an integrated GPU -- the slice the
 BIOS or the driver reserved, often 512 MB, sometimes 4 GB. The driver can allocate well past it out
 of system RAM, so a fit check that trusts ``total_memory`` refuses models the machine runs happily.
-The real ceiling is the smaller of the driver's shared cap and the RAM that can be taken without
-starving the OS; the carve-out is a floor, not a ceiling. :func:`usable_accelerator_memory_bytes`
+The real ceiling is the RAM that can be taken without starving the OS; the carve-out is a floor, not
+a ceiling, so the budget is the larger of the two. :func:`usable_accelerator_memory_bytes`
 is that rule, and it is the only place the fraction is defined.
 
 **Environment.** Allocators fragment. On a discrete card that wastes VRAM; on a unified-memory

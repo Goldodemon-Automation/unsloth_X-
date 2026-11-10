@@ -85,6 +85,10 @@ function withChosen(
       entry.id === result.target.id ? result.target : entry,
     ),
     resolved: result.resolved,
+    // Carry what was asked for, not just what it resolved to. The capacity check sends `requested`
+    // so a run keeps meaning "auto", and dropping the field here left it at the page-load value --
+    // the estimate below could then be sized for the device the user had just moved away from.
+    requested: result.requested ?? data.requested,
   };
 }
 

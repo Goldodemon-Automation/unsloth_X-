@@ -78,6 +78,8 @@ const REASONS = [
   "no_bnb",
   "npu_is_primary",
   "no_runtime",
+  // The registry emits this one; it rendered as the raw token until it was added here.
+  "torch_missing",
 ];
 
 function client(reply: () => Response | Promise<Response>) {

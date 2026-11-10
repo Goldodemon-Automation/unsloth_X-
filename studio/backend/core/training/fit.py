@@ -136,17 +136,22 @@ def estimate(spec: Mapping[str, Any]) -> dict[str, Any]:
 
     load_in_4bit = bool(spec.get("load_in_4bit")) or method == "qlora"
     gradient_checkpointing = bool(spec.get("gradient_checkpointing", True))
+    # The device the run will use describes its own ceiling better than any number handed in: on an
+    # integrated GPU the figure torch reports is the carve-out rather than the shared pool, and on an
+    # XPU host torch reports nothing at all. So a named target wins over `gpu_memory_gb`, which stays
+    # as the fallback for a target this host cannot size (and as the only input when none is named).
     budget_gb = spec.get("gpu_memory_gb")
-    budget_source = "explicit"
+    budget_source = "explicit" if budget_gb not in (None, "") else "unreported"
     target_notes: list[str] = []
+    named_source: Optional[str] = None
+    if str(spec.get("compute_target") or "").strip():
+        target_gb, named_source, target_notes = _target_budget_gb(spec)
+        if target_gb not in (None, ""):
+            budget_gb = target_gb
+            budget_source = named_source or "target"
     if budget_gb in (None, ""):
-        budget_source = "probe"
-        budget_gb, selected_source, target_notes = _target_budget_gb(spec)
-        if selected_source:
-            budget_source = selected_source
-        if budget_gb in (None, ""):
-            budget_gb = _probe_gpu_gb()
-            budget_source = "probe" if budget_gb not in (None, "") else "unreported"
+        budget_gb = _probe_gpu_gb()
+        budget_source = "probe" if budget_gb not in (None, "") else (named_source or "unreported")
     try:
         budget = float(budget_gb) if budget_gb not in (None, "") else None
     except (TypeError, ValueError) as error:

@@ -81,3 +81,42 @@ def test_fit_rejects_a_model_without_a_parameter_count(tmp_path):
         fit.estimate({"model": str(directory), "method": "lora"})
     with pytest.raises(ValueError):
         fit.estimate({"model": "", "method": "lora"})
+
+def test_a_named_target_outranks_the_memory_figure_the_page_sent(tmp_path, monkeypatch):
+    """The wizard always sends gpu_memory_gb when a GPU is reported, so a target-sized budget that
+    only ran without it would never run at all on the hosts it exists for."""
+    monkeypatch.setattr(
+        fit,
+        "_target_budget_gb",
+        lambda _spec: (10.0, "target:igpu", ["This GPU shares system memory."]),
+    )
+
+    report = fit.estimate(
+        {
+            "model": str(_model(tmp_path)),
+            "method": "lora",
+            "compute_target": "igpu",
+            "gpu_memory_gb": 0.5,
+        }
+    )
+
+    assert report["budget_gb"] == 10.0
+    assert report["budget_source"] == "target:igpu"
+    assert report["target_notes"] == ["This GPU shares system memory."]
+
+
+def test_an_unsizable_target_falls_back_to_the_figure_the_page_sent(tmp_path, monkeypatch):
+    monkeypatch.setattr(fit, "_target_budget_gb", lambda _spec: (None, "unresolved", ["no probe"]))
+
+    report = fit.estimate(
+        {
+            "model": str(_model(tmp_path)),
+            "method": "lora",
+            "compute_target": "npu",
+            "gpu_memory_gb": 24,
+        }
+    )
+
+    # A budget the caller stated is still better than none; the target's note explains the gap.
+    assert report["budget_gb"] == 24.0
+    assert report["budget_source"] == "explicit"
