@@ -34,5 +34,14 @@ export { useComputeTargetStore } from "./compute-target-store";
 export type { ComputeTargetSelectionState } from "./compute-target-store";
 export { ComputeTargetPicker } from "./compute-target-picker";
 export type { ComputeTargetPickerProps } from "./compute-target-picker";
+export {
+  ComputeTargetsNotice,
+  noticeState,
+} from "./compute-targets-notice";
+export type {
+  ComputeTargetsNoticeInput,
+  ComputeTargetsNoticeProps,
+  ComputeTargetsNoticeState,
+} from "./compute-targets-notice";
 export { ComputeCapabilityCard } from "./compute-capability-card";
 export type { ComputeCapabilityCardProps } from "./compute-capability-card";

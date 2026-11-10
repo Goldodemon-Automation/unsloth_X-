@@ -1477,6 +1477,9 @@ def _resolved_compute_target(request: TrainingStartRequest):
     issued: a run that starts and then discovers it cannot use the device leaves a failed job in the
     history and an unloaded chat model behind it.
 
+    Only `request.compute_target` is read, so a caller (or a test) can pass any object carrying
+    that one attribute instead of a whole TrainingStartRequest.
+
     Returns the registry's TrainingTarget (None on auto). Raises HTTPException with the registry's
     own message when the target is absent or unsupported on this machine.
     """
@@ -1498,6 +1501,49 @@ def _resolved_compute_target(request: TrainingStartRequest):
             requested,
         )
     return target
+
+
+def _apply_target_constraints(request: TrainingStartRequest, target: Any) -> None:
+    """Turn off the request options the resolved device cannot honour, in place.
+
+    An integrated GPU cannot train in 4-bit: bitsandbytes ships no kernels for one, so a 4-bit load
+    there dequantizes on the CPU every step -- slower than fp16 and using the memory it was meant to
+    save. The capability report says so, and saying it is not enough: a request that carries
+    load_in_4bit would otherwise run the slow path and then blame the hardware.
+
+    `target` is the registry's TrainingTarget rather than the request, so this is a pure function of
+    the device the run already committed to; None (the "auto" path, or a caller that resolved
+    nothing) is a no-op, as is every device that is not an integrated GPU.
+    """
+    if target is None or target.kind != "igpu" or not request.load_in_4bit:
+        return
+    request.load_in_4bit = False
+    # A warning, not info: the user asked for 4-bit and is getting 16-bit, which is a larger and
+    # slower run than the one they described.
+    logger.warning(
+        "4-bit training is unavailable on an integrated GPU (%s); training in 16-bit instead.",
+        target.name,
+    )
+
+
+def _compute_target_config(target: Any) -> Dict[str, Any]:
+    """The three target keys the training config carries into the worker process.
+
+    The names are a contract with core/training/compute_target_env.py, which reads them in the
+    subprocess before torch loads. A rename on either side is otherwise silent: the run simply
+    trains wherever detection lands, and the user's choice is lost with nothing in the log to say
+    so. Keeping the three together lets a test hold both ends of that contract.
+
+    `target` is the registry's TrainingTarget, or None for auto, which is stored as "auto" so the
+    worker lets device detection decide instead of pinning a device this parent guessed at.
+    """
+    return {
+        "compute_target": "auto" if target is None else target.id,
+        "compute_target_vendor": None if target is None else target.vendor,
+        # Only an integrated GPU needs the shared-memory defaults; a discrete card that shares an
+        # address space with nothing must not be given an APU's allocator settings.
+        "compute_target_integrated": bool(target is not None and target.kind == "igpu"),
+    }
 
 
 def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool = False) -> None:
@@ -2272,16 +2318,7 @@ async def start_training(
 
     await asyncio.to_thread(_validate_decision_request, request, via_api_key)
     compute_target = await asyncio.to_thread(_resolved_compute_target, request)
-    # An integrated GPU cannot train in 4-bit: bitsandbytes ships no kernels for one, so a 4-bit load
-    # there dequantizes on the CPU every step -- slower than fp16 and using the memory it was meant to
-    # save. The capability report says so, and saying it is not enough: a request that carries
-    # load_in_4bit would otherwise run the slow path and blame the hardware.
-    if compute_target is not None and compute_target.kind == "igpu" and request.load_in_4bit:
-        request.load_in_4bit = False
-        logger.info(
-            "4-bit training is unavailable on an integrated GPU (%s); training in 16-bit instead.",
-            compute_target.name,
-        )
+    _apply_target_constraints(request, compute_target)
     if request.drafter is not None and request.drafter.enabled:
         from core.training.training import should_use_mlx_training_backend
         if should_use_mlx_training_backend():
@@ -2770,15 +2807,7 @@ async def start_training(
             "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
             "subject": current_subject,
             "gpu_ids": request.gpu_ids,
-            "compute_target": compute_target.id if compute_target is not None else "auto",
-            "compute_target_vendor": (
-                compute_target.vendor if compute_target is not None else None
-            ),
-            # Only an integrated GPU needs the shared-memory defaults; a discrete card that shares
-            # an address space with nothing must not be given an APU's allocator settings.
-            "compute_target_integrated": bool(
-                compute_target is not None and compute_target.kind == "igpu"
-            ),
+            **_compute_target_config(compute_target),
             "s3_config": request.s3_config.model_dump() if request.s3_config else None,
             "advanced": (
                 request.advanced.model_dump(exclude_none = True)

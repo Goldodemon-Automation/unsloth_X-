@@ -17,8 +17,13 @@ import {
   formatMemoryBytes,
   isTargetSelectable,
 } from "../src/features/compute-targets/types.ts";
+import type * as ComputeTargetHooks from "../src/features/compute-targets/use-compute-targets.ts";
 import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
-import { loadWithStubs } from "./helpers/module-stubs.ts";
+import {
+  type StubElement,
+  loadWithStubs,
+  stubJsxRuntime,
+} from "./helpers/module-stubs.ts";
 
 const CPU_TARGET: ComputeTarget = {
   id: "cpu",
@@ -252,4 +257,246 @@ test("the selection store holds one id and can clear it", () => {
   assert.equal(useComputeTargetStore.getState().selectedId, "igpu");
   useComputeTargetStore.getState().setSelected(null);
   assert.equal(useComputeTargetStore.getState().selectedId, null);
+});
+
+// ---------------------------------------------------------------------------
+// The "Run on" surface fails gracefully: a probe that fails leaves a retryable
+// notice behind, and retrying must not be answered by the probe it replaced.
+
+interface NoticeModule {
+  ComputeTargetsNotice: (props: {
+    error: string | null;
+    loading: boolean;
+    onRetry: () => void;
+    hasData?: boolean;
+  }) => StubElement | null;
+  noticeState: (input: {
+    error: string | null;
+    loading: boolean;
+    hasData: boolean;
+  }) => "loading" | "error" | "none";
+}
+
+const notice = loadWithStubs<NoticeModule>(
+  new URL(
+    "../src/features/compute-targets/compute-targets-notice.tsx",
+    import.meta.url,
+  ),
+  {
+    "react/jsx-runtime": stubJsxRuntime(),
+    "@/lib/utils": {
+      cn: (...parts: unknown[]) => parts.filter(Boolean).join(" "),
+    },
+    "@/components/ui/button": {
+      Button: (props: Record<string, unknown>) => props,
+    },
+  },
+);
+
+function targetsBody(): ComputeTargetsResponse {
+  return {
+    targets: [CPU_TARGET],
+    default: "cpu",
+    resolved: "cpu",
+    npu: npu("assist"),
+    budget: {
+      integrated: true,
+      dedicated_bytes: null,
+      system_memory_bytes: 68719476736,
+      shared_fraction: null,
+      usable_bytes: 68719476736,
+      notes: "Training on the CPU plans against system RAM.",
+    },
+  };
+}
+
+/** A hook whose probe answers only when the test says so, one queued reply per request. */
+function targetsHook() {
+  const pending: {
+    resolve: (response: Response) => void;
+    reject: (error: unknown) => void;
+  }[] = [];
+  const c = client(
+    () =>
+      new Promise<Response>((resolve, reject) => {
+        pending.push({ resolve, reject });
+      }),
+  );
+  const published: ComputeTargetHooks.ComputeTargetsSnapshot[] = [];
+  const hooks = loadWithStubs<typeof ComputeTargetHooks>(
+    new URL(
+      "../src/features/compute-targets/use-compute-targets.ts",
+      import.meta.url,
+    ),
+    {
+      react: {
+        useState: (initial: unknown) => {
+          const value =
+            typeof initial === "function"
+              ? (initial as () => unknown)()
+              : initial;
+          return [
+            value,
+            (next: unknown) => {
+              published.push(next as ComputeTargetHooks.ComputeTargetsSnapshot);
+            },
+          ];
+        },
+        // Run the effect so the hook really subscribes to the module's publishes.
+        useEffect: (effect: () => unknown) => {
+          effect();
+        },
+        useCallback: <T>(fn: T): T => fn,
+      },
+      "./api": c.api,
+    },
+    { relativePassthrough: true },
+  );
+  return { hooks, pending, published };
+}
+
+/** Let the fetch promise, `.json()`, the handler chain and `.finally()` all settle. */
+async function settled(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+test("the notice prefers a failure over a retry in flight", () => {
+  assert.equal(
+    notice.noticeState({ error: null, loading: false, hasData: false }),
+    "none",
+  );
+  assert.equal(
+    notice.noticeState({ error: null, loading: true, hasData: false }),
+    "loading",
+  );
+  assert.equal(
+    notice.noticeState({
+      error: "Backend down",
+      loading: false,
+      hasData: false,
+    }),
+    "error",
+  );
+  // Pressing "Try again" starts a probe; the message and its button stay put while it runs.
+  assert.equal(
+    notice.noticeState({
+      error: "Backend down",
+      loading: true,
+      hasData: false,
+    }),
+    "error",
+  );
+  // A list already on screen keeps its own stale-entry line instead of the notice.
+  assert.equal(
+    notice.noticeState({
+      error: "Backend down",
+      loading: false,
+      hasData: true,
+    }),
+    "none",
+  );
+  assert.equal(
+    notice.noticeState({ error: null, loading: true, hasData: true }),
+    "none",
+  );
+});
+
+test("the notice says what it is doing, and offers a way back", () => {
+  const retries: number[] = [];
+  const onRetry = () => retries.push(1);
+
+  assert.equal(
+    notice.ComputeTargetsNotice({ error: null, loading: false, onRetry }),
+    null,
+  );
+
+  const loading = notice.ComputeTargetsNotice({
+    error: null,
+    loading: true,
+    onRetry,
+  });
+  assert.ok(loading);
+  assert.equal(loading.props.role, "status");
+
+  const failed = notice.ComputeTargetsNotice({
+    error: "Backend down",
+    loading: false,
+    onRetry,
+  });
+  assert.ok(failed);
+  assert.equal(failed.type, "div");
+  assert.equal(failed.props.role, "alert");
+  const children = failed.props.children as StubElement[];
+  assert.equal(children[0].props.children, "Backend down");
+  const retryButton = children.find(
+    (child) => typeof child.props.onClick === "function",
+  );
+  const onClick = retryButton?.props.onClick as (() => void) | undefined;
+  onClick?.();
+  assert.deepEqual(retries, [1]);
+});
+
+test("retry clears a cached error and asks the backend again", async () => {
+  const body = targetsBody();
+  const { hooks, pending, published } = targetsHook();
+  const first = hooks.useComputeTargets(false);
+  first.refresh();
+  assert.equal(pending.length, 1);
+
+  pending[0].reject(new TypeError("Failed to fetch"));
+  await settled();
+
+  const failed = hooks.useComputeTargets(false);
+  assert.equal(failed.data, null);
+  assert.equal(failed.loading, false);
+  assert.match(failed.error ?? "", UNREACHABLE);
+
+  failed.retry();
+
+  // The cached failure is gone before the fresh answer lands, so the surface shows "checking"
+  // rather than a sticky error whose button appears to do nothing.
+  const retrying = hooks.useComputeTargets(false);
+  assert.equal(retrying.error, null);
+  assert.equal(retrying.loading, true);
+  assert.equal(pending.length, 2);
+  assert.equal(published.at(-1)?.error ?? null, null);
+  assert.equal(published.at(-1)?.loading, true);
+
+  pending[1].resolve(Response.json(body));
+  await settled();
+
+  const recovered = hooks.useComputeTargets(false);
+  assert.equal(recovered.error, null);
+  assert.equal(recovered.loading, false);
+  assert.deepEqual(recovered.data, body);
+});
+
+test("a retry takes its own answer, not the probe it bypassed", async () => {
+  const body = targetsBody();
+  const { hooks, pending } = targetsHook();
+  const first = hooks.useComputeTargets(false);
+  first.refresh();
+  assert.equal(pending.length, 1);
+
+  const second = hooks.useComputeTargets(false);
+  assert.equal(second.loading, true);
+  second.retry();
+  assert.equal(pending.length, 2);
+
+  pending[1].resolve(Response.json(body));
+  await settled();
+
+  const recovered = hooks.useComputeTargets(false);
+  assert.deepEqual(recovered.data, body);
+  assert.equal(recovered.loading, false);
+
+  // The older probe fails only after the retry replaced it: its answer must not repaint.
+  pending[0].reject(new TypeError("Failed to fetch"));
+  await settled();
+
+  const after = hooks.useComputeTargets(false);
+  assert.deepEqual(after.data, body);
+  assert.equal(after.error, null);
+  assert.equal(after.loading, false);
 });

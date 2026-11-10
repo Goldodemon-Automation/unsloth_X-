@@ -4048,6 +4048,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     from core.training.compute_target_env import (
         apply_compute_target_environment,
         describe_compute_target,
+        target_kind as _target_kind,
     )
 
     try:
@@ -4061,6 +4062,22 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
     except Exception as _target_exc:  # noqa: BLE001 - a slower run beats a run that never starts
         print(f"Compute target setup failed: {_target_exc}", file = sys.stderr, flush = True)
+
+    # The start route clears this for an integrated GPU already, but the worker is the last place that
+    # can refuse: a config from any other writer (a resumed run, the CLI, a job queued by an older
+    # build) would otherwise take the 4-bit load whose CPU dequant path is what an integrated target
+    # cannot afford.
+    if _target_kind(config.get("compute_target")) == "igpu" and config.get("load_in_4bit"):
+        config["load_in_4bit"] = False
+        event_queue.put(
+            {
+                "type": "warning",
+                "message": (
+                    "4-bit training is not available on an integrated GPU; this run uses 16-bit."
+                ),
+                "ts": time.time(),
+            }
+        )
 
     from utils.security.hub_data_files import install as guard_hub_data_files
 
@@ -4171,7 +4188,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     from .training import is_apple_silicon_training_platform, should_use_mlx_training_backend
 
-    from core.training.compute_target_env import target_kind as _target_kind
 
     # A run pinned to the CPU must not take the MLX fast path: on Apple Silicon that path is chosen
     # from the interpreter, not from what the run asked for, so selecting the CPU would silently train

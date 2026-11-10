@@ -18,6 +18,7 @@ absent.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from dataclasses import asdict
 from fastapi import APIRouter, Depends, HTTPException
@@ -45,13 +46,17 @@ logger = get_logger(__name__)
 # deliberate change is reflected at once.
 _PROBE_TTL_S = 60.0
 _probe_cache: dict = {"at": 0.0, "probe": None, "npu": None}
-_probe_lock = asyncio.Lock()
+# A plain lock, not asyncio's: the payload is built on a worker thread (`asyncio.to_thread`), so an
+# async lock could not be acquired here. It makes the cache single-flight -- two Train pages opening
+# together used to run two full probes and publish whichever finished last.
+_probe_lock = threading.Lock()
 
 
 def _invalidate_probe_cache() -> None:
-    _probe_cache["at"] = 0.0
-    _probe_cache["probe"] = None
-    _probe_cache["npu"] = None
+    with _probe_lock:
+        _probe_cache["at"] = 0.0
+        _probe_cache["probe"] = None
+        _probe_cache["npu"] = None
 
 
 class TargetChoice(BaseModel):
@@ -72,12 +77,19 @@ def _cached_probe_and_npu() -> tuple[TargetProbe, dict]:
     detected NPUs twice and re-scanned PATH for every runtime.
     """
     now = time.monotonic()
-    if _probe_cache["probe"] is not None and now - _probe_cache["at"] < _PROBE_TTL_S:
-        return _probe_cache["probe"], _probe_cache["npu"]
-    probe = _probe()
-    npu = _npu_capability()
-    _probe_cache.update(at = now, probe = probe, npu = npu)
-    return probe, npu
+    cached = _probe_cache["probe"]
+    if cached is not None and now - _probe_cache["at"] < _PROBE_TTL_S:
+        return cached, _probe_cache["npu"]
+    with _probe_lock:
+        # Re-read under the lock: a second caller may have rebuilt it while this one waited.
+        now = time.monotonic()
+        cached = _probe_cache["probe"]
+        if cached is not None and now - _probe_cache["at"] < _PROBE_TTL_S:
+            return cached, _probe_cache["npu"]
+        probe = _probe()
+        npu = _npu_capability()
+        _probe_cache.update(at = now, probe = probe, npu = npu)
+        return probe, npu
 
 
 def _budget_for(target: TrainingTarget, probe: TargetProbe) -> dict:

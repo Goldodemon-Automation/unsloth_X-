@@ -342,13 +342,41 @@ def _igpu_budget(gpu: dict, probe: TargetProbe) -> Optional[int]:
     )
 
 
+def _loader_allows_bitsandbytes(probe: TargetProbe) -> bool:
+    """Whether the loader would accept a 4-bit load, asked of the loader's own module.
+
+    `find_spec` is not enough: bitsandbytes >= 0.46 resolves its native symbols lazily, so an
+    installed wheel with dead kernels imports cleanly and only raises when a kernel is called -- in
+    the middle of a training step. `ALLOW_BITSANDBYTES` is the flag the loader itself reads, so the
+    UI must offer 4-bit exactly when that flag is True.
+
+    A host with no usable `unsloth` import (a planning-only install, the registry's own tests) has
+    no loader gate to mirror, so the package probe is the only signal left. A library that imports
+    but cannot answer is "no": unmeasured is False, and the cost is a slower path rather than a dead
+    run.
+    """
+    try:
+        from unsloth.device_type import ALLOW_BITSANDBYTES
+    except ImportError:
+        # `unsloth` is absent, or present but cannot import without torch. Either way there is no
+        # loader gate to read here, so the probe is the only evidence available.
+        return bool(probe.bnb_available)
+    except Exception:  # noqa: BLE001 - a library that exists but cannot answer is not a yes
+        return False
+    return bool(ALLOW_BITSANDBYTES)
+
+
 def _capabilities(
     kind: str,
     probe: TargetProbe,
     gpu: Optional[dict] = None,
 ) -> dict:
-    """What this device can execute. Unmeasured is False: a False costs a slower path, a wrong True
-    kills the run in the middle of a step."""
+    """What this device can execute for a *training run*.
+
+    Unmeasured is False: a False costs a slower path, a wrong True kills the run in the middle of a
+    step. The `bnb4bit` answer is the loader's own gate rather than a package probe, so the UI cannot
+    offer a 4-bit path that `unsloth/models/loader.py` will refuse once it starts.
+    """
     caps = {
         "bf16": False,
         "fp16": False,
@@ -364,7 +392,10 @@ def _capabilities(
         # autograd, which works anywhere and is what keeps a CPU run inside RAM.
         return caps
     if kind == "npu":
-        # No vendor exposes a backward pass to PyTorch, so nothing here is usable for *training*.
+        # `grad_checkpoint` describes *training* capability, and no vendor exposes a backward pass
+        # to PyTorch, so it is False here. `unsloth.device_type.device_capabilities()` says True for
+        # an NPU because its dict is a per-device statement (autograd exists on the device); the two
+        # answer different questions and are not meant to match on this key.
         caps["grad_checkpoint"] = False
         return caps
     arch = str((gpu or {}).get("arch") or "")
@@ -385,7 +416,13 @@ def _capabilities(
     caps.update(
         bf16 = _discrete_bf16(vendor, arch),
         fp16 = True,
-        bnb4bit = bool(probe.bnb_available),
+        # The loader's own gate, not find_spec: an installed-but-dead bitsandbytes imports cleanly
+        # and only fails when a native kernel runs, which would be offered here and then refused
+        # mid-load. The loader reads ALLOW_BITSANDBYTES, so the UI has to read it too.
+        bnb4bit = _loader_allows_bitsandbytes(probe),
+        # A known approximation, not an oversight: find_spec proves a Triton package exists, while
+        # the loader needs its kernels to work for this arch, and no cheap query answers that
+        # without importing it. Only the 4-bit gate has a cheap, authoritative flag to read.
         triton = bool(probe.triton_available),
         compile = True,
         flash_attn = bool(probe.flash_attn_available) and vendor == "nvidia",

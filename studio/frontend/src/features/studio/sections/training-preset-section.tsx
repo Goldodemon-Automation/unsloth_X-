@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { ComputeCapabilityCard } from "@/features/compute-targets/compute-capability-card";
 import { ComputeTargetPicker } from "@/features/compute-targets/compute-target-picker";
+import { ComputeTargetsNotice } from "@/features/compute-targets/compute-targets-notice";
 import { useComputeTargets } from "@/features/compute-targets/use-compute-targets";
 import type { NpuAssistRequested } from "@/features/npu/npu-training-assist";
 import { NpuTrainingCard } from "@/features/npu/npu-training-card";
@@ -74,6 +75,8 @@ export function TrainingPresetSection(): ReactElement {
     data: computeTargets,
     choose: chooseComputeTarget,
     loading: computeTargetsLoading,
+    error: computeTargetsError,
+    retry: retryComputeTargets,
   } = useComputeTargets();
 
   // The NPU is never the primary device, so what it can do here is decided once and offered beside
@@ -252,56 +255,72 @@ export function TrainingPresetSection(): ReactElement {
         )}
       </div>
 
-      {computeTargets ? (
-        <div className="rounded-lg border border-border/70 bg-background/40 p-3">
-          {/* Not going through i18n yet: the locale overlays gain this surface in the next
-              translation pass, and a half-translated picker reads worse than an English one. */}
-          <span className="text-ui-11 font-medium text-foreground">Run on</span>
-          <p className="mt-1 text-ui-10 leading-relaxed text-muted-foreground/70">
-            The device this run trains on. The capacity check below sizes the
-            run for it: an integrated GPU plans against the memory it shares
-            with the system, and a CPU run against RAM.
-          </p>
-          <ComputeTargetPicker
-            className="mt-2"
-            targets={computeTargets.targets}
-            npu={computeTargets.npu ?? null}
-            value={computeTargets.resolved}
-            disabled={computeTargetsLoading}
-            onChange={(id) => {
-              void chooseComputeTarget(id).then(() => setFit(null));
-            }}
-          />
-          {computeTargets.budget?.notes ? (
-            <p className="mt-2 text-ui-10 leading-relaxed text-muted-foreground/70">
-              {computeTargets.budget.notes}
-            </p>
-          ) : null}
-          {/* The picker answers "where will this run"; this answers "what can this machine do",
-              which is the question behind a greyed-out device or a missing 4-bit option. */}
-          <details className="mt-2 text-ui-10 text-muted-foreground/80">
-            <summary className="cursor-pointer">
-              What can this machine do?
-            </summary>
-            <div className="mt-2">
-              <ComputeCapabilityCard data={computeTargets} />
-            </div>
-          </details>
-          {computeTargets.npu ? (
-            <div className="mt-3">
-              <NpuTrainingCard
-                assist={npuAssist.assist}
-                error={npuAssist.error}
-                loading={npuAssist.loading}
-                onRequest={(next) => {
-                  setNpuRequested(next);
-                  npuAssist.refresh();
-                }}
-              />
-            </div>
-          ) : null}
-        </div>
-      ) : null}
+      {/* The card stays on screen even when the probe failed: a missing surface would leave
+          the user with no explanation and no way to recover short of a reload. */}
+      <div className="rounded-lg border border-border/70 bg-background/40 p-3">
+        {/* Not going through i18n yet: the locale overlays gain this surface in the next
+            translation pass, and a half-translated picker reads worse than an English one. */}
+        <span className="text-ui-11 font-medium text-foreground">Run on</span>
+        <p className="mt-1 text-ui-10 leading-relaxed text-muted-foreground/70">
+          The device this run trains on. The capacity check below sizes the run
+          for it: an integrated GPU plans against the memory it shares with the
+          system, and a CPU run against RAM.
+        </p>
+        {/* With no list yet this line explains the empty card; with data on screen it renders
+            nothing, and the picker carries the stale-list line instead. */}
+        <ComputeTargetsNotice
+          className="mt-2"
+          error={computeTargetsError}
+          loading={computeTargetsLoading}
+          hasData={computeTargets !== null}
+          onRetry={retryComputeTargets}
+        />
+        {computeTargets ? (
+          <>
+            <ComputeTargetPicker
+              className="mt-2"
+              targets={computeTargets.targets}
+              npu={computeTargets.npu ?? null}
+              value={computeTargets.resolved}
+              // A failed refresh keeps the last known list visible but unpickable, so the
+              // user cannot switch the run from an answer the backend no longer stands by.
+              error={computeTargetsError}
+              disabled={computeTargetsLoading}
+              onChange={(id) => {
+                void chooseComputeTarget(id).then(() => setFit(null));
+              }}
+            />
+            {computeTargets.budget?.notes ? (
+              <p className="mt-2 text-ui-10 leading-relaxed text-muted-foreground/70">
+                {computeTargets.budget.notes}
+              </p>
+            ) : null}
+            {/* The picker answers "where will this run"; this answers "what can this machine do",
+                which is the question behind a greyed-out device or a missing 4-bit option. */}
+            <details className="mt-2 text-ui-10 text-muted-foreground/80">
+              <summary className="cursor-pointer">
+                What can this machine do?
+              </summary>
+              <div className="mt-2">
+                <ComputeCapabilityCard data={computeTargets} />
+              </div>
+            </details>
+            {computeTargets.npu ? (
+              <div className="mt-3">
+                <NpuTrainingCard
+                  assist={npuAssist.assist}
+                  error={npuAssist.error}
+                  loading={npuAssist.loading}
+                  onRequest={(next) => {
+                    setNpuRequested(next);
+                    npuAssist.refresh();
+                  }}
+                />
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </div>
 
       <div className="rounded-lg border border-border/70 bg-background/40 p-3">
         <div className="flex flex-wrap items-center gap-2">

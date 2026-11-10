@@ -19,6 +19,11 @@ export interface ComputeTargetsSnapshot {
 export interface UseComputeTargetsResult extends ComputeTargetsSnapshot {
   /** Ask again, bypassing the cache; joins a probe that is already in flight. */
   refresh: () => void;
+  /**
+   * Ask again from scratch: clears the cached error and the "already probed" latch, then starts a
+   * fresh probe even when one is in flight, so an error state cannot stick to the surface.
+   */
+  retry: () => void;
   /** Ask the backend to train on `target`; resolves true once the cache holds the reply. */
   choose: (id: string) => Promise<boolean>;
 }
@@ -29,6 +34,8 @@ let cached: ComputeTargetsResponse | null = null;
 let lastError: string | null = null;
 let attempted = false;
 let pending: Promise<ComputeTargetsResponse | null> | null = null;
+// Bumped by every probe, so an older reply that lands after a retry cannot paint over it.
+let generation = 0;
 const listeners = new Set<(snapshot: ComputeTargetsSnapshot) => void>();
 
 function snapshot(): ComputeTargetsSnapshot {
@@ -43,25 +50,43 @@ function publish(): void {
   }
 }
 
-function fetchOnce(): Promise<ComputeTargetsResponse | null> {
-  pending ??= getComputeTargets()
+/**
+ * Probe the backend. A plain call reuses the probe already in flight; `force` starts a new one
+ * and makes it the answer that counts, so the probe it bypassed cannot repaint the surface.
+ */
+function fetchOnce(force = false): Promise<ComputeTargetsResponse | null> {
+  if (!force && pending) {
+    // The probe is in flight, so a caller that renders from `loading` sees it.
+    publish();
+    return pending;
+  }
+  const ticket = ++generation;
+  const run = getComputeTargets()
     .then((data) => {
+      if (ticket !== generation) {
+        return cached;
+      }
       cached = data;
       lastError = null;
       return data;
     })
     .catch((error: unknown) => {
+      if (ticket !== generation) {
+        return null;
+      }
       lastError = computeTargetError(error).message;
       return null;
     })
     .finally(() => {
-      pending = null;
       attempted = true;
+      if (ticket === generation) {
+        pending = null;
+      }
       publish();
     });
-  // The probe is in flight, so a caller that renders from `loading` sees it.
+  pending = run;
   publish();
-  return pending;
+  return run;
 }
 
 /** The cached answer with `id` reported as the resolved target, if it is one. */
@@ -114,6 +139,14 @@ export function useComputeTargets(active = true): UseComputeTargetsResult {
     fetchOnce();
   }, []);
 
+  const retry = useCallback(() => {
+    // `refresh` joins a probe already in flight; retry clears the cached error and the latch,
+    // then probes from scratch so a failed read is never the answer the surface settles on.
+    attempted = false;
+    lastError = null;
+    fetchOnce(true);
+  }, []);
+
   const choose = useCallback(async (id: string) => {
     const previous = cached;
     const optimistic = withResolved(previous, id);
@@ -140,5 +173,5 @@ export function useComputeTargets(active = true): UseComputeTargetsResult {
     }
   }, []);
 
-  return { ...state, refresh, choose };
+  return { ...state, refresh, retry, choose };
 }

@@ -245,3 +245,67 @@ def test_the_npu_assist_preview_refuses_a_full_request_with_the_reason(client):
     body = response.json()
     assert body["enabled"] is False
     assert body["refused_reason"] == "no_backward_pass"
+
+def test_the_probe_is_reused_until_the_post_invalidates_it(client, registry, monkeypatch):
+    """The Train page polls this route, so one probe must serve every poll in the TTL -- and a
+    deliberate change must not wait for the TTL to expire."""
+    from routes import compute
+
+    probes = []
+
+    def counting_probe():
+        probes.append(1)
+        return registry.probe
+
+    monkeypatch.setattr(compute, "_probe", counting_probe)
+    compute._invalidate_probe_cache()
+
+    assert client.get("/api/compute/targets").status_code == 200
+    assert client.get("/api/compute/targets").status_code == 200
+    assert len(probes) == 1
+
+    assert client.post("/api/compute/target", json = {"target": "cpu"}).status_code == 200
+    assert client.get("/api/compute/targets").status_code == 200
+    assert len(probes) == 2
+
+
+def test_a_refused_post_does_not_disturb_the_cache(client, registry, monkeypatch):
+    from routes import compute
+
+    probes = []
+
+    def counting_probe():
+        probes.append(1)
+        return registry.probe
+
+    monkeypatch.setattr(compute, "_probe", counting_probe)
+    compute._invalidate_probe_cache()
+    assert client.get("/api/compute/targets").status_code == 200
+
+    assert client.post("/api/compute/target", json = {"target": "tpu"}).status_code == 400
+
+    # Nothing changed, so nothing was invalidated: the refusal must not cost a fresh probe either.
+    assert client.get("/api/compute/targets").status_code == 200
+    assert len(probes) == 1
+
+
+def test_the_target_write_requires_the_owner(client, stored):
+    """It stores an installation-wide setting, like every neighbouring settings write."""
+    from auth import policy
+    from routes import compute
+
+    app = client.app
+    app.dependency_overrides.pop(get_current_subject, None)
+    app.dependency_overrides[get_current_subject] = lambda: "someone"
+    app.dependency_overrides[policy.require_owner] = _deny_owner
+
+    response = client.post("/api/compute/target", json = {"target": "cpu"})
+
+    assert response.status_code == 403
+    assert stored["target"] == "auto"
+
+
+async def _deny_owner() -> None:
+    from fastapi import HTTPException
+
+    raise HTTPException(status_code = 403, detail = "owner only")

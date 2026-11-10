@@ -150,3 +150,64 @@ python -m pytest tests/test_device_targets.py tests/test_accelerator_budget.py \
 
 From the repository root: `tests/test_forced_training_device.py` covers the library-level override
 with a stand-in torch, including the property that a missing accelerator still raises without it.
+
+## When something does not work
+
+Each entry names the check to run before changing anything, because these are the four cases where
+the answer is usually a fact about the machine rather than a bug.
+
+### "My integrated GPU is not in the list"
+
+Check what the driver reports and what this build can open:
+
+```bash
+cd studio/backend
+python -c "from core.training.device_targets import TargetProbe, list_training_targets; \
+p = TargetProbe.detect(); print(p.torch_device); [print(t.id, t.device, t.supported, t.reasons) for t in list_training_targets(p)]"
+```
+
+- `torch_device: None` with a GPU present is `torch_missing` on the row: the installed PyTorch has no
+  build for that backend. Intel parts need the XPU build, AMD parts the ROCm build; a CPU wheel on a
+  machine with a GPU is a reinstall, not a GPU that cannot train.
+- The registry lists a device as `integrated` from its **name** (there is no portable API for it).
+  A name it does not recognise is treated as discrete, which only changes the memory budget: a
+  discrete budget is the card's own, an integrated one is the shared pool.
+- Apple Silicon appears as an integrated GPU. If MLX is present, `UNSLOTH_TRAINING_DEVICE=cpu` is the
+  only way to train on the CPU there, and it is honoured ahead of MLX.
+
+### "Training on my integrated GPU runs out of memory with an empty card"
+
+The budget is `max(carve-out, 0.6 × RAM)`, not the figure `total_memory` reports, and it is *shared*
+with the operating system. Check what was planned:
+
+```bash
+python -c "from utils.hardware import accelerator_budget as b; print(b.budget_report(integrated=True, dedicated_bytes=536870912, system_memory_bytes=68719476736))"
+```
+
+If `usable_bytes` looks right and the run still fails, the pressure is coming from elsewhere: a chat
+model still loaded, a browser, or the dataset pipeline's workers. `UNSLOTH_SKIP_PIN_MEMORY` is set for
+this target already, so pinned host memory is not the cause.
+
+### "The NPU is detected but training will not use it"
+
+That is the design, not a fault: no vendor exposes a backward pass to PyTorch. `GET
+/api/compute/npu/assist` says what it can do instead and why it refused:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:8888/api/compute/npu/assist?requested=assist" | head -40
+```
+
+Detection is also gated: without `UNSLOTH_STUDIO_ENABLE_NPU=1` the capability reports
+`reasons: ["disabled"]` and the picker row explains it. If the NPU is present and enabled but reports
+`no_runtime`, no installed runtime (`openvino`, ONNX Runtime QNN, Vitis AI, FastFlowLM, Lemonade,
+Windows ML) can drive that vendor yet — `npu_runtime_providers()` lists all six with what each can
+serve.
+
+### "The capacity check says a different device than the picker"
+
+The check resolves the target itself when the request does not name one, in this order: the request's
+`compute_target`, then the stored choice, then `auto`. A target's own ceiling outranks a
+`gpu_memory_gb` the page sent, because that figure is what torch reported — the carve-out on an
+integrated part. `budget_source` in the response says which of the four paths was used
+(`target:cpu|igpu|dgpu|npu`, `explicit`, `probe`, `unresolved`).

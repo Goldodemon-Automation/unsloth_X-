@@ -20,6 +20,11 @@ export interface ComputeTargetPickerProps {
   /** The NPU's training capability: an unavailable NPU is listed but cannot be picked. */
   npu?: NpuTrainingCapability | null;
   disabled?: boolean;
+  /**
+   * A failed read after this list was cached: the rows stay visible so the user sees what the run
+   * was using, but nothing can be picked from an answer the backend is no longer standing behind.
+   */
+  error?: string | null;
   /** The radiogroup's accessible name. */
   label?: string;
   className?: string;
@@ -36,6 +41,11 @@ const BLOCKED_CLASS =
 // memory column grows with the interface-font setting instead of staying fixed beside scaled text.
 const SHORT_VALUE_CLASS =
   "max-w-36 truncate text-ui-10 tabular-nums text-muted-foreground";
+const STALE_NOTE_CLASS = "text-ui-10p5 text-muted-foreground";
+
+/** Shown under rows that are only the last known list, so a disabled row is not a mystery. */
+const STALE_NOTE =
+  "The device list is unavailable; the last known device is shown.";
 
 /** Which way an arrow key moves the selection, or null for every other key. */
 function arrowStep(key: string): number | null {
@@ -139,11 +149,13 @@ export function ComputeTargetPicker({
   onChange,
   npu = null,
   disabled = false,
+  error = null,
   label = "Compute target",
   className = "",
 }: ComputeTargetPickerProps) {
   // One ref per row: an arrow key moves focus, not just the selection.
   const rows = useRef(new Map<string, HTMLButtonElement>());
+  const unavailable = error !== null;
   const pickable: string[] = targets
     .filter((target) => isTargetSelectable(target, npu))
     .map((target) => target.id);
@@ -167,37 +179,34 @@ export function ComputeTargetPicker({
     rows.current.get(next)?.focus();
   }
 
+  // Nothing to list and no failure to explain: the caller's notice owns the empty and loading
+  // states, so the picker contributes no orphaned line of its own.
   if (targets.length === 0) {
-    return (
-      <p className={cn("text-ui-10p5 text-muted-foreground", className)}>
-        No compute devices were reported for this machine.
-      </p>
-    );
+    return null;
   }
 
   return (
-    <div
-      role="radiogroup"
-      aria-label={label}
-      className={cn("flex flex-col gap-1", className)}
-    >
-      {targets.map((target) => {
-        const rowPickable = isTargetSelectable(target, npu);
-        return (
-          <ComputeTargetRow
-            key={target.id}
-            target={target}
-            npu={npu}
-            checked={value === target.id}
-            tabIndex={activeId === target.id ? 0 : -1}
-            pickable={rowPickable}
-            disabled={disabled || !rowPickable}
-            registerRow={registerRow}
-            onSelect={onChange}
-            onMove={move}
-          />
-        );
-      })}
+    <div className={cn("flex flex-col gap-1", className)}>
+      <div role="radiogroup" aria-label={label} className="flex flex-col gap-1">
+        {targets.map((target) => {
+          const rowPickable = isTargetSelectable(target, npu);
+          return (
+            <ComputeTargetRow
+              key={target.id}
+              target={target}
+              npu={npu}
+              checked={value === target.id}
+              tabIndex={activeId === target.id ? 0 : -1}
+              pickable={rowPickable}
+              disabled={disabled || unavailable || !rowPickable}
+              registerRow={registerRow}
+              onSelect={onChange}
+              onMove={move}
+            />
+          );
+        })}
+      </div>
+      {unavailable ? <p className={STALE_NOTE_CLASS}>{STALE_NOTE}</p> : null}
     </div>
   );
 }

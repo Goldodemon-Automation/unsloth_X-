@@ -9,6 +9,9 @@ thing a contributor has to know before changing it.
 | [simulated-training.md](simulated-training.md) | The Debugging simulator that runs a training job with no hardware behind it |
 | [labs.md](labs.md) | The Labs switch, its experiment registry, and the Artifacts and Pipelines studios |
 | [theming.md](theming.md) | Palettes, accent tokens, and how to change the UI color |
+| [compute-targets.md](compute-targets.md) | CPU, integrated-GPU and NPU training: the device registry, the shared-memory budget, the environment each target sets, and troubleshooting |
+| [ui-performance.md](ui-performance.md) | The frontend perf layer: turning it on, what it measures, the bounds that keep it from leaking |
+| [releases/](releases/) | The fork's release notes, one file per tag |
 
 ## What is in this repository
 
