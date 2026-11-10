@@ -630,3 +630,19 @@ flavors in ~17 minutes and the release now carries `Unsloth_1.4.0_x64-{cpu,cpu-g
 their `.sig` files, and a `latest.json` whose signature and URL were read back from the published
 asset. Earlier tags cannot be backfilled honestly: their commits embed the old pubkey, so a build from
 them would be signed with a key those builds do not trust. `v1.4.0` is the first installable build.
+
+## Where the signing key lives
+
+The private half of the updater key is at `C:\UpdatingKey\x8-updater.key`, beside its `.pub` and a
+`README.txt` that says what it is for and what happens if it is lost. The directory's inheritance is
+broken and only the user account and SYSTEM have full control; the files inherit from it, so nothing
+else on the machine can read a signing key by default. No password was set on the key, because GitHub
+Actions passes `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` as an empty string.
+
+The working copy under `studio/src-tauri/` stays (it is gitignored) so a local `tauri build` can sign
+without copying files around. Both copies hash to `0fe45b728144830e…`; the repository secret
+`TAURI_SIGNING_PRIVATE_KEY` was set from that exact content.
+
+The public half is committed at `studio/src-tauri/x8-updater.key.pub` and is what every build verifies
+against. Losing the private key means no future updates: the only recovery is a new keypair, a new
+build carrying its public half, and a reinstall for everyone already on an earlier build.
