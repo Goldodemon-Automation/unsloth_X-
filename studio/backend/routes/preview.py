@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import secrets
 from pathlib import Path
 from urllib.parse import quote
 
@@ -293,22 +294,29 @@ _PREVIEW_PAGE_HTML = (
     Path(__file__).resolve().parent.parent / "assets" / "preview_page.html"
 ).read_text(encoding = "utf-8")
 
+# A nonce, not 'unsafe-inline'. This page shares an origin with the Studio UI and therefore with the
+# session tokens the UI keeps, so it is the last place in the stack where an inline script should be
+# permitted by a blanket rule; the single inline block is stamped with a fresh nonce per response.
 _PREVIEW_PAGE_CSP = (
-    "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-    "img-src 'self'; font-src 'self'; connect-src 'self'; base-uri 'none'"
+    "default-src 'self'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; "
+    "img-src 'self'; font-src 'self'; connect-src 'self'; base-uri 'none'; object-src 'none'"
 )
 
 
 def _preview_page(run: str, checkpoint: str | None) -> HTMLResponse:
     _resolve_or_4xx(run, checkpoint)
     title = run if not checkpoint else f"{run}/{checkpoint}"
-    page = _PREVIEW_PAGE_HTML.replace("__TITLE__", html.escape(title))
+    nonce = secrets.token_urlsafe(16)
+    page = (
+        _PREVIEW_PAGE_HTML.replace("__TITLE__", html.escape(title))
+        .replace("__CSP_NONCE__", nonce)
+    )
     # no-referrer: the capability token rides in the query string, so keep it out
     # of the Referer header on any outbound navigation.
     return HTMLResponse(
         page,
         headers = {
-            "Content-Security-Policy": _PREVIEW_PAGE_CSP,
+            "Content-Security-Policy": _PREVIEW_PAGE_CSP.format(nonce = nonce),
             "Referrer-Policy": "no-referrer",
         },
     )

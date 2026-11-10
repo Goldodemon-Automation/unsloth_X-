@@ -1809,7 +1809,13 @@ app.add_middleware(
     remote_access_state = app.state,
     allow_origins = _cors_origins,
     allow_origin_regex = _cors_origin_regex,
-    allow_credentials = True,
+    # False on purpose, and it must stay False while `cors_origins_for_mode` answers ["*"]: Starlette
+    # treats "allow any origin + credentials" by *reflecting* the request's Origin and adding
+    # Access-Control-Allow-Credentials: true, so any page the user has open could read credentialed
+    # cross-origin responses from the loopback backend -- including the unauthenticated /api/auth
+    # surface -- and in tunnel mode that is a published origin. Nothing here authenticates by cookie
+    # (there is no Set-Cookie in the backend), so no client needs the flag.
+    allow_credentials = False,
     allow_methods = ["*"],
     allow_headers = ["*"],
     # allow_headers is the REQUEST side; a response header is unreadable to JS unless
