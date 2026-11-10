@@ -1,4 +1,4 @@
-<img src="images/logo-x-minus-icon.svg" alt="Unsloth X8" width="104" align="right" />
+<img src="images/logo-x-minus-icon.svg" alt="Unsloth X8" width="105" align="left" />
 
 # Unsloth X8
 
