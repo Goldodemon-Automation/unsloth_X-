@@ -588,3 +588,20 @@ constructions (horizontal, stacked-no-plate, one-ink) stay in `images/` as alter
 In the app: `index.html` asks for the SVG favicon first, then the 32px PNG, then the ICO; the sidebar,
 startup screen, update screen, browser new-tab shortcut and hub avatar keep their existing paths and
 now carry the new bytes, so nothing had to change but the images themselves.
+
+## Why the dash went missing
+
+The first `logo-x-minus-icon.svg` had two silent failures, both worth remembering because neither
+raises anything:
+
+1. **`objectBoundingBox` gradients on a horizontal line.** The dash's bounding box has zero height, so
+   gradient coordinates in bounding-box units collapse and the stroke paints nothing in renderers that
+   follow the spec (GitHub's rasteriser among them). Both gradients are `gradientUnits="userSpaceOnUse"`
+   with explicit coordinates now, and the render check loads the file through `<img>` — the same path a
+   README uses — rather than inlining it, because inlining hid the difference.
+2. **`--` inside an XML comment.** The explanation of the first bug contained a double hyphen, which is
+   illegal in an XML comment: the file stopped being parseable, so nothing rendered at all. `xmllint`
+   or `ET.parse` catches it in one second; both are now part of checking a brand asset.
+
+The dash also carries a solid `#38BDF8` path under its gradient path, so a renderer that ignores the
+paint server still draws the dash instead of leaving a gap where the mark's second half should be.
