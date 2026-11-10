@@ -14,12 +14,6 @@ from pydantic import BaseModel
 from typing import List, NamedTuple, Optional
 from loggers import get_logger
 
-# Dependency-light leaf (PEP 562 package init): no llama.cpp / torch import chain.
-from core.inference.memory_contract import (
-    EMPTY_BREAKDOWN,
-    build_memory_estimate,
-    project_kv_cache_estimate,
-)
 from core.inference.model_ids import display_model_name
 from hub.schemas.inventory import LocalArtifactKind
 from hub.services.models import account_access
@@ -4180,6 +4174,14 @@ async def get_kv_cache_estimate(
     # and this route is called once per visible row, so run it in a worker. n_ctx and n_parallel are bound as
     # arguments rather than closed over: the body assigns to both, which would make them locals and raise.
     def _estimate(n_ctx: Optional[int] = n_ctx, n_parallel: Optional[int] = n_parallel) -> dict:
+        # Deferred: only the estimate routes price a footprint, so the contract is imported here
+        # instead of at module scope. Lazy leaf (PEP 562 package init): no llama.cpp / torch chain.
+        from core.inference.memory_contract import (
+            EMPTY_BREAKDOWN,
+            build_memory_estimate,
+            project_kv_cache_estimate,
+        )
+
         null = {
             "kv_bytes": None,
             "weights_bytes": None,

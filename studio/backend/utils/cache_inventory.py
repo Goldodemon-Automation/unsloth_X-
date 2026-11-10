@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 from loggers import get_logger
+from utils.stat_signature import directory_signature, is_unchanged
 
 logger = get_logger(__name__)
 
@@ -826,10 +827,14 @@ class LinkLedger:
 
 def _record_entry(entry: os.DirEntry, ledger: LinkLedger) -> None:
     try:
-        stat = entry.stat(follow_symlinks = False)
+        # A fresh lstat, never entry.stat(): the DirEntry metadata is the
+        # enumeration snapshot, which on Windows carries no link count at all
+        # (st_nlink comes back 0 and every hardlink counts as its own bytes)
+        # and lags the real mtime after a child write.
+        info = os.lstat(entry.path)
     except OSError:
         return
-    ledger.add(stat)
+    ledger.add(info)
 
 
 def _descendable(entry: os.DirEntry) -> bool:
@@ -983,12 +988,19 @@ def _patterns_for(definition: CacheDefinition) -> Optional[tuple[str, ...]]:
 
 
 # A walk is seconds on a large uv or triton cache, so a repeat read inside this
-# window reuses the last answer.
+# window reuses the last answer. The TTL is a backstop, not the only gate: the
+# per-root signatures below notice real changes sooner, and the window caps how
+# long state a signature cannot see (an inode hardlinked from outside, a gate
+# answer) may go unrefreshed. It matches the hardware inventory's 60 s.
 _INVENTORY_TTL_SECONDS = 60.0
-# (when the walk began, when it was stored, the entry). Both times: the store
-# time is what the TTL is about, and the start time is what tells a forced read
-# whether the walk it waited for saw the cache before the request was made.
-_size_cache: dict[str, tuple[float, float, dict]] = {}
+# (when the walk began, when it was stored, the entry, root -> signature).
+# Both times: the store time is what the TTL is about, and the start time is
+# what tells a forced read whether the walk it waited for saw the cache before
+# the request was made. The signatures are taken BEFORE the walk and re-checked
+# before any reuse, so an entry is served only while the trees it measured
+# still fingerprint the same — a memo per (root, signature) in effect, kept in
+# this one dict rather than a second cache alongside it.
+_size_cache: dict[str, tuple[float, float, dict, dict[str, str]]] = {}
 # Bumped by every invalidation, so a walk that began before one cannot store its
 # answer after it. Dropping the entry is not enough: a scan started in one tab
 # before a purge in another would install the pre-purge size for the window.
@@ -1002,6 +1014,20 @@ def invalidate_cache_size(key: str) -> None:
         _size_epochs[key] = _size_epochs.get(key, 0) + 1
 
 
+def invalidate() -> None:
+    """Forget every measured size at once, for a caller that just deleted something.
+
+    The targeted ``invalidate_cache_size`` stays right for a purge of one key;
+    this is for a deletion that does not know which cache it thinned. Clearing
+    the entries is not enough on its own — the epochs travel with the clear so
+    a walk already in flight cannot reinstall what was just forgotten.
+    """
+    with _size_cache_lock:
+        _size_cache.clear()
+        for definition in CACHE_DEFINITIONS:
+            _size_epochs[definition.key] = _size_epochs.get(definition.key, 0) + 1
+
+
 _size_flights: dict[str, threading.Lock] = {}
 _size_flights_lock = threading.Lock()
 
@@ -1011,12 +1037,46 @@ def _flight_for(key: str) -> threading.Lock:
         return _size_flights.setdefault(key, threading.Lock())
 
 
+def _root_signatures(definition: CacheDefinition) -> dict[str, str]:
+    """Fingerprint every resolved root, keyed as the memo stores its signatures.
+
+    Taken BEFORE the measurement walk: a change landing while the walk runs
+    then shows up as a mismatch on the next read and re-measures, where a
+    signature taken after the walk would bless the stale answer.
+    """
+    signatures: dict[str, str] = {}
+    for root in _resolve_roots(definition):
+        signatures[str(root)] = directory_signature(root)
+    return signatures
+
+
+def _roots_unchanged(definition: CacheDefinition, signatures: dict[str, str]) -> bool:
+    """True when every root the memo was measured over still fingerprints the same.
+
+    The per-root check is bounded (stat_signature stops at its entry bound),
+    which is the point: it replaces the unbounded sizing walk on every read.
+    """
+    roots = _resolve_roots(definition)
+    if len(roots) != len(signatures):
+        # A root appeared or went away; the memo describes another set either way.
+        return False
+    for root in roots:
+        previous = signatures.get(str(root))
+        if previous is None or not is_unchanged(root, previous):
+            return False
+    return True
+
+
 def _described(definition: CacheDefinition, *, refresh: bool) -> dict:
     started = time.monotonic()
-    with _size_cache_lock:
-        remembered = None if refresh else _size_cache.get(definition.key)
-    if remembered is not None and started - remembered[1] < _INVENTORY_TTL_SECONDS:
-        return remembered[2]
+    if not refresh:
+        with _size_cache_lock:
+            remembered = _size_cache.get(definition.key)
+        if remembered is not None and started - remembered[1] < _INVENTORY_TTL_SECONDS:
+            # The TTL alone would serve a tree that changed a second ago; the
+            # signature walk is bounded, the sizing walk is not.
+            if _roots_unchanged(definition, remembered[3]):
+                return remembered[2]
     # One walk per cache at a time: simultaneous misses would each pay a cold
     # walk for the same answer, and two open tabs are enough to cause it.
     with _flight_for(definition.key):
@@ -1030,12 +1090,14 @@ def _described(definition: CacheDefinition, *, refresh: bool) -> dict:
                 if remembered[0] >= started:
                     return remembered[2]
             elif time.monotonic() - remembered[1] < _INVENTORY_TTL_SECONDS:
-                return remembered[2]
+                if _roots_unchanged(definition, remembered[3]):
+                    return remembered[2]
         begun = time.monotonic()
+        signatures = _root_signatures(definition)
         entry = describe_cache(definition)
         with _size_cache_lock:
             if _size_epochs.get(definition.key, 0) == epoch:
-                _size_cache[definition.key] = (begun, time.monotonic(), entry)
+                _size_cache[definition.key] = (begun, time.monotonic(), entry, signatures)
         return entry
 
 

@@ -26,7 +26,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from auth.authentication import get_current_subject, security
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.providers import answers_decisions_only, validate_provider_base_url
-from core.systemone import catalog, laya_runtime
 from routes.provider_credentials import provider_config_guard, resolve_provider_api_key_or_400
 from storage import providers_db
 from utils import systemone_settings
@@ -142,6 +141,10 @@ async def system_one(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
+    # Deferred: core.systemone brings the Laya checkpoint catalog and runtime, which a boot that
+    # never asks for a decision never needs. The router registers without it.
+    from core.systemone import catalog
+
     # Settings and key checks read SQLite: keep them off the event loop.
     await asyncio.to_thread(_require_enabled)
     if payload.model_extra:
@@ -277,6 +280,9 @@ async def _decide(
     images: list[str] | None = None,
     audio: list[str] | None = None,
 ) -> dict:
+    # Deferred: see system_one. This is the only place the Laya runtime itself is invoked.
+    from core.systemone import catalog, laya_runtime
+
     if not questions:
         raise _error(422, "invalid_request_error", "At least one question is required")
     state_chars = (
@@ -333,6 +339,9 @@ async def _decide(
 async def _connection_decide(
     connection: catalog.Connection, state: JSONContent, questions: dict[str, dict[str, Any]]
 ) -> dict:
+    # Deferred: see system_one. A connection answers over HTTP and touches no local runtime.
+    from core.systemone import catalog
+
     # The connection and its key are the owner's; the URL check and the request run as the caller,
     # so a managed account keeps its egress policy.
     provider_id = connection.provider_id
@@ -395,6 +404,9 @@ async def _connection_key(provider_id: str, config: dict) -> str:
 
 
 async def refresh_listed_decision_models() -> None:
+    # Deferred: see system_one. Only the cached list of connection models comes from the catalog.
+    from core.systemone import catalog
+
     rows = await asyncio.to_thread(run_as, OWNER, providers_db.list_providers)
     for row in rows:
         if row["provider_type"] != "openrouter" or not row["is_enabled"]:
@@ -420,6 +432,9 @@ async def refresh_listed_decision_models() -> None:
 
 
 def decision_model_objects() -> list[dict[str, Any]]:
+    # Deferred: see system_one. Listed by the model picker, not by boot.
+    from core.systemone import catalog, laya_runtime
+
     if not systemone_settings.get_enabled():
         return []
     names = (
@@ -483,6 +498,9 @@ async def decide(state: JSONContent, questions: dict[str, QuestionIn]) -> dict[s
     {"urgent": {"type": "noul", "instructions": "Does this need a reply within the hour?"}}.
     "noul" is yes/no and answers a probability; "choice" needs criteria mapping each option name
     to a description; "score" needs criteria listing 1 to 10 levels, lowest first."""
+    # Deferred: see system_one. The tool registers at import; the catalog is read on the first call.
+    from core.systemone import catalog
+
     try:
         await asyncio.to_thread(_require_enabled)
         checkpoint = await asyncio.to_thread(catalog.default_checkpoint)

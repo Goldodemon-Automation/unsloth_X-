@@ -129,10 +129,6 @@ from core.inference.context_window import (
     truncate_oldest_messages as _truncate_oldest_messages,
 )
 from core.inference.llama_tool_schema import llama_grammar_tools
-from core.inference.memory_contract import (
-    build_memory_estimate,
-    project_estimate_memory_response,
-)
 from core.inference.stream_errors import (
     KV_STARVATION_MESSAGE,
     LlamaStreamError,
@@ -22381,6 +22377,12 @@ async def estimate_memory(
     requested_slots = _resolve_parallel_slots(request, fastapi_request)
 
     def _estimate() -> EstimateMemoryResponse:
+        # Deferred: only this route prices a footprint, and registering it needs no contract module.
+        from core.inference.memory_contract import (
+            build_memory_estimate,
+            project_estimate_memory_response,
+        )
+
         config = _cached_estimate_config(
             model_identifier,
             request.gguf_variant,
