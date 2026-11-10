@@ -14,33 +14,9 @@ The upstream project is the fastest way to fine-tune open models on one GPU. Thi
 
 ## Branding: this fork is blue, upstream is green
 
-Upstream Unsloth is green; this fork is blue. A screenshot that is still green is upstream's theme,
-not this fork's.
-
-| | Upstream Unsloth | This fork |
-| --- | --- | --- |
-| Colour | green `#17b88b` | **blue** `#9ceaf0` |
-| Mark | the Unsloth wordmark | the **X–** mark below |
-
-The mark is the fork in one glyph: an **X** in a blue gradient, a **–** in a lighter one, stacked on a
-black plate. [images/logo-options.html](images/logo-options.html) shows every construction, on light and
-dark, at the sizes they are meant for.
-
-| File | Use |
-| --- | --- |
-| [images/logo-x-minus-icon.svg](images/logo-x-minus-icon.svg) | **The mark.** Stacked X above the dash on a black plate, both in gradients. Used for the README header, the app icon, the favicon, the sidebar, the startup screen and every desktop icon |
-| [images/logo-x-minus.svg](images/logo-x-minus.svg) | Alternate: horizontal, two inks, no plate — worth it where a square would be wrong (a wide banner, a slide footer) |
-| [images/logo-x-minus-mono.svg](images/logo-x-minus-mono.svg) | Alternate: one ink, `currentColor` — inline it to inherit the theme; as an `<img>` it paints black |
-
-The raster sizes are generated, not hand-exported: `python scripts/make_brand_assets.py` draws the
-mark once and writes the favicon, the PWA icons, the sidebar and startup-screen images, and the Tauri
-icons (`.ico` included). Change a colour in that script and every icon follows.
-
-| Colour | Hex | Where |
-| --- | --- | --- |
-| X, blue gradient | `#1D4ED8` → `#60A5FA` | the X |
-| Dash, lighter blue gradient | `#38BDF8` → `#7DD3FC` | the – |
-| Plate | `#000000` | behind the mark |
+Blue is this fork, green is upstream Unsloth. The mark is
+[`images/logo-x-minus-icon.svg`](images/logo-x-minus-icon.svg) — X in blue, dash in a lighter blue, on a
+black plate. Alternates and the palette are in [images/logo-options.html](images/logo-options.html).
 
 ---
 
@@ -54,15 +30,10 @@ icons (`.ico` included). Change a colour in that script and every icon follows.
 | **Labs engines** | CMT, Scale-before-training, Benchmarks, Artifacts, Pipelines, the shrink repair preset and Cleanup — each backed by tests, behind a single switch. |
 | **Automated training** | Samples 2-8 datasets by category, runs 2-72 trainings across CMT/CPT/FFT, benchmarks each, keeps the best and continues it over repeated rounds. |
 | **Run records** | Every merge, scale, CMT and pipeline output writes `run_manifest.json` and a copy of the license notice beside the checkpoint. |
-| **CPU training** | A host with no accelerator trains the CoRA/QLoRA recipe on stock `transformers` + `peft`. Explicitly chosen, never a silent fallback, and labelled with what it costs. |
+| **CPU training** | A host with no accelerator trains the CoRA/QLoRA recipe on stock `transformers` + `peft`, explicitly chosen and labelled with what it costs. |
 | **Integrated GPUs** | Intel Arc/Xe, AMD APUs and Apple Silicon train with a budget built from the memory they *share* with the system, not the small carve-out the driver reports. |
-| **NPU, honestly** | Vendor-neutral detection (AMD XDNA, Intel NPU 3/4, Qualcomm Hexagon, Apple ANE) and a runtime matrix. What an NPU can do for a run is planned, not promised: tokenizing, checkpoint scoring and QAT calibration, with the backward pass on another device. |
+| **NPU, honestly** | Vendor-neutral detection and a runtime matrix. What an NPU can do for a run is planned, not promised: tokenizing, checkpoint scoring and QAT calibration, with the backward pass elsewhere. |
 | **Device picker** | One list of every device with its memory, kind and capability, plus a recommended precision in the capability card, in the Train wizard, remembered per installation. |
-| **Secure by default** | Brute-force accounting on every credential check (sign-in, refresh, password change), a CORS policy that cannot be combined with credentials, a nonced preview page, and `base-uri` in the desktop webview |
-| **Faster startup** | SDK imports that only some endpoints need are deferred behind their handlers, guarded by a test so they cannot drift back onto the startup path |
-| **Faster browsing** | Model and cache inventories are keyed on a cheap directory fingerprint (path, size, mtime) instead of walking two gigabytes per request |
-| **Intel, tuned** | bf16 on AMX/AVX512-BF16 CPUs instead of blanket fp32, and an XPU-build check that says whether an Intel iGPU can train at all |
-| **Faster UI** | Run history renders a first screen and grows as you scroll instead of re-mounting every card on each poll, with stable keys and a memoised card; a perf layer (`src/lib/perf/`) measures marks, long tasks and interaction latency so the next change can be proven instead of assumed. |
 | **Licensing** | Additions original to this fork are under [NRC-3](LICENSE-NRC-3.md); inherited code keeps its upstream license. |
 
 ### The two Scaler directions
@@ -75,18 +46,15 @@ Both directions plan from `config.json` alone, so the slider answers before any 
 
 ### Runs on what you have
 
-Training used to need a CUDA card. It now picks from four targets, and says what each one can do
-instead of greying the page out:
+| Target | Training |
+| --- | --- |
+| CPU | Yes, slow: CoRA/QLoRA on stock `transformers` + `peft`, tuned for the machine and planned against free RAM. A deliberate choice, not a fallback |
+| Integrated GPU | Yes: Intel Arc/Xe, AMD APUs, Apple Silicon, budgeted from the memory shared with the system |
+| Discrete GPU | Yes — unchanged, the normal case |
+| NPU | No: it can host inference and be planned as an assist device, because no vendor exposes a backward pass |
 
-| Target | Training | Notes |
-| --- | --- | --- |
-| CPU | Yes, slow | CoRA/QLoRA on stock `transformers` + `peft`, tuned for the machine (threads, SDPA, dataloader workers, checkpointing, dtype) and planned against free RAM rather than the installed total. Roughly 50-100x slower than a GPU, so it is a deliberate choice, not a fallback. |
-| Integrated GPU | Yes | Intel Arc/Xe, AMD APUs and Apple Silicon. The budget is the memory shared with the system (60% of RAM, floored at the driver's carve-out), not the 512 MB `total_memory` reports. |
-| Discrete GPU | Yes | Unchanged: the normal case. |
-| NPU | Not trainable | AMD XDNA, Intel NPU 3/4, Qualcomm Hexagon, Apple ANE. No vendor exposes a backward pass, so the NPU takes tokenizing, checkpoint scoring and QAT calibration while training runs elsewhere. Asking for NPU-only training is answered with that reason. |
-
-The picker lives in the Train wizard's capacity card, and the capacity check sizes for whichever
-device is selected. The full reference, including the environment each target sets and why, is
+The Train wizard picks among them, and the capacity check sizes the run for the chosen device. The
+reference — including the environment each target sets and why — is
 [docs/compute-targets.md](docs/compute-targets.md).
 
 ---
@@ -205,15 +173,11 @@ Backend tests run from `studio/backend/`:
 python -m pytest tests -q
 ```
 
-The Scaler's own suites are `tests/test_advanced_scaling.py`,
-`tests/test_advanced_scaling_routes.py` and `tests/test_engine_shrink.py`; the
-last one builds a tiny Llama and performs the block surgery for real.
-
-The compute-target suites are `tests/test_device_targets.py` (the registry and its capability
-rules), `tests/test_accelerator_budget.py` (the shared-memory budget and allocator defaults),
-`tests/test_compute_target_env.py` (what the worker's environment becomes), `tests/test_compute_route.py`,
-`tests/test_npu_assist.py` (the NPU planner and offload queue) and, at the repository root,
-`tests/test_forced_training_device.py` (the opt-in `UNSLOTH_TRAINING_DEVICE` override).
+Where to look when one of those is red: the Scaler is covered by `test_advanced_scaling*.py` and
+`test_engine_shrink.py` (the last builds a tiny Llama and does the block surgery for real), and the
+device work by `test_device_targets.py`, `test_accelerator_budget.py`, `test_compute_target_env.py`,
+`test_compute_route.py` and `test_npu_assist.py`, plus `tests/test_forced_training_device.py` at the
+repository root.
 
 From the repository root: `pre-commit run --all-files` (Ruff and the repo's lint scripts).
 
@@ -235,22 +199,21 @@ From the repository root: `pre-commit run --all-files` (Ruff and the repo's lint
 
 ## Releases
 
-This fork's own release series starts at **v1**, and each release carries notes in
-[docs/releases/](docs/releases/):
+This fork's series starts at **v1**; every release carries its notes in [docs/releases/](docs/releases/).
 
-| Tag | What it is |
+| Tag | Theme |
 | --- | --- |
-| [`v1.0.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.0.0) | CPU and integrated-GPU training: the compute-target registry, the shared-memory budget, the Train-wizard device picker, and the target's environment applied before torch loads. |
-| [`v1.1.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.1.0) | NPU support: vendor-neutral detection, the runtime matrix, and NPU-assisted training that plans what an NPU can really do instead of claiming a backward pass. |
-| [`v1.2.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.0) | The UI pass: a "what can this machine do" card for the device decision, and a perf layer (`src/lib/perf/`) that measures marks, long tasks and interaction latency on demand. |
-| [`v1.2.1`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.1) | The first change the perf layer paid for: a windowed, memoised run history; plus the corrections an audit of the release notes against the code turned up. |
-| [`v1.2.2`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.2) | The review fixes: the device pin now reaches the loader, an unreadable GPU is no longer called usable, a CPU is budgeted against free RAM, the polled route caches its probe, and the target write is owner-gated. |
-| [`v1.2.3`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.3) | NPU refusal messages name the right vendor: an Intel machine is no longer told that no AMD NPU was found. |
-| [`v1.3.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.3.0) | The CPU run is tuned for the machine it lands on; the start path's device rules and the polled probe cache are tested; the device card survives a failed probe; the two capability answers agree. |
-| [`v1.4.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.4.0) | The fork's mark and colour identity; three security gaps closed (CORS credentials, unthrottled credential checks, the preview/Tauri CSPs); deferred startup imports; fingerprinted inventories; bf16 on Intel CPUs and an XPU check for Intel iGPUs. |
+| [`v1.0.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.0.0) | CPU and integrated-GPU training |
+| [`v1.1.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.1.0) | NPU detection, runtime matrix, NPU-assisted training |
+| [`v1.2.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.0) | Capability card and the perf layer |
+| [`v1.2.1`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.1) | Windowed run history |
+| [`v1.2.2`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.2) | The review fixes |
+| [`v1.2.3`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.3) | Vendor-correct NPU refusals |
+| [`v1.3.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.3.0) | Tuned CPU runs, tested device decisions |
+| [`v1.4.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.4.0) | The mark, security hardening, faster startup, installers |
 
-Releases are tags on `x8-main`. They are independent of the wheel version in `unsloth/_version.py`,
-which tracks the upstream package this fork imports.
+Tags are on `x8-main` and are independent of the wheel version in `unsloth/_version.py`, which tracks
+upstream. `v1.4.0` is the first release with a Windows installer attached.
 
 ---
 
