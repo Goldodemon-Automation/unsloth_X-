@@ -26,6 +26,18 @@ from loggers import get_logger
 router = APIRouter()
 logger = get_logger(__name__)
 
+# The stand-in routes/compute.py returns when it cannot read the NPU. /status carries the same
+# training capability as /api/compute/npu/assist, so one panel says one thing.
+_UNAVAILABLE_TRAINING_CAPABILITY = {
+    "mode": "unavailable",
+    "backward_pass": False,
+    "device": None,
+    "tasks": [],
+    "providers": [],
+    "reasons": ["not_measured"],
+    "notes": "This build could not read the NPU, so training will not use it.",
+}
+
 _MANAGED_ACCOUNT_STATUS = {
     "supported": False,
     "hardware": {"present": False, "supported": False},
@@ -45,6 +57,24 @@ _MANAGED_ACCOUNT_STATUS = {
 
 async def _require_installation_owner(current_subject: str = Depends(get_current_subject)) -> None:
     await policy.require_owner()
+
+
+def _training_capability() -> dict:
+    """What training can use the NPU for, the same read /api/compute/npu/assist makes.
+
+    A module-level function so the read can be replaced in a test, and imported inside it so a
+    checkout without the NPU detection module still serves /status. A probe that raises is not an
+    error here: it is a machine whose NPU cannot be measured, which is what the stand-in says.
+    """
+    try:
+        from utils.hardware.npu import npu_training_capability
+        measured = npu_training_capability()
+    except Exception as exc:  # noqa: BLE001 -- a capability read must never fail /status
+        logger.debug("NPU training capability unavailable: %s", exc)
+        return dict(_UNAVAILABLE_TRAINING_CAPABILITY)
+    if not isinstance(measured, dict):
+        return dict(_UNAVAILABLE_TRAINING_CAPABILITY)
+    return dict(measured)
 
 
 class _Download:
@@ -125,10 +155,24 @@ def _start_download(npu, model_id: str) -> _Download:
 
 @router.get("/status")
 async def npu_status(current_subject: str = Depends(get_current_subject)):
-    """Whether this machine has a supported NPU, and the runtime's state. Never starts anything."""
+    """Whether this machine has a supported NPU, and the runtime's state. Never starts anything.
+
+    Carries the training capability too, so the NPU panel and the model picker read one answer
+    instead of asking two endpoints and risking a panel whose two halves disagree.
+    """
+    try:
+        capability = _training_capability()
+    except Exception as exc:  # noqa: BLE001 -- a broken capability read must never fail /status
+        logger.debug("NPU training capability unavailable: %s", exc)
+        capability = dict(_UNAVAILABLE_TRAINING_CAPABILITY)
     if account_access.managed_account():
-        return dict(_MANAGED_ACCOUNT_STATUS)
-    return await asyncio.to_thread(get_npu_backend().status)
+        payload = dict(_MANAGED_ACCOUNT_STATUS)
+        payload["training_capability"] = capability
+        return payload
+    status = await asyncio.to_thread(get_npu_backend().status)
+    # The backend builds a fresh dict per call, so the added key lands on this payload alone.
+    status["training_capability"] = capability
+    return status
 
 
 @router.post("/enable", dependencies = [Depends(_require_installation_owner)])

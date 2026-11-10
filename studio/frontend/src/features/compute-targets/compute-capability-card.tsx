@@ -3,6 +3,11 @@
 
 import { cn } from "@/lib/utils";
 import {
+  CancelCircleIcon,
+  CheckmarkCircle02Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import {
   type ComputeTargetsResponse,
   NPU_MODE_UNAVAILABLE,
   describeReasons,
@@ -63,12 +68,21 @@ export function ComputeCapabilityCard({ data }: ComputeCapabilityCardProps) {
             key={target.id}
             className="flex flex-wrap items-baseline gap-x-1.5 text-ui-11"
           >
+            {/* The mark carries the picker rows' icon size and gap (size-3.5 in a
+                gap-1.5 cluster, as in train-model-selector's trigger rows). */}
             <span
               className={cn(
-                "shrink-0 font-medium",
+                "flex shrink-0 items-baseline gap-1.5 font-medium",
                 target.supported ? "text-foreground" : "text-muted-foreground",
               )}
             >
+              <HugeiconsIcon
+                icon={
+                  target.supported ? CheckmarkCircle02Icon : CancelCircleIcon
+                }
+                strokeWidth={1.75}
+                className="size-3.5 shrink-0"
+              />
               {target.supported ? "Supported" : "Not supported"}
             </span>
             <span className="text-muted-foreground">{target.name}</span>

@@ -30,6 +30,7 @@ from hub.services.models import account_access
 from loggers import get_logger
 from storage import library_db
 from storage.studio_db import ChatMessageProtectedError
+from utils import scoped_link
 from utils.account_context import run_as
 from utils.upload_limits import LIBRARY_UPLOAD_MAX_BYTES
 from utils.utils import log_and_http_error, safe_curated_detail
@@ -351,18 +352,84 @@ def get_item_thumbnail(
     )
 
 
+# A native save and an ``<a href>`` fetch without a header, so a download can be gated by a link the
+# bearer mints, as an ``<audio>`` preview is. A secret and a scope of its own, so a stream link never
+# downloads here and a download link never streams there. Seconds, not hours: the caller mints one,
+# follows it at once, and a link that leaks in a log is worthless by the time anyone reads the log.
+_DOWNLOAD_LINK_TTL = 300
+_DOWNLOAD_LINK_SECRET = secrets.token_bytes(32)
+_DOWNLOAD_LINK_SCOPE = "library-download"
+
+
+def _sign_download_link(item_id: str) -> str:
+    """A link token for ``item_id`` in the calling account."""
+    return scoped_link.mint(
+        _DOWNLOAD_LINK_SECRET,
+        _DOWNLOAD_LINK_SCOPE,
+        account_access.media_link_target(item_id),
+        {"item": item_id},
+        ttl_s = _DOWNLOAD_LINK_TTL,
+    )
+
+
+def _download_link_account(link: str, item_id: str):
+    """The account a valid, unexpired download link for ``item_id`` was minted in, else None."""
+    try:
+        claims = scoped_link.verify(_DOWNLOAD_LINK_SECRET, link, _DOWNLOAD_LINK_SCOPE)
+    except scoped_link.ScopedLinkError:
+        return None
+    # The signed ``sub`` names the item's account as well, but a link that says which item it is
+    # for is refused for any other one, whether or not the account target alone would allow it.
+    if claims.get("item") != item_id:
+        return None
+    return account_access.media_link_account(claims["sub"], item_id)
+
+
+def _bearer_header(request: Request) -> str:
+    """The bearer in ``Authorization``, blank when there is none."""
+    header = request.headers.get("authorization") or ""
+    return header[7:].strip() if header.lower().startswith("bearer ") else ""
+
+
 @router.api_route("/items/download", methods = ["GET", "HEAD"])
 async def download_item(
     request: Request,
     id: str = Query(max_length = 4096),
     token: Optional[str] = Query(default = None, max_length = 8192),
+    link: Optional[str] = Query(default = None, max_length = 8192),
 ):
-    """An item's file as an attachment. Takes ``?token=`` as well: the desktop app streams it
-    straight to disk, and its native save sends no header."""
+    """An item's file as an attachment, for the bearer in ``Authorization`` or for a short-lived
+    ``?link=`` a caller that sends no header is handed.
+
+    ``?token=`` is refused: a session bearer in a URL survives the click in history, in a proxy's
+    access log and in the ``Referer`` of whatever the file links to, where a link names one item
+    for minutes and nothing else."""
+    if token and token.strip():
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Download links no longer take ?token=. Pass a short-lived ?link= "
+                "(?token= must not carry a session bearer)."
+            ),
+        )
     id = _from_caller(id)
-    await subject_for_header_or_query_token(request, token)
+    # A link names the item and its account on its own, so a caller that has one needs no bearer;
+    # a header still wins, because a browser that sends one is already authenticated.
+    account = None
+    if not _bearer_header(request) and link and link.strip():
+        account = _download_link_account(link, id)
+        if account is None:
+            raise HTTPException(status_code = 401, detail = "Invalid or expired download link.")
+    else:
+        # The bearer the request carries, keyless access, or the 401 this route has always given.
+        await subject_for_header_or_query_token(request, None)
     try:
-        item = await run_in_threadpool(library.open_item, id)
+        if account is None:
+            item = await run_in_threadpool(library.open_item, id)
+        else:
+            # Read in the link's account, as the stream route does, so the file opened is the one
+            # the link was checked against and not one the ambient context happens to see.
+            item = await run_in_threadpool(run_as, account, library.open_item, id)
     except LookupError:
         raise HTTPException(status_code = 404, detail = "Item not found")
     except ValueError:

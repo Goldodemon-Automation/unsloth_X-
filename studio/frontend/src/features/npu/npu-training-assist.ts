@@ -113,6 +113,9 @@ const REFUSAL_SENTENCES = new Map<string, string>([
     "The NPU is your main compute device, so training runs on it directly instead.",
   ],
   ["not_measured", "This NPU's speed has not been measured yet."],
+  // Published by the backend for a generation no runtime here supports; without an entry it fell
+  // through to the generic sentence.
+  ["unsupported_family", "This NPU generation is not supported yet."],
 ]);
 
 const UNKNOWN_REFUSAL = "The NPU cannot help with this run.";
@@ -167,6 +170,12 @@ function lowerFirst(text: string): string {
 
 /** One sentence: what the NPU takes over, or why it takes nothing. */
 export function assistHeadline(assist: NpuTrainingAssist): string {
+  // A deliberate "off" is not a refusal: the backend sends `refused_reason: null` for it, so the
+  // generic "cannot help" sentence used to appear directly above the backend's own "assist is off"
+  // note, which reads as a fault rather than a choice.
+  if (!assist.enabled && assist.mode === "off" && !assist.refused_reason) {
+    return "NPU assist is off for this run.";
+  }
   if (!assist.enabled) return describeRefusal(assist.refused_reason);
   const tasks = (assist.tasks ?? []).map((task) =>
     lowerFirst(describeTask(task)),

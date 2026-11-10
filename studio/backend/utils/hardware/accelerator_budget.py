@@ -237,10 +237,19 @@ def budget_report(
     if kind == "cpu":
         # A CPU's budget is the RAM it can actually take. Quoting the installed total, or calling it a
         # GPU with its own memory, is how a CPU run gets planned for memory the OS already holds.
-        notes = (
-            f"Training runs on the CPU: {_gb(dedicated_bytes if dedicated_bytes is not None else usable)}"
-            f" GB of the machine's {_gb(system_memory_bytes)} GB of RAM is free for it."
-        )
+        free = dedicated_bytes if dedicated_bytes is not None else usable
+        if free is None:
+            # `_gb(None)` prints "0.0", and "0.0 GB of the machine's 0.0 GB is free" is a measurement
+            # nobody made -- the same thing this module refuses to do for an accelerator.
+            notes = (
+                "Training runs on the CPU. This machine's free RAM could not be measured, so the "
+                "estimate cannot say whether the run fits."
+            )
+        else:
+            notes = (
+                f"Training runs on the CPU: {_gb(free)} GB of the machine's "
+                f"{_gb(system_memory_bytes)} GB of RAM is free for it."
+            )
         return {
             "integrated": False,
             "dedicated_bytes": None,

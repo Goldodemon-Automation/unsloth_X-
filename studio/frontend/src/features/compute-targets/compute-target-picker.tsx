@@ -30,13 +30,15 @@ export interface ComputeTargetPickerProps {
   className?: string;
 }
 
+// The focus ring matches PICKER_FOCUS_VISIBLE_CLASS in components/resource-picker/picker-focus:
+// the offset is the background token, so the ring holds up in dark mode.
 const ROW_CLASS =
-  "flex w-full items-center gap-2 rounded-md border px-2.5 py-1.5 text-left text-ui-12 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  "flex w-full items-center gap-2 rounded-md border px-2.5 py-1.5 text-left text-ui-12 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50";
 const SELECTED_CLASS = "border-border bg-accent text-foreground";
 const IDLE_CLASS =
   "border-border/60 text-foreground hover:bg-accent/60 disabled:hover:bg-transparent";
 const BLOCKED_CLASS =
-  "cursor-not-allowed border-border/40 text-muted-foreground opacity-60";
+  "cursor-not-allowed border-border/40 text-muted-foreground";
 // `max-w-36` rather than a hand-set width in brackets: the named scale follows --spacing, so the
 // memory column grows with the interface-font setting instead of staying fixed beside scaled text.
 const SHORT_VALUE_CLASS =

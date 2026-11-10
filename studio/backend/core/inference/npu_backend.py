@@ -243,6 +243,10 @@ def _matrix_hardware(summary: dict[str, Any]) -> dict[str, Any]:
         "supported": bool(summary.get("supported")),
         # The flag, not the hardware: _require_supported() names it in its refusal.
         "enabled": bool(summary.get("enabled")),
+        # Carried because _require_supported() branches on it to name the vendor in its refusal.
+        # Without it every non-AMD NPU was told it was an unsupported XDNA generation, which is the
+        # diagnosis this whole change set out to delete.
+        "vendor": primary.get("vendor"),
         "family": primary.get("family"),
         "name": primary.get("name"),
         "driver": primary.get("driver"),
@@ -273,7 +277,8 @@ def _detect_npu_hardware() -> dict[str, Any]:
     # A module global read, so a caller that swapped the probe in still controls the answer.
     legacy = detect_amd_npu()
     if matrix is None or legacy.get("present"):
-        return legacy
+        # The AMD-only probe answers for AMD by construction and carries no vendor of its own.
+        return {**legacy, "vendor": legacy.get("vendor") or "amd"}
     return matrix
 
 

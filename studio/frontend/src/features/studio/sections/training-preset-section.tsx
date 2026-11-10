@@ -7,6 +7,10 @@ import { Spinner } from "@/components/ui/spinner";
 import { ComputeCapabilityCard } from "@/features/compute-targets/compute-capability-card";
 import { ComputeTargetPicker } from "@/features/compute-targets/compute-target-picker";
 import { ComputeTargetsNotice } from "@/features/compute-targets/compute-targets-notice";
+import type {
+  ComputeTarget,
+  ComputeTargetRecommendation,
+} from "@/features/compute-targets/types";
 import { useComputeTargets } from "@/features/compute-targets/use-compute-targets";
 import type { NpuAssistRequested } from "@/features/npu/npu-training-assist";
 import { NpuTrainingCard } from "@/features/npu/npu-training-card";
@@ -15,6 +19,8 @@ import { useTrainingConfigStore } from "@/features/training";
 import {
   type TrainingFitReport,
   fetchTrainingFit,
+  recommendationDiff,
+  withTargetRecommendation,
 } from "@/features/training/api/fit-api";
 import {
   BUILTIN_PRESETS,
@@ -93,6 +99,11 @@ export function TrainingPresetSection(): ReactElement {
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState("");
   const [fit, setFit] = useState<TrainingFitReport | null>(null);
+  // The device recommendation the displayed report was sized with, if any. The wizard's
+  // own values are never rewritten -- this only describes how one request was sized.
+  const [sizedBy, setSizedBy] = useState<ComputeTargetRecommendation | null>(
+    null,
+  );
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -124,38 +135,72 @@ export function TrainingPresetSection(): ReactElement {
     writeStoredPresets(next);
   };
 
+  // The device the run will actually use, with the sizing the backend recommends for it.
+  const activeTarget = computeTargets?.targets.find(
+    (entry) => entry.id === computeTargets.resolved,
+  );
+
   const use = (
     preset: StoredTrainingPreset | (typeof BUILTIN_PRESETS)[number],
   ) => {
     applyPreset(preset);
     setFit(null);
+    setSizedBy(null);
     toast.success(t("studio.presets.applied"), { description: preset.name });
   };
 
-  const check = async () => {
+  /**
+   * The capacity check. By default it sends exactly the wizard's fields; when the
+   * selected device's own recommendation disagrees with them, the request is sized
+   * with that recommendation instead and the muted line names it. The store's values
+   * are never rewritten -- only this one request is sized differently.
+   *
+   * `repicked` is the device just chosen in the picker: the hook snapshot still names
+   * the previous device until the next render, so a re-run right after a switch passes
+   * the fresh choice in here.
+   */
+  const check = async (repicked?: ComputeTarget) => {
     if (!selectedModel) {
       setError(t("studio.presets.needModel"));
       return;
     }
+    const target = repicked ?? activeTarget;
+    const differs = target
+      ? recommendationDiff(
+          { batchSize, gradientAccumulation, gradientCheckpointing },
+          target,
+        )
+      : [];
     setChecking(true);
     setError(null);
     try {
-      const report = await fetchTrainingFit({
-        model: selectedModel,
-        method: trainingMethod,
-        loadIn4Bit: trainingMethod === "qlora",
-        maxSeqLength: contextLength,
-        batchSize,
-        gradientAccumulation,
-        loraRank,
-        gradientCheckpointing,
-        gpuMemoryGb: gpu.available ? gpu.memoryTotalGb : null,
-        // Sent so the estimate describes the device the run will actually use: an integrated GPU
-        // plans against shared memory, a CPU run against RAM.
-        computeTarget:
-          computeTargets?.requested ?? computeTargets?.resolved ?? null,
-      });
+      const sized = withTargetRecommendation(
+        {
+          model: selectedModel,
+          method: trainingMethod,
+          loadIn4Bit: trainingMethod === "qlora",
+          maxSeqLength: contextLength,
+          batchSize,
+          gradientAccumulation,
+          loraRank,
+          gradientCheckpointing,
+          gpuMemoryGb: gpu.available ? gpu.memoryTotalGb : null,
+          // Sent so the estimate describes the device the run will actually use: an integrated GPU
+          // plans against shared memory, a CPU run against RAM.
+          computeTarget: repicked
+            ? repicked.id
+            : (computeTargets?.requested ?? computeTargets?.resolved ?? null),
+        },
+        target,
+        // The device's sizing is requested only where it disagrees with the wizard's
+        // fields; otherwise the check keeps sending exactly what the wizard shows.
+        { apply: differs.length > 0 },
+      );
+      const report = await fetchTrainingFit(sized);
       setFit(report);
+      setSizedBy(
+        differs.length > 0 && target?.recommended ? target.recommended : null,
+      );
     } catch (failure) {
       setError(
         failure instanceof Error
@@ -287,7 +332,32 @@ export function TrainingPresetSection(): ReactElement {
               error={computeTargetsError}
               disabled={computeTargetsLoading}
               onChange={(id) => {
-                void chooseComputeTarget(id).then(() => setFit(null));
+                const picked = computeTargets.targets.find(
+                  (entry) => entry.id === id,
+                );
+                void chooseComputeTarget(id).then((chosen) => {
+                  // The report on screen was sized for the device being left. When the
+                  // device just picked recommends a different sizing than the wizard's
+                  // fields, re-run the check with that recommendation applied and show
+                  // the muted line; otherwise clear the stale report, as before.
+                  const differs =
+                    chosen && picked
+                      ? recommendationDiff(
+                          {
+                            batchSize,
+                            gradientAccumulation,
+                            gradientCheckpointing,
+                          },
+                          picked,
+                        )
+                      : [];
+                  if (fit && picked && differs.length > 0) {
+                    void check(picked);
+                  } else {
+                    setFit(null);
+                    setSizedBy(null);
+                  }
+                });
               }}
             />
             {computeTargets.budget?.notes ? (
@@ -355,6 +425,14 @@ export function TrainingPresetSection(): ReactElement {
         <p className="mt-1 text-ui-10 leading-relaxed text-muted-foreground/70">
           {t("studio.presets.fitHint")}
         </p>
+        {/* Not going through i18n yet, like the device card above: the locale overlays
+            gain this line in the next translation pass. */}
+        {sizedBy ? (
+          <p className="mt-1 text-ui-10 leading-relaxed text-muted-foreground">
+            Sized for this device: batch {sizedBy.batch_size}, accumulation{" "}
+            {sizedBy.grad_accum}, {sizedBy.dtype}.
+          </p>
+        ) : null}
 
         {error ? (
           <p className="mt-2 text-ui-11 text-destructive">{error}</p>

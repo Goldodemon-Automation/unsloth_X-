@@ -12,7 +12,8 @@ Auth-gated like `/api/system`, and for the same reason: the payload fingerprints
 names, memory sizes). The Train page polls it, so the probe is cached for a minute and nothing here
 starts a runtime or loads a model. It does reach torch indirectly -- `TargetProbe.detect()` asks
 torch which accelerators answer, which is the whole point -- so the work is bounded and reused, not
-absent.
+absent. On a host with an Intel GPU it asks one more thing of torch, through `utils.hardware.xpu`,
+which GPU build the wheel actually carries: that read is cached with the probe, not run per poll.
 """
 
 from __future__ import annotations
@@ -45,7 +46,10 @@ logger = get_logger(__name__)
 # answer is reused for the same minute the hardware inventory uses; a POST invalidates it so a
 # deliberate change is reflected at once.
 _PROBE_TTL_S = 60.0
-_probe_cache: dict = {"at": 0.0, "probe": None, "npu": None}
+# `fn` is the probe callable the entry was built from: a cache keyed only on time would serve a
+# swapped-in probe's answer after something replaced `_probe` (a test, or a host that installs a
+# backend mid-session), so identity is part of the key.
+_probe_cache: dict = {"at": 0.0, "probe": None, "npu": None, "gpu_runtime": None, "fn": None}
 # A plain lock, not asyncio's: the payload is built on a worker thread (`asyncio.to_thread`), so an
 # async lock could not be acquired here. It makes the cache single-flight -- two Train pages opening
 # together used to run two full probes and publish whichever finished last.
@@ -57,6 +61,8 @@ def _invalidate_probe_cache() -> None:
         _probe_cache["at"] = 0.0
         _probe_cache["probe"] = None
         _probe_cache["npu"] = None
+        _probe_cache["gpu_runtime"] = None
+        _probe_cache["fn"] = None
 
 
 class TargetChoice(BaseModel):
@@ -70,26 +76,99 @@ def _probe() -> TargetProbe:
     return TargetProbe.detect()
 
 
-def _cached_probe_and_npu() -> tuple[TargetProbe, dict]:
-    """(probe, NPU capability) from one probe, reused inside the TTL.
+def _has_intel_gpu(probe: TargetProbe) -> bool:
+    """Whether this host has the Intel GPU row that needs explaining.
+
+    Asked of the probe rather than of the finished payload: the registry publishes exactly one GPU row
+    per `probe.gpus` entry and copies its `vendor` straight through, so the two lists cannot disagree,
+    and the torch read can be skipped before it happens on a machine whose only accelerator is NVIDIA.
+    """
+    gpus = getattr(probe, "gpus", None)
+    if not isinstance(gpus, (list, tuple)):
+        return False
+    return any(
+        str(gpu.get("vendor") or "").strip().lower() == "intel"
+        for gpu in gpus
+        if isinstance(gpu, dict)
+    )
+
+
+# Not "PyTorch is not installed": that is the sentence this field exists to correct, and a failed
+# runtime read has no evidence about the wheel at all. Kept as a constant for the same reason
+# `utils/hardware/xpu.py` keeps its notes as constants -- it is user-facing text, and a typo there is
+# a bug rather than a formatting change.
+_GPU_RUNTIME_UNKNOWN_NOTE = (
+    "The Intel GPU runtime could not be read here, so whether PyTorch can train "
+    "on this GPU is unknown."
+)
+
+
+def _gpu_runtime_unknown() -> dict:
+    """The runtime status for a host this route could not read.
+
+    The same five keys as `xpu_torch_status`, so a UI that renders `gpu_runtime.note` never meets a
+    missing key, and a note that claims nothing about which wheel is installed: the probe failed, and
+    that is the whole truth here. Saying "PyTorch is not installed" would be the exact mistake this
+    payload exists to avoid.
+    """
+    return {
+        "available": False,
+        "build": "unknown",
+        "device_count": 0,
+        "driver": None,
+        "note": _GPU_RUNTIME_UNKNOWN_NOTE,
+    }
+
+
+def _xpu_torch_status() -> dict:
+    """What the installed PyTorch means for the Intel GPU, as `utils.hardware.xpu` words it.
+
+    Module-level so a test can replace the read, and imported inside the call for the same reason the
+    NPU capability is: an install without the module must still serve the targets that do exist.
+    `xpu_torch_status` is built not to raise, but a probe that does -- a wedged driver, a stand-in that
+    answers with the wrong shape -- must cost a `gpu_runtime` field, not the whole GET, because the
+    Train page cannot render without it.
+    """
+    try:
+        from utils.hardware.xpu import xpu_torch_status
+        status = dict(xpu_torch_status())
+    except Exception as exc:  # noqa: BLE001 - a status read must never fail the page
+        logger.debug("Intel GPU runtime status unavailable: %s", exc)
+        return _gpu_runtime_unknown()
+    for key, value in _gpu_runtime_unknown().items():
+        # A partial answer keeps the field's contract: five keys, always.
+        status.setdefault(key, value)
+    return status
+
+
+def _cached_probe_state() -> tuple[TargetProbe, dict, dict | None]:
+    """(probe, NPU capability, Intel GPU runtime) from one probe pass, reused inside the TTL.
 
     The capability used to re-run the NPU detection the probe had already done, so a single GET
-    detected NPUs twice and re-scanned PATH for every runtime.
+    detected NPUs twice and re-scanned PATH for every runtime. The runtime status is the third torch
+    read, so it is cached with the other two and invalidated with them; it is only taken on a host that
+    has the Intel GPU row it describes, and it is None on every other host -- the UI must be able to
+    tell "no Intel GPU to explain" from "an Intel GPU whose status is unknown".
     """
     now = time.monotonic()
     cached = _probe_cache["probe"]
-    if cached is not None and now - _probe_cache["at"] < _PROBE_TTL_S:
-        return cached, _probe_cache["npu"]
+    if (
+        cached is not None
+        and _probe_cache["fn"] is _probe
+        and now - _probe_cache["at"] < _PROBE_TTL_S
+    ):
+        return cached, _probe_cache["npu"], _probe_cache["gpu_runtime"]
     with _probe_lock:
         # Re-read under the lock: a second caller may have rebuilt it while this one waited.
         now = time.monotonic()
         cached = _probe_cache["probe"]
         if cached is not None and now - _probe_cache["at"] < _PROBE_TTL_S:
-            return cached, _probe_cache["npu"]
+            return cached, _probe_cache["npu"], _probe_cache["gpu_runtime"]
         probe = _probe()
         npu = _npu_capability()
-        _probe_cache.update(at = now, probe = probe, npu = npu)
-        return probe, npu
+        gpu_runtime = _xpu_torch_status() if _has_intel_gpu(probe) else None
+        _probe_cache.update(at = now, probe = probe, npu = npu, gpu_runtime = gpu_runtime, fn = _probe)
+        return probe, npu, gpu_runtime
 
 
 def _budget_for(target: TrainingTarget, probe: TargetProbe) -> dict:
@@ -131,7 +210,7 @@ def _npu_capability() -> dict:
 
 
 def _payload() -> dict:
-    probe, npu = _cached_probe_and_npu()
+    probe, npu, gpu_runtime = _cached_probe_state()
     payload = training_target_payload(probe)
     stored = compute_target_settings.get_selected_compute_target()
     try:
@@ -146,6 +225,11 @@ def _payload() -> dict:
     payload["resolved"] = resolved.id
     payload["budget"] = _budget_for(resolved, probe)
     payload["npu"] = npu
+    # The registry can only say `torch_missing` for a GPU it cannot see training, and that token reads
+    # as "PyTorch is not installed" -- false on the hybrid host that has torch and has it as a CUDA
+    # build. This is the sentence that names the wheel actually installed and the remedy, taken from
+    # the one module that answers the question, and only when there is an Intel GPU row to explain.
+    payload["gpu_runtime"] = gpu_runtime
     return payload
 
 

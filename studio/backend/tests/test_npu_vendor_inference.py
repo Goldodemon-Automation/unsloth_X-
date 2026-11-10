@@ -19,6 +19,9 @@ from utils.hardware import npu
 # of the legacy AMD contract, but the refusal message names the flag, so the helper carries it too.
 _BACKEND_KEYS = {
     "present",
+    # The vendor is what lets a refusal say "this machine's NPU is NPU4" instead of calling every
+    # non-AMD part an unsupported XDNA generation.
+    "vendor",
     "supported",
     "enabled",
     "family",
@@ -154,20 +157,20 @@ def test_a_raising_matrix_falls_back_to_the_amd_probe(monkeypatch):
 
     monkeypatch.setattr(npu, "detect_npu", boom, raising = False)
 
-    assert nb._detect_npu_hardware() == _amd_xdna2()
+    assert nb._detect_npu_hardware() == {**_amd_xdna2(), "vendor": "amd"}
 
 
 def test_a_checkout_without_the_matrix_falls_back_to_the_amd_probe(monkeypatch):
     monkeypatch.setattr(nb, "detect_amd_npu", lambda: _amd_xdna2())
     monkeypatch.delattr(npu, "detect_npu")
 
-    assert nb._detect_npu_hardware() == _amd_xdna2()
+    assert nb._detect_npu_hardware() == {**_amd_xdna2(), "vendor": "amd"}
 
 
 def test_a_matrix_with_nothing_present_falls_back_to_the_amd_probe(monkeypatch):
     _matrix(monkeypatch, _summary(None, present = False), lambda: _amd_xdna2())
 
-    assert nb._detect_npu_hardware() == _amd_xdna2()
+    assert nb._detect_npu_hardware() == {**_amd_xdna2(), "vendor": "amd"}
 
 
 def test_the_amd_probe_answers_when_the_matrix_has_nothing_usable(monkeypatch):

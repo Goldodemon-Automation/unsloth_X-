@@ -1480,8 +1480,9 @@ def _resolved_compute_target(request: TrainingStartRequest):
     Only `request.compute_target` is read, so a caller (or a test) can pass any object carrying
     that one attribute instead of a whole TrainingStartRequest.
 
-    Returns the registry's TrainingTarget (None on auto). Raises HTTPException with the registry's
-    own message when the target is absent or unsupported on this machine.
+    Returns the registry's TrainingTarget. Never None: "auto" resolves to this machine's default, so
+    the run is pinned to a concrete id rather than left to be re-decided in the child. Raises
+    HTTPException with the registry's own message when the target is absent or unsupported.
     """
     from core.training.device_targets import TrainingTargetError, resolve_training_target
     from utils.compute_target_settings import get_selected_compute_target
@@ -1512,7 +1513,7 @@ def _apply_target_constraints(request: TrainingStartRequest, target: Any) -> Non
     load_in_4bit would otherwise run the slow path and then blame the hardware.
 
     `target` is the registry's TrainingTarget rather than the request, so this is a pure function of
-    the device the run already committed to; None (the "auto" path, or a caller that resolved
+    the device the run already committed to; None (a caller that resolved
     nothing) is a no-op, as is every device that is not an integrated GPU.
     """
     if target is None or target.kind != "igpu" or not request.load_in_4bit:
