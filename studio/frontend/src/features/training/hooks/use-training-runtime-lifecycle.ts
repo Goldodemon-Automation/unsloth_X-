@@ -201,7 +201,7 @@ function createPollScheduler(
       timer = null;
     }
     const now = Date.now();
-    let dueAt = Infinity;
+    let dueAt = Number.POSITIVE_INFINITY;
     for (const state of states) {
       if (!state.armed) {
         continue;
@@ -211,10 +211,13 @@ function createPollScheduler(
     if (!Number.isFinite(dueAt)) {
       return;
     }
-    timer = setTimeout(() => {
-      timer = null;
-      void tick();
-    }, Math.max(0, dueAt - now));
+    timer = setTimeout(
+      () => {
+        timer = null;
+        void tick();
+      },
+      Math.max(0, dueAt - now),
+    );
   };
 
   const sync = (): void => {
@@ -581,8 +584,7 @@ export function useTrainingRuntimeLifecycle(): void {
     };
 
     let scheduler: PollScheduler | null = null;
-    const isStatusStreamStopped = () =>
-      scheduler !== null && scheduler.isStopped("status");
+    const isStatusStreamStopped = () => scheduler?.isStopped("status") === true;
 
     scheduler = createPollScheduler(
       [
