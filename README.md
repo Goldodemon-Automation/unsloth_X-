@@ -14,20 +14,17 @@ The upstream project is the fastest way to fine-tune open models on one GPU. Thi
 
 ## Branding: this fork is blue, upstream is green
 
-The UI accent moved from Unsloth's green (`#17b88b`) to a **light blue** (`#9ceaf0`, a light cyan), in
-both light and dark mode, and every primary control follows it. If a screenshot or a build still shows
-green, it is upstream's theme, not this fork's.
+Upstream Unsloth is green; this fork is blue. A screenshot that is still green is upstream's theme,
+not this fork's.
 
 | | Upstream Unsloth | This fork |
 | --- | --- | --- |
-| Accent | light green `#17b88b` | **light blue** `#9ceaf0` |
-| Ink on the accent | white | dark `#0f1114` (white on `#9ceaf0` scores ~1.3:1) |
+| Colour | green `#17b88b` | **blue** `#9ceaf0` |
 | Mark | the Unsloth wordmark | the **X–** mark below |
 
 The mark is the fork in one glyph: an **X** in a blue gradient, a **–** in a lighter one, stacked on a
-black plate. Stacked rather than side by side because it is the construction that still reads at 16
-pixels, which is the size a favicon and a sidebar actually get. [images/logo-options.html](images/logo-options.html)
-shows every construction, on light and dark, at the sizes they are meant for.
+black plate. [images/logo-options.html](images/logo-options.html) shows every construction, on light and
+dark, at the sizes they are meant for.
 
 | File | Use |
 | --- | --- |
@@ -44,10 +41,6 @@ icons (`.ico` included). Change a colour in that script and every icon follows.
 | X, blue gradient | `#1D4ED8` → `#60A5FA` | the X |
 | Dash, lighter blue gradient | `#38BDF8` → `#7DD3FC` | the – |
 | Plate | `#000000` | behind the mark |
-| Badge plate | `#0B1220` | behind the app icon |
-| UI accent | `#9CEAF0` | primary buttons, switches, active rows |
-
-The palette, the accent tokens and how to change them are in [docs/theming.md](docs/theming.md).
 
 ---
 
@@ -108,19 +101,20 @@ The desktop app ships as a signed Windows installer on each release. Download it
 | `Unsloth_<version>_x64-cpu-gpu-setup.exe` | **Default.** Probes the machine and installs whatever it can run |
 | `Unsloth_<version>_x64-gpu-setup.exe` | You want the CUDA stack pinned and a GPU is guaranteed |
 | `Unsloth_<version>_x64-cpu-setup.exe` | A machine with no GPU, or you want no CUDA download at all |
-| `Unsloth_<version>_x64-gpu-cpu-npu-setup.exe` | The default stack, with the NPU enabled at launch |
-| `Unsloth_<version>_x64-gpu-npu-setup.exe` | CUDA pinned, with the NPU enabled at launch |
 | `Unsloth_<version>_x64-cpu-npu-setup.exe` | No CUDA download, with the NPU enabled at launch |
 
-**What the `-npu` builds change, exactly one thing.** The NPU is not a wheel and not a separate stack:
+**What the `-npu` build changes, exactly one thing.** The NPU is not a wheel and not a separate stack:
 the Studio drives it through Lemonade and FastFlowLM, which it installs on first use because they only
-exist for AMD XDNA 2. So an `-npu` installer is the same Python stack as its base flavor, launched with
-`UNSLOTH_STUDIO_ENABLE_NPU=1` already set — the gate that otherwise has to be set by hand. Pick an
-`-npu` build if you have an AMD Ryzen AI NPU and want the panel on without editing your environment.
+exist for AMD XDNA 2. So `cpu-npu` is the CPU stack launched with `UNSLOTH_STUDIO_ENABLE_NPU=1` already
+set — the gate that otherwise has to be set by hand.
+
+There is no GPU + NPU installer on purpose: the hardware that has an NPU today is a Ryzen AI APU, whose
+GPU is integrated and draws on the same system memory, so the pairing would advertise two pools where
+the machine has one.
 
 NPU limits that no installer changes: it is **inference and assist only**. No vendor exposes a
 backward pass, so an NPU cannot train a model — it can host inference, and it can be planned as an
-assist device for tokenizing and checkpoint scoring while training runs on the CPU or GPU.
+assist device for tokenizing and checkpoint scoring while training runs on the CPU.
 
 Linux and macOS build from source below; the same release carries the notes each build was made from.
 Older tags on this repository are source milestones — `v1.4.0` is the first with an installer attached.

@@ -669,3 +669,14 @@ its base arm -- that is the whole of "same stack" -- and `npu_env()` is the only
 `cargo test install::` covers the mapping, the shared install env and the gate (53 tests). The workflow
 matrix is now six flavors with the universal build first and the NPU variants last, and its
 distinctness check covers all six -- six signatures, six different hashes, or the release fails.
+
+### Correction: one NPU flavor, not three
+
+`gpu-npu` and `gpu-cpu-npu` were cut and withdrawn, and only `cpu-npu` remains. The hardware that has
+an NPU today is a Ryzen AI APU: its GPU is integrated and draws on the same system memory the NPU does,
+so a "GPU + NPU" installer advertises two memory pools where the machine has one. The pairing is not
+unsafe, it is misleading, and a filename is the cheapest place to avoid that.
+
+The withdrawn assets were deleted from the v1.4.0 release rather than left behind, so the release lists
+four installers and no retired name. `install.rs` maps a `gpu-npu` string to the universal stack rather
+than to an error, because a binary built from an older branch should still start.

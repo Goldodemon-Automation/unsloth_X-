@@ -8,13 +8,16 @@ name: Release X8 Desktop (Windows)
 #
 #   https://github.com/Goldodemon-Automation/unsloth_X-/releases/latest/download/latest.json
 #
-# One release carries six builds of the same app, one per flavor (cpu, gpu, cpu-gpu and the same
-# three with the NPU gate open: cpu-npu, gpu-npu, gpu-cpu-npu). They differ only in the environment
-# the desktop shell hands to the first-run installer, which install.rs bakes in from
-# UNSLOTH_DESKTOP_FLAVOR, plus -- for the NPU flavors -- UNSLOTH_STUDIO_ENABLE_NPU=1 applied to the
-# shell's own environment before it starts anything. An NPU flavor is not a different Python stack:
-# the NPU is driven by Lemonade/FastFlowLM, which the Studio installs on demand because they only
-# exist for AMD XDNA 2. The base three remain:
+# One release carries four builds of the same app, one per flavor (cpu, gpu, cpu-gpu, cpu-npu). They
+# differ only in the environment the desktop shell hands to the first-run installer, which install.rs
+# bakes in from UNSLOTH_DESKTOP_FLAVOR, plus -- for cpu-npu -- UNSLOTH_STUDIO_ENABLE_NPU=1 applied to
+# the shell's own environment before it starts anything. The NPU flavor is not a different Python
+# stack: the NPU is driven by Lemonade/FastFlowLM, which the Studio installs on demand because they
+# only exist for AMD XDNA 2.
+#
+# There is no GPU + NPU flavor on purpose. The hardware that has an NPU today is a Ryzen AI APU, whose
+# GPU is integrated and draws on the same system memory, so the pairing would advertise two pools
+# where the machine has one.
 #
 #   cpu      torch index pinned to cpu, llama.cpp on cpu: no GPU probe, no CUDA
 #   gpu      CUDA llama.cpp; the torch leaf stays unpinned because it follows the driver
@@ -72,9 +75,8 @@ jobs:
       fail-fast: false
       matrix:
         # The universal build comes first, so a run stopped early has already produced the one the
-        # updater serves; the NPU variants come last because a broken NPU flavor must not cost the
-        # base three.
-        flavor: [cpu-gpu, cpu, gpu, cpu-npu, gpu-npu, gpu-cpu-npu]
+        # updater serves; cpu-npu comes last because a broken NPU flavor must not cost the base three.
+        flavor: [cpu-gpu, cpu, gpu, cpu-npu]
     env:
       APP_VERSION: ${{ inputs.version }}
       FLAVOR: ${{ matrix.flavor }}
@@ -308,7 +310,7 @@ jobs:
           version = os.environ['APP_VERSION']
           directory = pathlib.Path('release-out')
           seen = {}
-          for flavor in ('cpu', 'gpu', 'cpu-gpu', 'cpu-npu', 'gpu-npu', 'gpu-cpu-npu'):
+          for flavor in ('cpu', 'gpu', 'cpu-gpu', 'cpu-npu'):
               asset = directory / f'Unsloth_{version}_x64-{flavor}-setup.exe'
               if not asset.is_file():
                   sys.exit(f'missing {asset.name}; the {flavor} leg produced no installer')
@@ -320,7 +322,7 @@ jobs:
                   sys.exit(f'{seen[digest]} and {flavor} are byte-identical ({digest[:12]}), '
                            'so UNSLOTH_DESKTOP_FLAVOR did not reach the build')
               seen[digest] = flavor
-          print('six distinct, signed installers')
+          print('four distinct, signed installers')
           PY
 
       # Tauri's updater manifest has one entry per target triple, so exactly one flavor

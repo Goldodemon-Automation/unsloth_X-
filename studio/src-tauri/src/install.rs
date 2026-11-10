@@ -999,11 +999,11 @@ enum DesktopFlavor {
     /// Probe and install whatever the machine can run. Every non-release build.
     CpuGpu,
     /// The CPU stack, with the NPU gate on at launch.
+    ///
+    /// The only NPU flavor, and deliberately not paired with a GPU: the hardware that has an NPU
+    /// today is a Ryzen AI APU, whose GPU is integrated and draws on the same system memory the NPU
+    /// does. A "GPU + NPU" installer would promise two memory pools where the machine has one.
     CpuNpu,
-    /// The CUDA stack, with the NPU gate on at launch.
-    GpuNpu,
-    /// The universal stack, with the NPU gate on at launch.
-    GpuCpuNpu,
 }
 
 impl DesktopFlavor {
@@ -1016,8 +1016,8 @@ impl DesktopFlavor {
             Some("cpu") => Self::Cpu,
             Some("gpu") => Self::Gpu,
             Some("cpu-npu") => Self::CpuNpu,
-            Some("gpu-npu") => Self::GpuNpu,
-            Some("gpu-cpu-npu") => Self::GpuCpuNpu,
+            // Retired flavors: a build still carrying one of these names is the universal stack,
+            // which is the safe answer for a binary nobody ships any more.
             _ => Self::CpuGpu,
         }
     }
@@ -1028,7 +1028,7 @@ impl DesktopFlavor {
     /// panel, NPU model loads and NPU ids exist at all. A user could set it by hand; a flavor that
     /// says NPU in its filename has to do it for them, or the name is a claim the app does not meet.
     fn enables_npu(self) -> bool {
-        matches!(self, Self::CpuNpu | Self::GpuNpu | Self::GpuCpuNpu)
+        matches!(self, Self::CpuNpu)
     }
 
     /// The environment that opens the NPU gate for this process and everything it spawns.
@@ -1052,9 +1052,9 @@ impl DesktopFlavor {
     /// The universal flavor deliberately emits nothing, so its install is the unpinned,
     /// auto-detecting one every earlier build already performed.
     fn install_env(self) -> &'static [(&'static str, &'static str)] {
-        // The NPU flavors share their base arm on purpose: the NPU is driven by Lemonade/FastFlowLM,
-        // which the Studio installs on demand, so an "NPU installer" is the same Python stack with
-        // the gate open, not a different one.
+        // cpu-npu shares the CPU arm on purpose: the NPU is driven by Lemonade/FastFlowLM, which the
+        // Studio installs on demand, so an "NPU installer" is the same Python stack with the gate
+        // open, not a different one.
         match self {
             Self::Cpu | Self::CpuNpu => &[
                 ("UNSLOTH_TORCH_INDEX_FAMILY", "cpu"),
@@ -1063,8 +1063,8 @@ impl DesktopFlavor {
             // No family pin here on purpose: which CUDA leaf is correct depends on the
             // driver, which only the installer can see. Pinning it from the build would
             // hand a cu126 build to a card that needs cu128.
-            Self::Gpu | Self::GpuNpu => &[("UNSLOTH_LLAMA_CPP_BACKEND", "cuda")],
-            Self::CpuGpu | Self::GpuCpuNpu => &[],
+            Self::Gpu => &[("UNSLOTH_LLAMA_CPP_BACKEND", "cuda")],
+            Self::CpuGpu => &[],
         }
     }
 }
@@ -1827,12 +1827,6 @@ mod tests {
         // The name has to mean something: the stack is untouched, and the gate is the only
         // difference between `cpu` and `cpu-npu`.
         assert_eq!(DesktopFlavor::CpuNpu.install_env(), DesktopFlavor::Cpu.install_env());
-        assert_eq!(DesktopFlavor::GpuNpu.install_env(), DesktopFlavor::Gpu.install_env());
-        assert_eq!(
-            DesktopFlavor::GpuCpuNpu.install_env(),
-            DesktopFlavor::CpuGpu.install_env()
-        );
-
         assert_eq!(
             DesktopFlavor::CpuNpu.npu_env(),
             &[("UNSLOTH_STUDIO_ENABLE_NPU", "1")]
