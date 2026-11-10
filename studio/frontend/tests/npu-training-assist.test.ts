@@ -204,3 +204,70 @@ test("an error body that carries a detail rejects with that detail", async () =>
     return true;
   });
 });
+
+test("a different device is a different key, and the same device is stable", () => {
+  const ids = ["cpu", "igpu", "dgpu"];
+  const keys = ids.map((primaryTargetId) =>
+    api.npuAssistKey({ primaryTargetId }),
+  );
+  assert.equal(new Set(keys).size, ids.length);
+  // Stable: the same device always keys the same entry, whichever order it is named in.
+  for (let index = 0; index < ids.length; index += 1) {
+    assert.equal(
+      api.npuAssistKey({ primaryTargetId: ids[index] }),
+      keys[index],
+    );
+  }
+  // The device composes with the rest of the intent instead of replacing it.
+  assert.equal(
+    api.npuAssistKey({
+      requested: "assist",
+      qat: true,
+      primaryTargetId: "dgpu",
+    }),
+    "assist|false|true|dgpu",
+  );
+  assert.notEqual(
+    api.npuAssistKey({
+      requested: "assist",
+      qat: true,
+      primaryTargetId: "dgpu",
+    }),
+    api.npuAssistKey({
+      requested: "assist",
+      qat: true,
+      primaryTargetId: "igpu",
+    }),
+  );
+  // An unresolved device keeps the key a session had before one was picked.
+  assert.equal(
+    api.npuAssistKey({ primaryTargetId: "auto" }),
+    api.npuAssistKey(),
+  );
+  assert.notEqual(
+    api.npuAssistKey({ primaryTargetId: "dgpu" }),
+    api.npuAssistKey(),
+  );
+});
+
+test("the device never reaches the query string", async () => {
+  urls.length = 0;
+  reply = () => Response.json(ASSIST);
+  await api.getNpuTrainingAssist({ primaryTargetId: "dgpu" });
+  await api.getNpuTrainingAssist({
+    requested: "assist",
+    evalEnabled: true,
+    primaryTargetId: "igpu",
+  });
+  assert.equal(urls[0], "/api/compute/npu/assist");
+  assert.equal(
+    urls[1],
+    "/api/compute/npu/assist?requested=assist&eval_enabled=true",
+  );
+  // Two devices asking the same intent hit the same URL, and differ only in the key.
+  assert.equal(
+    api.npuAssistQuery({ primaryTargetId: "dgpu" }),
+    api.npuAssistQuery({ primaryTargetId: "cpu" }),
+  );
+  assert.equal(api.npuAssistQuery({ primaryTargetId: "dgpu" }), "");
+});

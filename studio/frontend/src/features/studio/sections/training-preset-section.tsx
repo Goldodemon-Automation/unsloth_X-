@@ -92,6 +92,9 @@ export function TrainingPresetSection(): ReactElement {
   const [npuRequested, setNpuRequested] = useState<NpuAssistRequested>("auto");
   const npuAssist = useNpuTrainingAssist({
     requested: npuRequested,
+    // The answer describes the device the run would use, so the resolved one is part of the cache
+    // key: switching the picker must ask again rather than keep the previous device's sentence.
+    primaryTargetId: computeTargets?.resolved ?? "auto",
     active: Boolean(computeTargets?.npu),
   });
 

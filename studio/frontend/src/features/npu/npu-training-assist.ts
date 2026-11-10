@@ -54,6 +54,13 @@ export interface NpuTrainingAssistOptions {
   evalEnabled?: boolean;
   qat?: boolean;
   requested?: NpuAssistRequested;
+  /**
+   * The device a run would use, or "auto" when none was resolved yet. The backend answers for the
+   * machine's primary device and names it in `notes[0]`, so a switch from one device to another
+   * changes the sentence -- but the device is server state, not an argument: it is part of the
+   * cache key and never of the query string.
+   */
+  primaryTargetId?: string;
   signal?: AbortSignal;
 }
 
@@ -74,15 +81,30 @@ export function npuAssistQuery(options: NpuTrainingAssistOptions = {}): string {
   return query ? `?${query}` : "";
 }
 
-/** A stable key for one request, for caching and for in-flight deduping. */
+/**
+ * A stable key for one request, for caching and for in-flight deduping.
+ *
+ * The primary device belongs in here because it is an input to the answer: the backend's sentence
+ * describes the device the run would use, so the same `requested` on a different device is a
+ * different answer, not the same one. It is not in {@link npuAssistQuery}, because the backend reads
+ * the device from its own state and a parameter would only be able to disagree with it.
+ * Like the query string, the default is left off, so a session that never resolved a device keeps
+ * the key it always had and no real device id can collide with it (`resolved` is never "auto").
+ */
 export function npuAssistKey(
   options: Pick<
     NpuTrainingAssistOptions,
-    "evalEnabled" | "qat" | "requested"
+    "evalEnabled" | "qat" | "requested" | "primaryTargetId"
   > = {},
 ): string {
-  const { evalEnabled = false, qat = false, requested = "auto" } = options;
-  return `${requested}|${evalEnabled}|${qat}`;
+  const {
+    evalEnabled = false,
+    qat = false,
+    requested = "auto",
+    primaryTargetId = "auto",
+  } = options;
+  const base = `${requested}|${evalEnabled}|${qat}`;
+  return primaryTargetId === "auto" ? base : `${base}|${primaryTargetId}`;
 }
 
 export async function getNpuTrainingAssist(

@@ -33,7 +33,9 @@ CACHE_ENTRIES = 64
 _FILE_HASHES = SignatureCache(max_entries = CACHE_ENTRIES)
 
 # Whole-tree hash entries, keyed on (root, directory_signature). This is what
-# makes a second Start over an untouched dataset cost one stat walk.
+# makes a second Start over an untouched dataset cost one stat walk. It memoizes
+# answers; it does not coalesce two Starts that arrive at once, which just do the
+# same work twice (and store the same value twice).
 _TREE_ENTRIES = SignatureCache(max_entries = CACHE_ENTRIES)
 
 
@@ -66,11 +68,6 @@ def _sha256_file(path: Path) -> str:
                 break
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _sha256_file_stable(path: Path) -> str:
-    """The file's sha256, memoized on its metadata and never on a torn read."""
-    return _file_digest(path)[0]
 
 
 def _size_of(signature: str) -> int:
@@ -332,11 +329,12 @@ def fingerprint_tokenizer(source: Optional[str]) -> dict[str, Any]:
     entries = []
     try:
         for file in files:
+            sha256, size = _file_digest(file)
             entries.append(
                 {
                     "path": file.name,
-                    "size_bytes": file.stat().st_size,
-                    "sha256": _sha256_file_stable(file),
+                    "size_bytes": size,
+                    "sha256": sha256,
                 }
             )
     except OSError as error:

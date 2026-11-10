@@ -13,6 +13,11 @@ export interface UseNpuTrainingAssistOptions {
   evalEnabled?: boolean;
   qat?: boolean;
   requested?: NpuAssistRequested;
+  /**
+   * The device the run would use, or "auto" when none is resolved. The backend's answer describes
+   * that device, so it is part of the cache key only -- it is never sent as a request parameter.
+   */
+  primaryTargetId?: string;
   active?: boolean;
 }
 
@@ -110,9 +115,13 @@ export function useNpuTrainingAssist(
     evalEnabled = false,
     qat = false,
     requested = "auto",
+    primaryTargetId = "auto",
     active = true,
   } = options;
-  const key = npuAssistKey({ evalEnabled, qat, requested });
+  // The device is in the key, so switching it asks again instead of serving the sentence the
+  // backend wrote for the device the run just moved away from. `acquire` below deliberately gets
+  // only the request fields: the device must not reach the query string.
+  const key = npuAssistKey({ evalEnabled, qat, requested, primaryTargetId });
   const [state, setState] = useState<AssistState | null>(null);
   // A refresh asks for the same key again, so it needs its own reason to run.
   const [reload, setReload] = useState(0);

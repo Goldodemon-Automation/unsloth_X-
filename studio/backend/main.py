@@ -1137,6 +1137,12 @@ logger = LogConfig.setup_logging(
 
 app.add_middleware(LoggingMiddleware)
 
+# Off unless UNSLOTH_TRUSTED_HOSTS is set (see the module docstring), but registered here so the
+# check runs before routing. Later middleware wraps this one, so a 400 still gets security headers.
+from utils.trusted_hosts import TrustedHostsMiddleware  # noqa: E402
+
+app.add_middleware(TrustedHostsMiddleware)
+
 if os.environ.get("UNSLOTH_STUDIO_MCP_TOKEN", "").strip():
     logger.warning(
         "UNSLOTH_STUDIO_MCP_TOKEN is no longer used and /mcp refuses it. "

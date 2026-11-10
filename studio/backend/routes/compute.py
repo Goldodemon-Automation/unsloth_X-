@@ -238,10 +238,18 @@ def _assist_inputs() -> tuple[dict, TrainingTarget | None]:
 
     Both come from `_cached_probe_state()`, so the preview's `capability` is the same measured answer
     `/targets` publishes as `npu` rather than a second NPU detection pass, and the device comes from
-    `_resolve_primary()`, so it is the device the picker is showing. Returns the target as None if the
-    registry cannot answer at all, which the route words as the CPU: the one device every host has.
+    `_resolve_primary()`, so it is the device the picker is showing.
+
+    A machine this route cannot probe costs the card its facts, not the card itself: the capability read
+    falls back to its own stand-in and the primary device comes back None, which the route words as the
+    CPU -- the one device every installation has. `/targets` answers the same failure with a 500 because
+    it has a page to render; a preview has nothing to fail about.
     """
-    probe, cap, _gpu_runtime = _cached_probe_state()
+    try:
+        probe, cap, _gpu_runtime = _cached_probe_state()
+    except Exception as exc:  # noqa: BLE001 - a probe that raises still leaves the guarded capability
+        logger.debug("Compute probe unavailable for the assist plan: %s", exc)
+        return _npu_capability(), None
     try:
         return cap, _resolve_primary(probe)[1]
     except Exception as exc:  # noqa: BLE001 - a plan is still answerable without a primary device

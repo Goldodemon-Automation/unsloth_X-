@@ -2,12 +2,23 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   type NpuAssistRequested,
   type NpuTrainingAssist,
   assistRefusalNote,
   assistSummaryLines,
 } from "./npu-training-assist";
+
+/**
+ * The panel's card surface, written as one literal here and in `npu-setup-notice.tsx`.
+ * `tests/npu-panel-consistency.test.ts` fails if the two stop matching: the notice and this
+ * card sit on the same screens, so one of them aging apart reads as a bug in the panel.
+ * Tokens only, so the card takes the theme instead of assuming a light one.
+ */
+const CARD_CLASS = "rounded-lg border border-border/60 bg-muted/50 px-2.5 py-3";
+/** One focus ring for every button in the panel, visible on keyboard focus in both themes. */
+const FOCUS_RING_CLASS = "focus-visible:ring-2 focus-visible:ring-ring";
 
 export interface NpuTrainingCardProps {
   assist: NpuTrainingAssist | null;
@@ -36,15 +47,22 @@ export function NpuTrainingCard({
 
   return (
     <section
-      className="flex flex-col gap-2 rounded-lg bg-muted/50 px-2.5 py-3 text-xs"
+      className={cn("flex flex-col gap-2 text-xs", CARD_CLASS)}
       aria-busy={loading}
     >
       <h3 className="text-sm font-medium text-foreground">
         NPU acceleration for training
       </h3>
-      {error ? <p className="text-destructive">{error}</p> : null}
+      {error ? (
+        <p role="alert" className="text-destructive">
+          {error}
+        </p>
+      ) : null}
       {!error && loading && lines.length === 0 ? (
-        <p className="text-muted-foreground">Checking your NPU…</p>
+        // biome-ignore lint/a11y/useSemanticElements: a live status line, not a form result.
+        <p role="status" className="text-muted-foreground">
+          Checking your NPU…
+        </p>
       ) : null}
       {!error && lines.length > 0 ? (
         <div className="flex flex-col gap-1">
@@ -70,6 +88,7 @@ export function NpuTrainingCard({
           <Button
             size="sm"
             variant={enabled ? "default" : "outline"}
+            className={FOCUS_RING_CLASS}
             aria-pressed={enabled}
             disabled={loading}
             onClick={() => onRequest?.("assist")}
@@ -79,6 +98,7 @@ export function NpuTrainingCard({
           <Button
             size="sm"
             variant={enabled ? "outline" : "default"}
+            className={FOCUS_RING_CLASS}
             aria-pressed={!enabled}
             disabled={loading}
             onClick={() => onRequest?.("off")}

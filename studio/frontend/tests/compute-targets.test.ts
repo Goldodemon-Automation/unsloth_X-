@@ -437,7 +437,7 @@ test("the notice says what it is doing, and offers a way back", () => {
   assert.deepEqual(retries, [1]);
 });
 
-test("retry clears a cached error and asks the backend again", async () => {
+test("retry asks the backend again and clears the error only on success", async () => {
   const body = targetsBody();
   const { hooks, pending, published } = targetsHook();
   const first = hooks.useComputeTargets(false);
@@ -454,13 +454,13 @@ test("retry clears a cached error and asks the backend again", async () => {
 
   failed.retry();
 
-  // The cached failure is gone before the fresh answer lands, so the surface shows "checking"
-  // rather than a sticky error whose button appears to do nothing.
+  // The failure outranks the retry in flight: the message and its button stay put while the
+  // fresh probe runs, and only the answer clears them.
   const retrying = hooks.useComputeTargets(false);
-  assert.equal(retrying.error, null);
+  assert.match(retrying.error ?? "", UNREACHABLE);
   assert.equal(retrying.loading, true);
   assert.equal(pending.length, 2);
-  assert.equal(published.at(-1)?.error ?? null, null);
+  assert.match(published.at(-1)?.error ?? "", UNREACHABLE);
   assert.equal(published.at(-1)?.loading, true);
 
   pending[1].resolve(Response.json(body));
@@ -497,6 +497,131 @@ test("a retry takes its own answer, not the probe it bypassed", async () => {
 
   const after = hooks.useComputeTargets(false);
   assert.deepEqual(after.data, body);
+  assert.equal(after.error, null);
+  assert.equal(after.loading, false);
+});
+
+// ---------------------------------------------------------------------------
+// The review's three device-card states: a first paint before any probe, a retry
+// that must not flash back to "checking", and a pick that must not keep the
+// previous device's numbers.
+
+test("a hook with no probe yet reports loading, not a blank card", () => {
+  const { hooks } = targetsHook();
+  // The first render lands before the effect can start a probe, and an inactive hook never
+  // starts one at all: both must still paint the notice's "checking" line instead of nothing.
+  const before = hooks.useComputeTargets(true);
+  assert.equal(before.data, null);
+  assert.equal(before.error, null);
+  assert.equal(before.loading, true);
+  assert.equal(
+    notice.noticeState({
+      error: before.error,
+      loading: before.loading,
+      hasData: before.data !== null,
+    }),
+    "loading",
+  );
+
+  const inactive = hooks.useComputeTargets(false);
+  assert.equal(inactive.data, null);
+  assert.equal(inactive.error, null);
+  assert.equal(inactive.loading, true);
+  assert.equal(
+    notice.noticeState({
+      error: inactive.error,
+      loading: inactive.loading,
+      hasData: inactive.data !== null,
+    }),
+    "loading",
+  );
+});
+
+test("a retry keeps the failure on screen until its probe settles", async () => {
+  const { hooks, pending, published } = targetsHook();
+  const first = hooks.useComputeTargets(false);
+  first.refresh();
+  pending[0].reject(new TypeError("Failed to fetch"));
+  await settled();
+
+  hooks.useComputeTargets(false).retry();
+
+  // Mid-flight the failure still outranks the retry: the notice keeps its message and its
+  // button instead of flashing back to "checking".
+  const retrying = hooks.useComputeTargets(false);
+  assert.match(retrying.error ?? "", UNREACHABLE);
+  assert.equal(retrying.loading, true);
+  assert.equal(
+    notice.noticeState({
+      error: retrying.error,
+      loading: retrying.loading,
+      hasData: retrying.data !== null,
+    }),
+    "error",
+  );
+  assert.match(published.at(-1)?.error ?? "", UNREACHABLE);
+
+  // A probe that fails again replaces the message; the surface never falls back to "checking".
+  pending[1].resolve(Response.json({ detail: "Disk full" }, { status: 500 }));
+  await settled();
+  const failed = hooks.useComputeTargets(false);
+  assert.equal(failed.error, "Disk full");
+  assert.equal(failed.loading, false);
+});
+
+test("choosing a target re-reads the payload so budget and npu follow it", async () => {
+  const gpuBody: ComputeTargetsResponse = {
+    ...targetsBody(),
+    targets: [
+      CPU_TARGET,
+      target({ id: "dgpu", kind: "dgpu", name: "Radeon RX 7900 XTX" }),
+    ],
+    resolved: "dgpu",
+    budget: {
+      integrated: false,
+      dedicated_bytes: 25769803776,
+      system_memory_bytes: 68719476736,
+      shared_fraction: 0.6,
+      usable_bytes: 41231686041,
+      notes: "This GPU shares system memory.",
+    },
+    npu: npu("assist"),
+  };
+  const cpuBody: ComputeTargetsResponse = {
+    ...targetsBody(),
+    resolved: "cpu",
+    requested: "cpu",
+    npu: { ...npu("unavailable"), notes: "The NPU cannot assist a CPU run." },
+  };
+  const { hooks, pending } = targetsHook();
+  const first = hooks.useComputeTargets(false);
+  first.refresh();
+  pending[0].resolve(Response.json(gpuBody));
+  await settled();
+  assert.equal(
+    hooks.useComputeTargets(false).data?.budget.notes,
+    gpuBody.budget.notes,
+  );
+
+  const pick = hooks.useComputeTargets(false).choose("cpu");
+  await settled();
+  assert.equal(pending.length, 2); // the POST
+  pending[1].resolve(
+    Response.json({ target: CPU_TARGET, resolved: "cpu", requested: "cpu" }),
+  );
+  await settled();
+  // The POST reply carries no budget or NPU capability, so the hook re-reads the whole payload.
+  assert.equal(pending.length, 3);
+  pending[2].resolve(Response.json(cpuBody));
+  assert.equal(await pick, true);
+
+  const after = hooks.useComputeTargets(false);
+  assert.equal(after.data?.resolved, "cpu");
+  // The card must not keep printing the GPU's shared-memory sentence under a CPU pick.
+  assert.equal(after.data?.budget.notes, cpuBody.budget.notes);
+  assert.notEqual(after.data?.budget.notes, gpuBody.budget.notes);
+  assert.deepEqual(after.data?.npu, cpuBody.npu);
+  assert.deepEqual(after.data, cpuBody);
   assert.equal(after.error, null);
   assert.equal(after.loading, false);
 });

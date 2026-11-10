@@ -13,6 +13,7 @@ never contribute a number. Counting ``_sha256_file`` calls is the whole point --
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -169,6 +170,25 @@ def test_a_torn_read_leaves_no_memo_to_serve_later(tmp_path, monkeypatch):
     assert reread["sha256"] == report["sha256"], "the settled bytes are memoized"
 
 
+def test_the_tokenizer_on_the_same_start_path_is_hashed_once(tmp_path, counter):
+    """The tokenizer files are read with the same memo, so a second Start skips them."""
+    snapshot = tmp_path / "model"
+    _write(snapshot / "tokenizer.json", '{"model": {}}', _FIRST_STAMP_NS)
+    _write(snapshot / "tokenizer_config.json", "{}", _FIRST_STAMP_NS)
+
+    first = dataset_fingerprint.fingerprint_tokenizer(str(snapshot))
+    second = dataset_fingerprint.fingerprint_tokenizer(str(snapshot))
+
+    assert first["status"] == "hashed"
+    assert len(counter) == 2, "one read per tokenizer file, once"
+    assert first["sha256"] == second["sha256"]
+
+    _write(snapshot / "tokenizer_config.json", '{"a": 1}', _LATER_STAMP_NS)
+    changed = dataset_fingerprint.fingerprint_tokenizer(str(snapshot))
+    assert changed["sha256"] != first["sha256"]
+    assert [path.name for path in counter[2:]] == ["tokenizer_config.json"]
+
+
 def test_unavailable_is_never_cached_as_a_hash(tmp_path, counter):
     """A Hub/streaming or missing dataset stays unknown, with its reason."""
     streaming = dataset_fingerprint.fingerprint_source("org/dataset", streaming = True)
@@ -217,6 +237,28 @@ def test_a_degraded_tree_signature_is_not_used_as_a_cache_key(tmp_path, monkeypa
     assert len(counter) == 3, "but no byte was read twice"
 
 
+def test_a_tree_that_changes_mid_walk_is_not_memoized(tmp_path, monkeypatch, counter):
+    """The same before/after rule as a single file, one level up.
+
+    An entry set assembled while the tree was moving describes no tree that ever
+    existed, so it is answered but not stored: the next Start re-walks.
+    """
+    root = _dataset(tmp_path / "dataset")
+    walked = []
+
+    def moving(path, **kwargs):
+        walked.append(path)
+        return f"signature-{len(walked)}"
+
+    monkeypatch.setattr(dataset_fingerprint, "directory_signature", moving)
+    report = dataset_fingerprint.fingerprint_source(str(root))
+
+    assert report["status"] == "hashed", "a moving tree is still answerable"
+    assert len(counter) == 3
+    assert len(walked) == 2, "the signature is taken again after the hashes"
+    assert len(dataset_fingerprint._TREE_ENTRIES) == 0
+
+
 def test_the_cache_never_files_a_hash_under_an_absent_signature(tmp_path, counter):
     """A path that cannot be stat'd says nothing about content, so it says nothing."""
     dataset = _write(tmp_path / "train.jsonl", "x", _FIRST_STAMP_NS)
@@ -255,6 +297,31 @@ def test_invalidate_drops_one_path_or_all_of_them():
 
     cache.invalidate()
     assert len(cache) == 0
+
+
+def test_the_cache_is_thread_safe_under_a_shared_bound():
+    """Concurrent get/put/invalidate keep the bound and never raise."""
+    cache = SignatureCache(max_entries = 4)
+    failures: list[BaseException] = []
+
+    def worker(index: int) -> None:
+        try:
+            for step in range(50):
+                cache.put(f"p{index}-{step % 3}", str(step), (index, step))
+                cache.get(f"p{index}-{step % 3}", str(step))
+                if step % 7 == 0:
+                    cache.invalidate(f"p{index}-0")
+        except BaseException as error:  # noqa: BLE001 - the assert reports it
+            failures.append(error)
+
+    threads = [threading.Thread(target = worker, args = (index,)) for index in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert failures == []
+    assert len(cache) <= 4
 
 
 def test_the_shipped_caches_are_bounded_and_forget_on_demand(tmp_path):
