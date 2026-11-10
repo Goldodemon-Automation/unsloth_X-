@@ -160,6 +160,7 @@ From the repository root: `pre-commit run --all-files` (Ruff and the repo's lint
 | [docs/labs.md](docs/labs.md) | The Labs switch, the experiment registry, Artifacts and Pipelines |
 | [docs/simulated-training.md](docs/simulated-training.md) | The Debugging simulator that runs a job with no hardware behind it |
 | [docs/compute-targets.md](docs/compute-targets.md) | CPU, integrated-GPU and NPU training: the registry, the shared-memory budget, the environment each target sets, and the NPU's real limits |
+| [docs/ui-performance.md](docs/ui-performance.md) | The frontend perf layer: how to turn it on, what each module measures, the bounds that keep it from leaking, and how to answer "is this page slow" with a number |
 | [docs/theming.md](docs/theming.md) | Palettes, accent tokens, changing the UI color |
 | [docs/README.md](docs/README.md) | Repository map and the local CRLF trap |
 
