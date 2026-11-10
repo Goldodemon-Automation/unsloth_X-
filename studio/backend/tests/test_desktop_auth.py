@@ -823,6 +823,24 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     whisper_module.router = APIRouter()
     npu_module = ModuleType("routes.npu")
     npu_module.router = APIRouter()
+    # main.py imports this one too; the guard below fails if a new submodule is not stubbed, which is
+    # exactly how a real import would otherwise slip past this test.
+    compute_module = ModuleType("routes.compute")
+    compute_module.router = APIRouter()
+    # main.py reaches this one with `import routes.browser as _browser_routes`, which the guard below
+    # did not look at until it grew the second pattern: a plain `import` needs the stub just as much.
+    browser_module = ModuleType("routes.browser")
+    browser_module.router = APIRouter()
+    # The health route names these two in its frame-policy paths, so the stub carries them.
+    browser_module.BROWSER_FRAME_PATH = "/api/browser/frame"
+    browser_module.BROWSER_PRINT_PATH = "/api/browser/print"
+    # The CORS middleware reads this list, so an empty stub would silently change the response the
+    # test inspects. These mirror routes/browser.py's own constants.
+    browser_module.EXPOSED_HEADERS = (
+        "X-Unsloth-Browser-Kind",
+        "X-Unsloth-Browser-Url",
+        "X-Unsloth-Browser-Filename",
+    )
     profile_stats_module = ModuleType("routes.profile_stats")
     profile_stats_module.router = APIRouter()
     accounts_module = ModuleType("routes.accounts")
@@ -862,6 +880,8 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes.preview", preview_module)
     monkeypatch.setitem(sys.modules, "routes.whisper", whisper_module)
     monkeypatch.setitem(sys.modules, "routes.npu", npu_module)
+    monkeypatch.setitem(sys.modules, "routes.compute", compute_module)
+    monkeypatch.setitem(sys.modules, "routes.browser", browser_module)
     monkeypatch.setitem(sys.modules, "routes.profile_stats", profile_stats_module)
     monkeypatch.setitem(sys.modules, "routes.accounts", accounts_module)
     monkeypatch.setitem(sys.modules, "routes.library", library_module)
@@ -1134,6 +1154,9 @@ def test_the_router_stub_covers_every_router_main_imports():
     main_src = (backend / "main.py").read_text(encoding = "utf-8")
     own_src = inspect.getsource(test_health_response_reports_desktop_capability_fields)
     submodules = set(re.findall(r"^from routes\.(\w+) import", main_src, re.M))
+    # `import routes.browser as _browser_routes` is the same dependency in another spelling, and it
+    # was the one this guard could not see.
+    submodules |= set(re.findall(r"^import routes\.(\w+) as", main_src, re.M))
     assert submodules, "main.py imports no routes submodule; re-derive this"
     registered = set(re.findall(r'setitem\(\s*sys\.modules,\s*"routes\.(\w+)"', own_src))
     assert registered, "the health test registered no routes submodule; re-derive this"

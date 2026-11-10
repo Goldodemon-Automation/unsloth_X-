@@ -9,6 +9,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 import base64
 import importlib.util
 import ipaddress
+import math
 import os
 import shlex
 import sqlite3
@@ -50,6 +51,7 @@ from auth.authentication import (
     refresh_access_token,
     security,
 )
+from auth.rate_limit import client_key, token_attempts
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -620,8 +622,18 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
 
 # Sync def: rotation is one transaction, so a busy auth.db wait must not freeze the event loop.
 @router.post("/refresh", response_model = Token)
-def refresh(payload: RefreshTokenRequest) -> Token:
-    """Exchange a refresh token for a new access+refresh pair (single-use)."""
+def refresh(payload: RefreshTokenRequest, request: Request) -> Token:
+    """Exchange a refresh token for a new access+refresh pair (single-use). Brute-force limited:
+    an unauthenticated guess costs one rotation attempt against the store."""
+    key = client_key(request)
+    allowed, retry_after = token_attempts.allow(key)
+    if not allowed:
+        wait = int(math.ceil(retry_after))
+        raise HTTPException(
+            status_code = status.HTTP_429_TOO_MANY_REQUESTS,
+            detail = f"Too many failed attempts. Try again in {wait} seconds.",
+            headers = {"Retry-After": str(wait)},
+        )
     new_refresh_token, new_expires_at = new_refresh_token_value()
     try:
         rotated = storage.rotate_refresh_token(
@@ -637,10 +649,12 @@ def refresh(payload: RefreshTokenRequest) -> Token:
             headers = {"Retry-After": "2"},
         )
     if rotated is None:
+        token_attempts.record_failure(key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid or expired refresh token",
         )
+    token_attempts.record_success(key)
     return Token(
         access_token = create_access_token(
             subject = rotated.username, desktop = rotated.is_desktop, secret = rotated.jwt_secret
@@ -730,6 +744,15 @@ async def change_password(
     _own_credential: None = Depends(_require_a_credential_of_its_own("Changing passwords")),
 ) -> Token:
     """Allow the authenticated user to replace the default password."""
+    key = client_key(request)
+    allowed, retry_after = token_attempts.allow(key)
+    if not allowed:
+        wait = int(math.ceil(retry_after))
+        raise HTTPException(
+            status_code = status.HTTP_429_TOO_MANY_REQUESTS,
+            detail = f"Too many failed attempts. Try again in {wait} seconds.",
+            headers = {"Retry-After": str(wait)},
+        )
     record = storage.get_user_and_secret(current_subject)
     if record is None:
         raise HTTPException(
@@ -739,6 +762,7 @@ async def change_password(
 
     salt, pwd_hash, _jwt_secret, _must_change_password = record
     if not hashing.verify_password(payload.current_password, salt, pwd_hash):
+        token_attempts.record_failure(key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Current password is incorrect",
@@ -788,6 +812,7 @@ async def change_password(
     refresh_token = create_refresh_token(
         subject = current_subject, desktop = is_desktop, secret = new_secret
     )
+    token_attempts.record_success(key)
     return Token(
         access_token = access_token,
         refresh_token = refresh_token,
