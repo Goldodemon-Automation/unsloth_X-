@@ -7,6 +7,10 @@ Nothing here imports a runtime: every row is answered from distribution metadata
 and PATH lookups, so the hardware section can list providers on a machine where loading a runtime
 would take seconds, fail on a missing driver, or not exist at all. Every provider is always
 returned, installed or not, because the UI shows the alternatives next to the working one.
+
+The answer changes when someone installs a runtime, which is minutes apart from the requests that
+ask for it, so the rows are cached for a short TTL: six PATH walks per call is tens of
+milliseconds of stat calls that a request path cannot afford to repeat.
 """
 
 from __future__ import annotations
@@ -16,6 +20,8 @@ import importlib.util
 import os
 import shutil
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -187,15 +193,81 @@ _PROBES = {
 }
 
 
-def npu_runtime_providers() -> list[dict[str, Any]]:
-    """Every provider row, installed or not. A probe that raises reports just its own row."""
+# Rows are cached for a minute: long enough that a page load or a status poll costs nothing,
+# short enough that a runtime installed under the running server is noticed without a restart.
+_CACHE_TTL_SECONDS = 60.0
+
+# One lock, held across the probe, so a burst of concurrent requests pays for one probe rather
+# than one each; the probes are local metadata reads, so the hold is measured in milliseconds.
+_cache_lock = threading.Lock()
+# (fingerprint, expires_at, rows) of the last complete probe, or None when nothing is cached.
+_cache: Optional[tuple[tuple[Any, ...], float, tuple[dict[str, Any], ...]]] = None
+
+
+def _environment_fingerprint() -> tuple[Any, ...]:
+    """A cheap description of everything the probes read that can change between two calls.
+
+    The probe and helper functions go into the stamp as objects rather than as addresses, which
+    also keeps them alive: swapping one out -- a test stub, a plugin -- must never be answered
+    from a cache filled before the swap. Distribution metadata is the one input left out, since
+    reading it is most of what a probe costs; the TTL is what eventually notices an install.
+    """
+    return (
+        sys.platform,
+        os.environ.get("PATH"),
+        os.environ.get("PATHEXT"),
+        os.environ.get("QNN_SDK_ROOT"),
+        _distribution,
+        _module_present,
+        _spec_origin,
+        _qnn_htp_libraries,
+        shutil.which,
+        tuple(_PROBES.get(name) for name in PROVIDERS),
+    )
+
+
+def _probe_providers() -> tuple[list[dict[str, Any]], bool]:
+    """Probe every provider; the flag says whether every probe answered without raising."""
     rows: list[dict[str, Any]] = []
+    complete = True
     for name in PROVIDERS:
         try:
             rows.append(_PROBES[name]())
         except Exception as exc:  # noqa: BLE001 -- one broken install must not blank the matrix
+            complete = False
             rows.append(_entry(name, False, None, f"probe failed: {exc}"))
-    return rows
+    return rows, complete
+
+
+def npu_runtime_providers() -> list[dict[str, Any]]:
+    """Every provider row, installed or not. A probe that raises reports just its own row.
+
+    Rows are served from a short-lived cache, but never from a stale one: a caller whose
+    environment, stubs or platform differ from the cached probe gets a fresh answer, and rows
+    come back as fresh dicts every time so editing them cannot edit the cache. A probe that
+    raised is not cached at all, so a transient failure cannot stick for the whole TTL.
+    """
+    global _cache
+    fingerprint = _environment_fingerprint()
+    with _cache_lock:
+        cached = _cache
+        if cached is not None:
+            cached_fingerprint, expires_at, cached_rows = cached
+            if cached_fingerprint == fingerprint and time.monotonic() < expires_at:
+                return [dict(row) for row in cached_rows]
+        rows, complete = _probe_providers()
+        if complete:
+            _cache = (fingerprint, time.monotonic() + _CACHE_TTL_SECONDS, tuple(rows))
+        else:
+            _cache = None
+    return [dict(row) for row in rows]
+
+
+def invalidate() -> None:
+    """Forget the cached rows, so the next call probes the host again."""
+    global _cache
+    with _cache_lock:
+        _cache = None
 
 
 def provider_for_vendor(

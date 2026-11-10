@@ -73,6 +73,7 @@ import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useTypeToActivate } from "@/hooks/use-type-to-activate";
 import { type TranslationKey, useT } from "@/i18n";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
+import { markRouteCommit, markRouteStart } from "@/lib/perf/route-timing";
 import { hydratePins } from "@/lib/pins-mirror";
 import {
   Outlet,
@@ -386,6 +387,16 @@ const DEFAULT_DOCUMENT_TITLE = "Unsloth";
 function RootLayout() {
   const t = useT();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  // Start the route span during render, before the outlet renders, and close
+  // it from the effect after the new content has committed.
+  const routeStartPath = useRef<string | null>(null);
+  if (routeStartPath.current !== pathname) {
+    routeStartPath.current = pathname;
+    markRouteStart(pathname);
+  }
+  useEffect(() => {
+    markRouteCommit(pathname);
+  }, [pathname]);
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
   const routeOwnsReloadReadiness =
     pathname === "/hub" ||
@@ -408,8 +419,7 @@ function RootLayout() {
   const simulatedTraining = useDebugTrainingSimulation();
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const cpuCoraHost = usePlatformStore((s) => s.isCpuTrainingHost());
-  const trainBlocked =
-    chatOnlyMeasured && !simulatedTraining && !cpuCoraHost;
+  const trainBlocked = chatOnlyMeasured && !simulatedTraining && !cpuCoraHost;
   // Video is the other row the sidebar grays out, on the two verdicts its pipelines cannot run on
   // at all. Same hint the row reads, so the two cannot disagree about which hosts they are.
   const videoDisabled =

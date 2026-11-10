@@ -17,8 +17,9 @@ import {
   useTrainingRuntimeStore,
 } from "@/features/training";
 import { useT } from "@/i18n";
+import { markRouteCommit, markRouteStart } from "@/lib/perf/route-timing";
 import { LibrariesIcon } from "@hugeicons/core-free-icons";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { ChevronLeftIcon } from "lucide-react";
 import { type ReactElement, useEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -49,6 +50,16 @@ import { TrainingWizard } from "./wizard/training-wizard";
 export function StudioPage(): ReactElement {
   const signalReady = useAppShellReadySignal();
   const t = useT();
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  // The Train page's own body span, closed after this render commits.
+  const routeStartPath = useRef<string | null>(null);
+  if (routeStartPath.current !== pathname) {
+    routeStartPath.current = pathname;
+    markRouteStart(pathname);
+  }
+  useEffect(() => {
+    markRouteCommit(pathname);
+  }, [pathname]);
   const [paramMode, setParamMode] = useParamMode();
   useTrainingRuntimeLifecycle();
   useTrainingCacheReconciliation();

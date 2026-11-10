@@ -8,7 +8,10 @@ import importlib.util
 import os
 import sys
 import threading
-from typing import MutableMapping, Optional
+from functools import lru_cache
+from typing import Iterable, MutableMapping, Optional
+
+from utils import cpu_features
 
 
 _THREAD_POOL_ENV_VARS = (
@@ -20,6 +23,13 @@ _THREAD_POOL_ENV_VARS = (
 # Every OpenBLAS worker gets its own buffer and a failed allocation kills the process (#12374); past 8 threads
 # numpy gains little on SMT siblings, so the defaults are capped and fitted to the free memory.
 _OPENBLAS_DEFAULT_MAX = 8
+# AMX-BF16 (Sapphire Rapids and newer) and the AVX512-BF16 pair (Cooper Lake / Ice Lake and newer) run
+# wide bf16 matmuls on the matrix units, where SMT siblings do add throughput, so the laptop-sized cap
+# and the SMT halving are both wrong on those hosts.
+_AMX_CLASS_DEFAULT_MAX = 32
+_AMX_BF16 = "amx_bf16"
+_AVX512_BF16 = "avx512_bf16"
+_AVX512_F = "avx512f"
 _OPENBLAS_THREAD_COST = 32 << 20  # numpy's buffer
 _OPENBLAS_MEMORY_SHARE = 0.1
 _ROCM_OPENBLAS_THREAD_COST = 128 << 20  # rocm-openblas.dll keeps the stock 128 MB buffer
@@ -44,9 +54,53 @@ def _usable_cpus() -> int:
 
 
 def default_openblas_threads() -> int:
-    """About one thread per physical core, at most 8, fewer when memory is short."""
-    threads = max(1, min(_OPENBLAS_DEFAULT_MAX, _usable_cpus() // 2))
+    """About one thread per physical core, at most 8; AMX-class hosts get one per CPU, at most 32.
+
+    The memory-fit clamp applies either way: it is what stops a small machine from over-threading.
+    """
+    cpus = _usable_cpus()
+    if _host_is_amx_class():
+        # AMX-class: no SMT halving, because the wide bf16 matmuls scale with the siblings.
+        threads = max(1, min(_AMX_CLASS_DEFAULT_MAX, cpus))
+    else:
+        threads = max(1, min(_OPENBLAS_DEFAULT_MAX, cpus // 2))
     return _threads_that_fit(threads, _OPENBLAS_THREAD_COST)
+
+
+def _is_amx_class(flags: Optional[Iterable[str]]) -> bool:
+    """Whether these CPU feature words describe an AMX-class CPU.
+
+    True for AMX-BF16 (Sapphire Rapids, 4th gen Xeon Scalable, and newer) and for AVX512-BF16
+    together with AVX512F (Cooper Lake / Ice Lake, and newer). AVX512-BF16 alone is False: without
+    AVX512F those instructions cannot execute. An empty or malformed flag set is False, because an
+    unmeasurable CPU must keep the ordinary default.
+    """
+    if not flags:
+        return False
+    if isinstance(flags, str):
+        words = {word.lower() for word in flags.split()}
+    else:
+        try:
+            words = {str(word).lower() for word in flags}
+        except TypeError:  # not iterable: an unmeasurable CPU keeps the ordinary default
+            return False
+    if _AMX_BF16 in words:
+        return True
+    return _AVX512_BF16 in words and _AVX512_F in words
+
+
+@lru_cache(maxsize = 1)
+def _host_is_amx_class() -> bool:
+    """Whether this host's CPU is AMX-class, measured once.
+
+    The feature words come from ``utils.cpu_features``, which reads ``/proc/cpuinfo`` on Linux only.
+    Windows and macOS have no such file, so they answer "unmeasurable" and keep the old default.
+    """
+    try:
+        flags = cpu_features.cpu_flags()
+    except Exception:  # noqa: BLE001 -- an unreadable CPU means the old default, never a crash
+        return False
+    return _is_amx_class(flags)
 
 
 def _openblas_memory_headroom() -> Optional[int]:
