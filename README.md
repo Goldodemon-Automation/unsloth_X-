@@ -6,7 +6,7 @@ The upstream project is the fastest way to fine-tune open models on one GPU. Thi
 
 > **Branch:** `x8-main` is the branch this fork is developed on. `main` mirrors the imported upstream tree.
 >
-> **Releases:** [v1.0.0 … v1.2.2](https://github.com/Goldodemon-Automation/unsloth_X-/releases) — see [Releases](#releases) below.
+> **Releases:** [v1.0.0 … v1.2.3](https://github.com/Goldodemon-Automation/unsloth_X-/releases) — see [Releases](#releases) below.
 
 ---
 
@@ -178,6 +178,7 @@ This fork's own release series starts at **v1**, and each release carries notes 
 | [`v1.2.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.0) | The UI pass: a "what can this machine do" card for the device decision, and a perf layer (`src/lib/perf/`) that measures marks, long tasks and interaction latency on demand. |
 | [`v1.2.1`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.1) | The first change the perf layer paid for: a windowed, memoised run history; plus the corrections an audit of the release notes against the code turned up. |
 | [`v1.2.2`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.2) | The review fixes: the device pin now reaches the loader, an unreadable GPU is no longer called usable, a CPU is budgeted against free RAM, the polled route caches its probe, and the target write is owner-gated. |
+| [`v1.2.3`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.3) | NPU refusal messages name the right vendor: an Intel machine is no longer told that no AMD NPU was found. |
 
 Releases are tags on `x8-main`. They are independent of the wheel version in `unsloth/_version.py`,
 which tracks the upstream package this fork imports.

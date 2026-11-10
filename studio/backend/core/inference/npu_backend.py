@@ -495,16 +495,32 @@ class LemonadeNpuBackend:
     def _require_supported(self) -> None:
         hardware = self.hardware()
         if not hardware.get("present"):
-            raise NpuError("No AMD Ryzen AI NPU was found on this machine.")
+            # Vendor-neutral since the matrix landed: an Intel or Qualcomm machine was being told
+            # that no *AMD* NPU was found, which reads as a wrong diagnosis rather than a limitation.
+            raise NpuError("No NPU was found on this machine.")
         if hardware.get("family") == "XDNA2" and hardware.get("enabled") is False:
             raise NpuError(
                 "The AMD NPU is off by default. Start Unsloth Studio with "
                 "UNSLOTH_STUDIO_ENABLE_NPU=1 to use it."
             )
         if not hardware.get("supported"):
+            vendor = str(hardware.get("vendor") or "").strip().lower()
+            family = str(hardware.get("family") or "").strip()
+            if vendor and vendor != "amd":
+                # The runtime pair behind this backend only drives AMD XDNA 2, and saying so beats
+                # claiming the device is an unsupported XDNA generation.
+                raise NpuError(
+                    "The NPU runtime (Lemonade and FastFlowLM) can only drive an AMD XDNA 2 NPU "
+                    f"(Ryzen AI 300/400 or Ryzen AI Max); this machine's NPU is {family or vendor}."
+                )
+            if family == "XDNA1":
+                raise NpuError(
+                    "FastFlowLM needs an XDNA 2 NPU (Ryzen AI 300/400 or Ryzen AI Max); "
+                    "this NPU is XDNA 1."
+                )
             raise NpuError(
-                "FastFlowLM needs an XDNA 2 NPU (Ryzen AI 300/400 or Ryzen AI Max); "
-                "this NPU is XDNA 1."
+                "This NPU is not one the installed runtime can drive. FastFlowLM needs an XDNA 2 "
+                "NPU (Ryzen AI 300/400 or Ryzen AI Max)."
             )
 
     def _ensure_running(self) -> LemonadeServer:

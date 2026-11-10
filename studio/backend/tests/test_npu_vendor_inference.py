@@ -220,3 +220,39 @@ def test_the_microsoft_entry_matches_a_vendor_device_entry():
         "vendor": "microsoft",
         "reason": "not_pci_visible",
     }
+
+def _refusal(tmp_path, monkeypatch, hardware: dict) -> str:
+    """The message `_require_supported()` raises for a given `hardware()` answer."""
+    backend = nb.LemonadeNpuBackend(root = tmp_path)
+    monkeypatch.setattr(backend, "hardware", lambda: hardware)
+    with pytest.raises(nb.NpuError) as caught:
+        backend._require_supported()
+    return str(caught.value)
+
+
+def test_a_non_amd_npu_is_told_what_the_runtime_needs(tmp_path, monkeypatch):
+    """The refusal read "No AMD Ryzen AI NPU was found" on an Intel machine: a wrong diagnosis rather
+    than a limitation, and one a user would act on by suspecting their AMD driver."""
+    message = _refusal(
+        tmp_path,
+        monkeypatch,
+        {
+            "present": True,
+            "supported": False,
+            "enabled": True,
+            "vendor": "intel",
+            "family": "NPU4",
+            "name": "Intel NPU",
+        },
+    )
+
+    assert "AMD" in message
+    assert "NPU4" in message
+    assert "Ryzen AI NPU was found" not in message
+
+
+def test_no_npu_at_all_is_reported_without_naming_a_vendor(tmp_path, monkeypatch):
+    message = _refusal(tmp_path, monkeypatch, {"present": False, "supported": False, "enabled": True})
+
+    assert "AMD" not in message
+    assert "No NPU was found" in message
