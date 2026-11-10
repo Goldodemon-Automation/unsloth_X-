@@ -276,7 +276,7 @@ function SttModelPicker({
           type="button"
           data-testid="stt-model-trigger"
           aria-label={t("settings.voice.dictation.sttModelLabel")}
-          className="border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 text-sm outline-none transition-colors"
+          className="border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 text-sm outline-none transition-colors"
         >
           <span className="truncate">{sttModelName(value)}</span>
           <HugeiconsIcon
@@ -340,7 +340,7 @@ function SttModelPicker({
                   type="button"
                   onClick={() => void selectModel(model)}
                   aria-selected={model === value}
-                  className={`flex w-full items-center justify-between gap-3 px-2.5 py-1.5 text-left transition-colors hover:bg-muted ${
+                  className={`flex w-full items-center justify-between gap-3 px-2.5 py-1.5 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                     twoLines ? "rounded-[10px]" : "rounded-full"
                   } ${model === value ? "bg-accent font-medium" : ""}`}
                 >
@@ -358,7 +358,7 @@ function SttModelPicker({
                         {sttModelName(model)}
                       </span>
                       {RECOMMENDED_STT_MODELS.has(model) ? (
-                        <span className="shrink-0 rounded-full bg-emerald-500/12 px-1.5 py-px text-ui-9 font-medium text-emerald-600 dark:bg-emerald-400/15 dark:text-emerald-400">
+                        <span className="shrink-0 rounded-full bg-status-success/15 px-1.5 py-px text-ui-9 font-medium text-status-success">
                           {t("settings.voice.dictation.sttRecommended")}
                         </span>
                       ) : null}
@@ -1254,7 +1254,7 @@ export function VoiceTab() {
                     ) : sttPhase === "ready" ||
                       (effectiveSttDownloadAvailability === "downloaded" &&
                         sttPhase === "on-demand") ? (
-                      <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" />
+                      <span className="size-1.5 shrink-0 rounded-full bg-status-success" />
                     ) : effectiveSttDownloadAvailability === "error" ||
                       sttPhase === "error" ? (
                       <span className="size-1.5 shrink-0 rounded-full bg-destructive" />

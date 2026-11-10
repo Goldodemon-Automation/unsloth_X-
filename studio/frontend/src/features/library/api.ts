@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch, getAuthSessionEpoch, getAuthToken } from "@/features/auth";
+import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import { type TranslationKey, translate } from "@/i18n";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
@@ -147,7 +147,9 @@ export function updateLibraryItem(
   patch: { name?: string; favorite?: boolean; folderId?: string | null },
 ): Promise<void> {
   return inOrder(`item:${id}`, (check) =>
-    authFetch("/api/library/items", jsonInit("PATCH", { id, ...patch }), { beforeRetry: check }),
+    authFetch("/api/library/items", jsonInit("PATCH", { id, ...patch }), {
+      beforeRetry: check,
+    }),
   );
 }
 
@@ -264,7 +266,11 @@ export async function uploadLibraryFiles(
     check();
     if (folderId) form.append("folderId", folderId);
     const response = await ensureOk(
-      await authFetch("/api/library/uploads", { method: "POST", body: form }, { beforeRetry: check }),
+      await authFetch(
+        "/api/library/uploads",
+        { method: "POST", body: form },
+        { beforeRetry: check },
+      ),
     );
     ids.push(...((await response.json()) as { ids: string[] }).ids);
   }
@@ -308,9 +314,13 @@ export function updateLibraryFolder(
 
 export function deleteLibraryFolder(id: string): Promise<void> {
   return inOrder(`folder:${id}`, (check) =>
-    authFetch(`/api/library/folders/${encodeURIComponent(id)}`, { method: "DELETE" }, {
-      beforeRetry: check,
-    }),
+    authFetch(
+      `/api/library/folders/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+      {
+        beforeRetry: check,
+      },
+    ),
   );
 }
 
@@ -392,15 +402,34 @@ export async function fetchLibraryText(
   return { ...decodeNote(bytes, truncated), truncated };
 }
 
+/**
+ * `/api/library/items/download?id=…`, plus `link=…` when the server minted one.
+ *
+ * The route takes a bearer in `Authorization` or a short-lived `link=` capability, and refuses a
+ * session bearer in the query string: a bearer in a URL outlives the click in history, in a proxy's
+ * access log and in the `Referer` of whatever the file links to. Nothing here can mint the link --
+ * `routes/library.py`'s `_sign_download_link` has no route behind it yet -- so a caller that can
+ * send no header (the native save takes a URL only) has nothing to pass yet, and the header path
+ * below is the one that authorizes today.
+ */
+export function libraryDownloadPath(item: LibraryItem, link: string | null = null): string {
+  const query = new URLSearchParams({ id: item.id });
+  if (link) query.set("link", link);
+  return `/api/library/items/download?${query}`;
+}
+
 export async function libraryDownloadUrl(item: LibraryItem): Promise<string> {
-  const path = `/api/library/items/download?${new URLSearchParams({ id: item.id })}`;
+  const path = libraryDownloadPath(item);
+  // A HEAD with the bearer settles both that the item is there and that this session may read it,
+  // before the caller hands the URL to something that cannot send the header back.
   await ensureOk(await authFetch(path, { method: "HEAD" }));
-  const token = getAuthToken();
-  return apiUrl(token ? `${path}&token=${encodeURIComponent(token)}` : path);
+  return apiUrl(path);
 }
 
 export async function libraryItemFile(item: LibraryItem, maxBytes = Infinity): Promise<File> {
   const name = libraryFileName(item);
   const type = libraryFileType(name, item.textOnly ? "text/plain" : item.contentType);
-  return new File([await fetchLibraryBlob(item, type, maxBytes)], name, { type });
+  return new File([await fetchLibraryBlob(item, type, maxBytes)], name, {
+    type,
+  });
 }

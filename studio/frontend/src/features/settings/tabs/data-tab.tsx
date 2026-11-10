@@ -670,7 +670,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             type="button"
             onClick={() => setSubpage("main")}
             aria-label={t("settings.data.backToData")}
-            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <ChevronLeftIcon className="size-4 rtl:rotate-180" />
           </button>
@@ -743,7 +743,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             type="button"
             onClick={() => setSubpage("main")}
             aria-label={t("settings.data.backToData")}
-            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <ChevronLeftIcon className="size-4 rtl:rotate-180" />
           </button>
@@ -771,7 +771,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             type="button"
             onClick={() => setSubpage("main")}
             aria-label={t("settings.data.backToData")}
-            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <ChevronLeftIcon className="size-4 rtl:rotate-180" />
           </button>

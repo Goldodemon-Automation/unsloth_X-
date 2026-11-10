@@ -61,13 +61,25 @@ this file. Nothing here is aspirational — a control is either in the table bel
 
 ## Open items
 
-The Host allow-list is no longer an open item: `studio/backend/utils/trusted_hosts.py` is that control,
-opt-in and off unless `UNSLOTH_TRUSTED_HOSTS` is set, and it is described in its own section below.
+Three items were carried here, and two are cut: code in this checkout closes them, and a row that stops
+describing the code is a bug in this file.
+
+- The Host allow-list is an opt-in control now — `studio/backend/utils/trusted_hosts.py`, off unless
+  `UNSLOTH_TRUSTED_HOSTS` is set, described in its own section below.
+- The two client-IP trust models are one resolver — `studio/backend/utils/client_ip.py:152`, which
+  `studio/backend/routes/auth.py:248` delegates to, so the login buckets and the shared credential lockout
+  can no longer key on different clients. `studio/backend/tests/test_client_ip_agreement.py` pins it.
+
+What is left is the residue of the query-token finding rather than the finding itself:
 
 | Item | Why it is open | A fix touches |
 | --- | --- | --- |
-| A session bearer is accepted in a `?token=` query string. | The routes that must answer an `<img src>`, a native save dialog or a media element cannot see a header, so they read the token themselves: `studio/backend/routes/inference.py:4391` and `studio/backend/routes/library.py:363` both hand a query token to `studio/backend/auth/authentication.py:374`, which resolves it to the same subject as an `Authorization` bearer. A full session token in a URL is written to browser history, to any proxy and server access log, and to `Referer` on outbound navigation. It is not a scoped or expiring credential: it is the session. | `studio/backend/auth/authentication.py:374` and `:350` (the resolution path), the callers at `studio/backend/routes/library.py:358`, `studio/backend/routes/inference.py:4384`, `studio/backend/routes/rag.py:1176`, `studio/backend/routes/video.py:1072`, `studio/backend/routes/data_recipe/jobs.py:148`, and the frontend URLs that build them. The shape a replacement takes already exists twice in this checkout: the preview capability token (`studio/backend/utils/preview_token.py:39`) and the library stream link (`studio/backend/routes/library.py:424`), both HMAC-signed, both carrying an expiry. |
-| Two modules resolve the client IP, and they disagree. | `studio/backend/routes/auth.py:280` takes the **leftmost** `X-Forwarded-For` entry, understands the `Forwarded` header (`studio/backend/routes/auth.py:271`) and ignores `CF-Connecting-IP`. `studio/backend/utils/client_ip.py:55` takes the **rightmost** entry, ignores `Forwarded`, and reads `CF-Connecting-IP` from a loopback peer. Behind a proxy that appends, these return different addresses for the same request, so the login buckets (`studio/backend/routes/auth.py:299`) and the shared credential lockout (`studio/backend/auth/rate_limit.py:150`) key on different clients; behind the tunnel, `/login` and `/desktop-login` collapse every visitor onto the `cloudflared` peer while `/refresh` and `/change-password` see the real one. | `studio/backend/routes/auth.py:238-313` deleted in favour of `studio/backend/utils/client_ip.py`, which changes the bucket key at `studio/backend/routes/auth.py:299`, `_unknown_user_key`/`_desktop_login_key` (`:303`, `:307`) and the overflow-shard accounting beside them (`studio/backend/routes/auth.py:181`). `studio/backend/tests/test_login_rate_limit.py` and `studio/backend/tests/test_auth_rate_limit.py` pin the current behaviour and both move. |
+| The auth layer can still resolve a session bearer read from a query string, though no route asks it to. | Nothing on the surface hands one over any more: `studio/backend/routes/library.py:407` and `studio/backend/routes/inference.py:4426` refuse a `?token=` with a 400 that names `?link=`, `studio/backend/routes/data_recipe/jobs.py:142` never reads the session bearer from the query, and all three call the resolver with `None` (`studio/backend/routes/library.py:425`, `studio/backend/routes/inference.py:4444`, `studio/backend/routes/data_recipe/jobs.py:176`). The `?token=` that still appears in a served URL is an HMAC media link, not a session — `studio/backend/routes/rag.py:1176`, `studio/backend/routes/video.py:1072`, the gallery file routes. What is not removed is the capability: `studio/backend/auth/authentication.py:374` still takes a token argument and still resolves it to the same subject as an `Authorization` bearer, so the closure lives in the call sites and a new route that passes a query token re-opens the finding. | `studio/backend/auth/authentication.py:374` and `:350`, by dropping the parameter so the header is the only read — or by a source-level pin in the style of `studio/backend/tests/test_series_regressions.py` that fails on a route passing a non-`None` second argument. No client builds a `?token=` URL in this
+checkout — `studio/frontend/src/features/library/api.ts` appends `link=` only when the server minted one,
+and `studio/frontend/src/components/assistant-ui/sandbox-files-view.tsx` reads through `authFetch` — but
+neither minting helper has a route behind it (`_sign_download_link` in `studio/backend/routes/library.py`,
+`_sign_canvas_link` in `studio/backend/routes/inference.py`, called from tests only), so a headerless native
+save has no credential to carry and the desktop save does not work. |
 
 ## Re-running the audit
 

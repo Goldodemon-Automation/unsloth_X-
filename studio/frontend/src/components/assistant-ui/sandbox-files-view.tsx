@@ -1,22 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  Download01Icon,
-  FileEmpty02Icon,
-  FolderOpenIcon,
-} from "@hugeicons/core-free-icons";
+import { Download01Icon, FileEmpty02Icon, FolderOpenIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
 
-import { authFetch, getAuthToken } from "@/features/auth";
-import { apiUrl, isTauri } from "@/lib/api-base";
-import { downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
+import { isTauri } from "@/lib/api-base";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { cn } from "@/lib/utils";
 
 import { FileContextMenu, loadSandboxFile } from "./link-context-menu";
-import { sandboxFilePath, type SandboxFile } from "./sandbox-files";
+import type { SandboxFile } from "./sandbox-files";
 import { revealSandbox } from "./sandbox-reveal";
 
 function formatSize(size: number | null): string {
@@ -35,26 +30,17 @@ function SandboxFileRow({
 }) {
   const [busy, setBusy] = useState(false);
 
-  // Streamed to the chosen path rather than buffered: a tool can write a
-  // multi-gigabyte artifact, and a Blob plus its IPC copy would be two more of
-  // it in the renderer. The bearer goes in the query: no headers are sent.
+  // Fetched with the bearer in the Authorization header and saved from the blob.
+  // The canvas route takes that header or a short-lived link= query (a capability
+  // minted for it), and refuses a session bearer in the query string, so a URL the
+  // native save could stream from would need such a link -- and no route mints one
+  // yet (inference.py's _sign_canvas_link has no caller). authFetch also refreshes an
+  // expired access token and retries, which a URL cannot: a stale token would
+  // otherwise save a 401 body under the file's name.
   const save = useCallback(async () => {
     setBusy(true);
     try {
-      const path = sandboxFilePath(sessionId, file.name);
-      // The bearer rides in the URL, so nothing refreshes it: an expired
-      // access token would save a 401 body under the file's name. authFetch
-      // refreshes and retries, and the HEAD settles that the file is there.
-      const probe = await authFetch(apiUrl(path), { method: "HEAD" });
-      if (!probe.ok) throw new Error(`Download refused (${probe.status})`);
-      const token = getAuthToken();
-      const separator = path.includes("?") ? "&" : "?";
-      // Absolute: the native command parses this and rejects a relative URL,
-      // so a bare /api path failed before the request was made.
-      const url = apiUrl(
-        token ? `${path}${separator}token=${encodeURIComponent(token)}` : path,
-      );
-      await downloadUrlStreaming(url, file.name);
+      await downloadFile(await loadSandboxFile(sessionId, file.name), file.name);
     } catch (error) {
       if (!isDownloadCancelled(error)) {
         toast.error(`Could not save ${file.name}.`);

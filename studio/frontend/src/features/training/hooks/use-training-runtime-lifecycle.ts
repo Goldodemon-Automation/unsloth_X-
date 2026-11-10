@@ -116,6 +116,11 @@ interface PollStreamSpec {
   name: string;
   /** The delay a healthy poll of this stream uses. */
   baseMs: number;
+  /**
+   * The attempt budget of the stream. It gives up when the budget is spent,
+   * unless a later poll succeeds, which puts it back to work.
+   */
+  maxAttempts: number;
   /** True once the thing being polled is done and the stream can stop. */
   finished: () => boolean;
   /** True when a request is worth making right now. */
@@ -161,7 +166,7 @@ interface PollScheduler {
  */
 function createPollScheduler(
   specs: PollStreamSpec[],
-  options: { maxAttempts: number; hidden: () => boolean },
+  options: { hidden: () => boolean },
 ): PollScheduler {
   const states: PollStreamState[] = specs.map((spec) => ({
     spec,
@@ -220,6 +225,30 @@ function createPollScheduler(
     );
   };
 
+  const syncState = (state: PollStreamState, now: number): boolean => {
+    if (state.stopReason === "finished" && !state.spec.finished()) {
+      // A new run: the watch starts over.
+      revive(state);
+      return true;
+    }
+    if (state.stopReason === null && state.spec.finished()) {
+      state.stopReason = "finished";
+      state.armed = false;
+      return true;
+    }
+    const eligible = state.stopReason === null && state.spec.eligible();
+    if (eligible && !state.armed) {
+      state.armed = true;
+      state.dueAt = now + delayFor(state);
+      return true;
+    }
+    if (!eligible && state.armed) {
+      state.armed = false;
+      return true;
+    }
+    return false;
+  };
+
   const sync = (): void => {
     if (disposed) {
       return;
@@ -227,27 +256,70 @@ function createPollScheduler(
     const now = Date.now();
     let changed = false;
     for (const state of states) {
-      if (state.stopReason === "finished" && !state.spec.finished()) {
-        // A new run: the watch starts over.
-        revive(state);
-        changed = true;
-      } else if (state.stopReason === null && state.spec.finished()) {
-        state.stopReason = "finished";
-        state.armed = false;
-        changed = true;
-      }
-      const eligible = state.stopReason === null && state.spec.eligible();
-      if (eligible && !state.armed) {
-        state.armed = true;
-        state.dueAt = now + delayFor(state);
-        changed = true;
-      } else if (!eligible && state.armed) {
-        state.armed = false;
-        changed = true;
-      }
+      changed = syncState(state, now) || changed;
     }
     if (changed) {
       schedule();
+    }
+  };
+
+  const runStream = async (state: PollStreamState): Promise<boolean> => {
+    let ok = false;
+    try {
+      ok = await state.spec.request();
+    } catch {
+      ok = false;
+    }
+    if (ok) {
+      state.failures = 0;
+      state.failed = false;
+    } else {
+      state.failures += 1;
+      state.failed = true;
+    }
+    state.dueAt = Date.now() + delayFor(state);
+    const finished = state.spec.finished();
+    if (
+      shouldStop({
+        finished,
+        attempts: state.failures,
+        maxAttempts: state.spec.maxAttempts,
+      })
+    ) {
+      state.stopReason = finished ? "finished" : "budget";
+      state.armed = false;
+    }
+    return ok;
+  };
+
+  const runDueStreams = async (): Promise<boolean> => {
+    const now = Date.now();
+    let answered = false;
+    for (const state of states) {
+      if (disposed) {
+        break;
+      }
+      if (!state.armed || state.dueAt > now) {
+        continue;
+      }
+      if (!state.spec.eligible()) {
+        // The target went away between arming and firing. `sync` arms it again
+        // when it comes back.
+        state.armed = false;
+        continue;
+      }
+      answered = (await runStream(state)) || answered;
+    }
+    return answered;
+  };
+
+  const reviveBudgeted = (): void => {
+    // The backend answered, so a stream that only ran out of attempts goes
+    // back to work.
+    for (const state of states) {
+      if (state.stopReason === "budget") {
+        revive(state);
+      }
     }
   };
 
@@ -262,50 +334,7 @@ function createPollScheduler(
     ticking = true;
     let answered = false;
     try {
-      const now = Date.now();
-      for (const state of states) {
-        if (disposed) {
-          return;
-        }
-        if (!state.armed || state.dueAt > now) {
-          continue;
-        }
-        if (!state.spec.eligible()) {
-          // The target went away between arming and firing. `sync` arms it
-          // again when it comes back.
-          state.armed = false;
-          continue;
-        }
-        let ok = false;
-        try {
-          ok = await state.spec.request();
-        } catch {
-          ok = false;
-        }
-        if (disposed) {
-          return;
-        }
-        if (ok) {
-          answered = true;
-          state.failures = 0;
-          state.failed = false;
-        } else {
-          state.failures += 1;
-          state.failed = true;
-        }
-        state.dueAt = Date.now() + delayFor(state);
-        const finished = state.spec.finished();
-        if (
-          shouldStop({
-            finished,
-            attempts: state.failures,
-            maxAttempts: options.maxAttempts,
-          })
-        ) {
-          state.stopReason = finished ? "finished" : "budget";
-          state.armed = false;
-        }
-      }
+      answered = await runDueStreams();
     } finally {
       ticking = false;
     }
@@ -313,13 +342,7 @@ function createPollScheduler(
       return;
     }
     if (answered) {
-      // The backend answered, so a stream that only ran out of attempts goes
-      // back to work.
-      for (const state of states) {
-        if (state.stopReason === "budget") {
-          revive(state);
-        }
-      }
+      reviveBudgeted();
     }
     sync();
     schedule();
@@ -591,19 +614,22 @@ export function useTrainingRuntimeLifecycle(): void {
         {
           name: "status",
           baseMs: STATUS_POLL_INTERVAL_MS,
+          maxAttempts: MAX_POLL_ATTEMPTS,
           finished: () => isTerminal(),
           eligible: () => {
             const s = runtimeStore.getState();
             if (!s.hasHydrated || s.isHydrating) {
               return false;
             }
-            return !isIdle() && !isTerminal();
+            // Neither idle nor finished: a run is on.
+            return !(isIdle() || isTerminal());
           },
           request: () => pollStatus(),
         },
         {
           name: "metrics",
           baseMs: METRICS_POLL_INTERVAL_MS,
+          maxAttempts: MAX_POLL_ATTEMPTS,
           finished: () => isTerminal(),
           eligible: () => {
             const s = runtimeStore.getState();
@@ -620,6 +646,9 @@ export function useTrainingRuntimeLifecycle(): void {
           // stream has given up its attempt budget.
           name: "idle",
           baseMs: IDLE_POLL_INTERVAL_MS,
+          // The last resort: it keeps a slow heartbeat for as long as the page
+          // is open, so a page that outlived an outage still heals.
+          maxAttempts: Number.POSITIVE_INFINITY,
           finished: () => false,
           eligible: () => {
             const s = runtimeStore.getState();
@@ -632,7 +661,6 @@ export function useTrainingRuntimeLifecycle(): void {
         },
       ],
       {
-        maxAttempts: MAX_POLL_ATTEMPTS,
         hidden: () => document.visibilityState === "hidden",
       },
     );

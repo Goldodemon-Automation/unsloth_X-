@@ -18,11 +18,6 @@ import {
 } from "../stores/training-runtime-store";
 
 const WATCH_INTERVAL_MS = 6000;
-/**
- * Consecutive failed polls the watch spends before it stops asking. A backend
- * that is down should not be polled at the full rate until the run ends.
- */
-const MAX_WATCH_ATTEMPTS = 8;
 
 /**
  * Keep training state fresh while a run is active, even off the Train page.
@@ -33,9 +28,8 @@ const MAX_WATCH_ATTEMPTS = 8;
  *
  * The poll runs on one timeout loop instead of a fixed interval: the delay is
  * the base one while the backend answers, a capped backoff while it does not,
- * and longer while the tab is hidden. The loop stops once it has spent its
- * attempt budget, and it is torn down (with the disk check below) when the
- * run leaves the active state.
+ * and longer while the tab is hidden. The loop stops when the run leaves the
+ * active state, and it is torn down (with the disk check below) then too.
  */
 export function useTrainingCompletionWatch(): void {
   const active = useTrainingRuntimeStore(isTrainingStartPending);
@@ -95,9 +89,12 @@ export function useTrainingCompletionWatch(): void {
       failures = ok ? 0 : failures + 1;
       if (
         shouldStop({
-          finished: false,
+          finished: !isTrainingStartPending(useTrainingRuntimeStore.getState()),
           attempts: failures,
-          maxAttempts: MAX_WATCH_ATTEMPTS,
+          // The watch is the only status poll when the Train page is closed, so
+          // it never gives up for good: a backend that comes back is picked up
+          // again, at the capped delay.
+          maxAttempts: Number.POSITIVE_INFINITY,
         })
       ) {
         return;
