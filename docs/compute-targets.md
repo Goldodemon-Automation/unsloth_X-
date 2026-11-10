@@ -6,7 +6,7 @@ limits it states rather than hides.
 
 | Target | What it is | Training status |
 | --- | --- | --- |
-| `cpu` | The processor, no accelerator | **Supported, slow.** The CoRA/QLoRA recipe on stock `transformers` + `peft`; its budget is *free* RAM, not the installed total. |
+| `cpu` | The processor, no accelerator | **Supported, slow.** The CoRA/QLoRA recipe on stock `transformers` + `peft`, tuned by `core/training/cpu_tuning.py` (threads, SDPA, dataloader workers, checkpointing, dtype); its budget is *free* RAM, not the installed total. |
 | `igpu` | Intel Arc/Xe, AMD APU (RDNA2+), Apple Silicon | **Supported, memory-bound.** Same kernels as a discrete card; the budget is shared with the OS. |
 | `dgpu` | NVIDIA, AMD Radeon/Instinct, Intel Arc Pro | **Supported.** The normal case, unchanged. |
 | `npu` | AMD XDNA1/2, Intel NPU 3/4, Qualcomm Hexagon, Apple ANE | **Not trainable.** Exposed honestly, usable as an assist device. |
@@ -99,6 +99,26 @@ kernels assume an accelerator, and a silent CPU fallback would turn a broken dri
 50-100x slower (an estimate, not a measurement) instead of a run that refuses. `UNSLOTH_TRAINING_DEVICE=igpu` resolves to whichever
 accelerator backend is usable (`xpu`, `cuda`/`hip`, `mps`) and refuses rather than quietly training on
 the CPU when none answers.
+
+## How a CPU run is tuned
+
+`core/training/cpu_tuning.py` decides the load shape from host measurements, and `_load_cpu_model`
+applies it. The rules are pure functions of what was measured, so they are pinned by tests rather
+than discovered on a two-day run:
+
+| Choice | Rule | Why |
+| --- | --- | --- |
+| `torch.set_num_threads` | one per physical core, approximated as half the usable CPUs when there are more than two | SMT siblings add little to a GEMM and cost cache contention; no portable physical-core count exists |
+| thread count under memory pressure | halves when the fp32 weights exceed 60% of available RAM | each thread keeps its own buffers, and those buffers decide between a run and an OOM kill |
+| `set_num_interop_threads` | always 1 | torch sizes intra-op and inter-op pools independently, so two core-sized pools multiply into oversubscription, and a CPU run has one graph to schedule |
+| attention | `sdpa` when the installed stack has it, else `eager` | the fused kernel instead of materialising the full attention matrix; a model that rejects the kwarg is retried without it rather than failed |
+| dataloader workers | 0 on Windows and macOS, `min(4, cores // 4)` on Linux | spawned workers re-import the training module; fork inherits `sys.path`, and a CPU step cannot fill the gap itself |
+| gradient checkpointing | on when the fp32 weights exceed 40% of available RAM | recomputing is faster than swapping |
+| dtype | fp32 unless the weights cannot fit, then bf16 | the same `cpu_fp32_weights_fit` rule the loader used before, so the plan and the loader cannot drift |
+
+Every unknown measurement degrades to the conservative answer (one thread, no workers, eager, fp32)
+instead of raising, and the loader logs the whole plan as one line so a user can see what their
+machine chose.
 
 ## The NPU
 

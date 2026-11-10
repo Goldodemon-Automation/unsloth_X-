@@ -6,7 +6,7 @@ The upstream project is the fastest way to fine-tune open models on one GPU. Thi
 
 > **Branch:** `x8-main` is the branch this fork is developed on. `main` mirrors the imported upstream tree.
 >
-> **Releases:** [v1.0.0 … v1.2.3](https://github.com/Goldodemon-Automation/unsloth_X-/releases) — see [Releases](#releases) below.
+> **Releases:** [v1.0.0 … v1.3.0](https://github.com/Goldodemon-Automation/unsloth_X-/releases) — see [Releases](#releases) below.
 
 ---
 
@@ -42,7 +42,7 @@ instead of greying the page out:
 
 | Target | Training | Notes |
 | --- | --- | --- |
-| CPU | Yes, slow | CoRA/QLoRA on stock `transformers` + `peft`, planned against free RAM rather than the installed total. Roughly 50-100x slower than a GPU, so it is a deliberate choice, not a fallback. |
+| CPU | Yes, slow | CoRA/QLoRA on stock `transformers` + `peft`, tuned for the machine (threads, SDPA, dataloader workers, checkpointing, dtype) and planned against free RAM rather than the installed total. Roughly 50-100x slower than a GPU, so it is a deliberate choice, not a fallback. |
 | Integrated GPU | Yes | Intel Arc/Xe, AMD APUs and Apple Silicon. The budget is the memory shared with the system (60% of RAM, floored at the driver's carve-out), not the 512 MB `total_memory` reports. |
 | Discrete GPU | Yes | Unchanged: the normal case. |
 | NPU | Not trainable | AMD XDNA, Intel NPU 3/4, Qualcomm Hexagon, Apple ANE. No vendor exposes a backward pass, so the NPU takes tokenizing, checkpoint scoring and QAT calibration while training runs elsewhere. Asking for NPU-only training is answered with that reason. |
@@ -179,6 +179,7 @@ This fork's own release series starts at **v1**, and each release carries notes 
 | [`v1.2.1`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.1) | The first change the perf layer paid for: a windowed, memoised run history; plus the corrections an audit of the release notes against the code turned up. |
 | [`v1.2.2`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.2) | The review fixes: the device pin now reaches the loader, an unreadable GPU is no longer called usable, a CPU is budgeted against free RAM, the polled route caches its probe, and the target write is owner-gated. |
 | [`v1.2.3`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.3) | NPU refusal messages name the right vendor: an Intel machine is no longer told that no AMD NPU was found. |
+| [`v1.3.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.3.0) | The CPU run is tuned for the machine it lands on; the start path's device rules and the polled probe cache are tested; the device card survives a failed probe; the two capability answers agree. |
 
 Releases are tags on `x8-main`. They are independent of the wheel version in `unsloth/_version.py`,
 which tracks the upstream package this fork imports.

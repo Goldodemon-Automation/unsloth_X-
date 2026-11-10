@@ -74,6 +74,7 @@ def cpu_training_host() -> bool:
     except Exception:
         return False
 
+import inspect
 import json
 import threading
 import math
@@ -586,6 +587,9 @@ class UnslothTrainer:
         # Set by load_model on an accelerator-less host: the whole run then uses plain
         # transformers + PEFT rather than Unsloth's patched loader.
         self._cpu_training = False
+        # The tuned CPU load shape, or None on every other path. Kept so the training-argument
+        # build can apply the parts that are decided here and consumed much later.
+        self._cpu_plan = None
         # Named recipe from the request ("cora" or "qlora"); a CPU host runs no other preset.
         self.training_preset = None
         self._use_gradient_checkpointing = "unsloth"
@@ -1322,6 +1326,10 @@ class UnslothTrainer:
 
         dtype = torch.float32
         dtype_note = ""
+        # Hoisted so the tuning plan below reuses the same estimate; None is the "unknown" value
+        # every plan rule degrades on.
+        fp32_bytes = None
+        available = None
         try:
             import psutil
 
@@ -1352,6 +1360,66 @@ class UnslothTrainer:
         except Exception as error:  # noqa: BLE001 - a missing estimate keeps the fp32 path
             logger.debug("CPU weight-size estimate skipped, using fp32: %s", error)
 
+        # cpu_tuning is the single place that decides the CPU load shape (threads, attention,
+        # dataloader workers, checkpointing, dtype); it defers to cpu_fp32_weights_fit for the
+        # dtype rule, so the plan and the estimate block above can never disagree. Any failure
+        # below keeps today's behaviour: the estimate block's dtype decision and no tuning.
+        plan = None
+        accepts_attn_implementation = False
+        attn_kwargs = {}
+        try:
+            from core.training.cpu_tuning import plan_cpu_training
+            from utils.cpu_threads import _usable_cpus
+
+            # attn_implementation rides from_pretrained's **kwargs on every build that has SDPA;
+            # a transformers whose from_pretrained neither names it nor forwards **kwargs cannot
+            # accept it, so the kwarg is skipped there rather than crashing inside the load.
+            parameters = inspect.signature(AutoModelForCausalLM.from_pretrained).parameters
+            accepts_attn_implementation = "attn_implementation" in parameters or any(
+                argument.kind is inspect.Parameter.VAR_KEYWORD
+                for argument in parameters.values()
+            )
+            plan = plan_cpu_training(
+                usable_cpus = _usable_cpus(),
+                available_memory_bytes = available,
+                fp32_weight_bytes = fp32_bytes,
+                platform = sys.platform,
+                supports_sdpa = accepts_attn_implementation
+                and hasattr(torch.nn.functional, "scaled_dot_product_attention"),
+            )
+        except Exception as error:  # noqa: BLE001 - tuning is best effort, never fatal
+            logger.debug("CPU training tuning plan skipped: %s", error)
+
+        if plan is not None:
+            try:
+                torch.set_num_threads(plan.torch_threads)
+            except Exception as error:  # noqa: BLE001 - tuning must never fail the load
+                logger.debug("torch thread tuning skipped: %s", error)
+            try:
+                # set_num_interop_threads raises once the inter-op pool has run work in this
+                # process: the pool locks its size at first use, so a later load cannot retune
+                # it, which is fine because the first load already did.
+                torch.set_num_interop_threads(plan.interop_threads)
+            except Exception as error:  # noqa: BLE001 - the pool size is already locked
+                logger.debug("torch inter-op thread tuning skipped: %s", error)
+            if accepts_attn_implementation:
+                attn_kwargs = {"attn_implementation": plan.attn_implementation}
+            # The plan's dtype is what the load uses; it equals the estimate block's decision
+            # while both defer to cpu_fp32_weights_fit.
+            self._cpu_plan = plan
+            dtype = torch.bfloat16 if plan.dtype == "bfloat16" else torch.float32
+            logger.info(
+                "CPU training tuning: threads=%s, interop threads=%s, attention=%s, "
+                "dataloader workers=%s, gradient checkpointing=%s, dtype=%s. %s",
+                plan.torch_threads,
+                plan.interop_threads,
+                plan.attn_implementation,
+                plan.dataloader_workers,
+                plan.gradient_checkpointing,
+                plan.dtype,
+                " ".join(plan.reasons),
+            )
+
         logger.info(
             "Loading %s on the CPU for CoRA training (dtype=%s%s, max_seq_length=%s)",
             lookup_name,
@@ -1370,23 +1438,40 @@ class UnslothTrainer:
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        model = AutoModelForCausalLM.from_pretrained(
-            lookup_name,
-            dtype = dtype,
-            token = hf_token,
-            trust_remote_code = trust_remote_code,
-            revision = revision,
-            local_files_only = local_files_only,
-            low_cpu_mem_usage = True,
-        )
+        load_kwargs = {
+            "dtype": dtype,
+            "token": hf_token,
+            "trust_remote_code": trust_remote_code,
+            "revision": revision,
+            "local_files_only": local_files_only,
+            "low_cpu_mem_usage": True,
+        }
+        try:
+            model = AutoModelForCausalLM.from_pretrained(lookup_name, **attn_kwargs, **load_kwargs)
+        except (ValueError, RuntimeError) as load_error:
+            if not attn_kwargs:
+                raise
+            # A model whose attention class cannot do SDPA (or a remote architecture that forwards
+            # the kwarg nowhere useful) must not fail the load over a tuning suggestion; this is a
+            # retry, not a fallback path, and it leaves the run exactly as it was before the plan.
+            logger.warning(
+                "This model rejected attn_implementation=%s (%s); loading without it.",
+                attn_kwargs["attn_implementation"],
+                load_error,
+            )
+            model = AutoModelForCausalLM.from_pretrained(lookup_name, **load_kwargs)
         model.config.use_cache = False
 
         self.model = model
         self.tokenizer = tokenizer
         self._cpu_training = True
-        # Nothing is 4-bit on the CPU path, and the adapter metadata must say so.
+        # Nothing is 4-bit on the CPU path, and the adapter metadata must say so. The tuning
+        # plan (or, when it failed, today's hardcoded off) decides whether activations are
+        # recomputed instead of kept.
         self.load_in_4bit = False
-        self._use_gradient_checkpointing = False
+        self._use_gradient_checkpointing = (
+            plan.gradient_checkpointing if plan is not None else False
+        )
 
         if on_model_resolved is not None:
             try:
@@ -5123,6 +5208,17 @@ class UnslothTrainer:
             logger.info(
                 f"[DEBUG] dataset_num_proc={config_args['dataset_num_proc']} (is_audio={self.is_audio}, is_audio_vlm={self.is_audio_vlm}, _cuda_audio_used={self._cuda_audio_used})"
             )
+
+            # The CPU plan's worker count, on Linux only: this block disables worker processes on the
+            # spawn platforms because a modified sys.path breaks them, and fork inherits it. A CPU run
+            # is the one that needs the extra loaders, because the model step cannot fill the gap.
+            cpu_plan = getattr(self, "_cpu_plan", None)
+            if (
+                cpu_plan is not None
+                and getattr(self, "_cpu_training", False)
+                and sys.platform.startswith("linux")
+            ):
+                config_args["dataloader_num_workers"] = int(cpu_plan.dataloader_workers)
 
             # Disable DataLoader multiprocessing: a modified sys.path breaks spawned workers.
             if sys.platform in ("win32", "darwin"):
