@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 136 100" role="img" aria-labelledby="title">
+  <title id="title">Unsloth X8 — one-ink mark</title>
+  <!-- One colour for stamping, embossing and anywhere two inks are not available. The dash keeps its
+       separation with opacity rather than a second colour. -->
+  <g fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round">
+    <path d="M21 27 L67 73"/>
+    <path d="M67 27 L21 73"/>
+    <path d="M84 50 L118 50" opacity="0.55"/>
+  </g>
+</svg>

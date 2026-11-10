@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 136 100" role="img" aria-labelledby="title">
+  <title id="title">Unsloth X8 — X- mark</title>
+  <defs>
+    <linearGradient id="xBlue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1D4ED8"/>
+      <stop offset="1" stop-color="#3B82F6"/>
+    </linearGradient>
+  </defs>
+  <!-- The X is the fork: blue, heavy, and closed. -->
+  <g fill="none" stroke="url(#xBlue)" stroke-width="16" stroke-linecap="round">
+    <path d="M21 27 L67 73"/>
+    <path d="M67 27 L21 73"/>
+  </g>
+  <!-- The dash is what the fork adds: one stroke, lighter, apart from the X. -->
+  <path d="M84 50 L118 50" fill="none" stroke="#7DD3FC" stroke-width="16" stroke-linecap="round"/>
+</svg>

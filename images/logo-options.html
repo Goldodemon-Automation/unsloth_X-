@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Unsloth X8 — pick a mark</title>
+    <!-- Local mock-up for choosing a logo. Not shipped with the app: it loads the SVGs from this
+         folder by relative path, so serve or open it from images/ directly. -->
+    <style>
+      :root {
+        --ink: #0f1114;
+        --paper: #ffffff;
+        --blue: #2563eb;
+        --blue-light: #7dd3fc;
+        --muted: #5b6472;
+        --line: #e4e8ee;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 40px 24px 72px;
+        font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        color: var(--ink);
+        background: #f6f8fb;
+      }
+      header { max-width: 1040px; margin: 0 auto 32px; }
+      h1 { margin: 0 0 6px; font-size: 26px; letter-spacing: -0.01em; }
+      p.lede { margin: 0; color: var(--muted); max-width: 68ch; }
+      main { max-width: 1040px; margin: 0 auto; display: grid; gap: 20px; }
+      section {
+        display: grid;
+        grid-template-columns: 220px 1fr;
+        gap: 20px;
+        align-items: center;
+        padding: 20px;
+        background: var(--paper);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+      }
+      @media (max-width: 720px) { section { grid-template-columns: 1fr; } }
+      h2 { margin: 0 0 4px; font-size: 16px; }
+      .meta { margin: 0; color: var(--muted); font-size: 13px; }
+      .file { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
+      .tiles { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+      .tile {
+        display: grid;
+        place-items: center;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: var(--paper);
+        padding: 10px;
+      }
+      .tile.dark { background: #0b1220; border-color: #0b1220; }
+      .tile.blue { background: var(--blue); border-color: var(--blue); }
+      .tile.blue .mono { color: #fff; }
+      .mono { color: var(--ink); }
+      .sizes { display: flex; gap: 14px; align-items: flex-end; }
+      .sizes figure { margin: 0; display: grid; gap: 6px; justify-items: center; }
+      .sizes figcaption { font-size: 11px; color: var(--muted); }
+      .swatches { display: flex; gap: 20px; flex-wrap: wrap; max-width: 1040px; margin: 28px auto 0; }
+      .swatch { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+      .chip { width: 34px; height: 34px; border-radius: 8px; border: 1px solid rgba(0,0,0,.08); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Pick a mark</h1>
+      <p class="lede">
+        Four constructions of the same idea: <strong>X</strong> in the fork's blue, <strong>–</strong> in a
+        lighter blue. Each one works on light and dark. Pick by where the mark has to live, not by which
+        preview looks best at 200px.
+      </p>
+    </header>
+
+    <main>
+      <section>
+        <div class="tiles">
+          <div class="tile"><img src="logo-x-minus.svg" alt="X- mark on light" width="180" /></div>
+          <div class="tile dark"><img src="logo-x-minus.svg" alt="X- mark on dark" width="180" /></div>
+        </div>
+        <div>
+          <h2>1. Horizontal, two inks</h2>
+          <p class="meta">
+            The default. Best for README headers, splash screens and anywhere the mark has room.
+            The gradient on the X keeps it from reading flat at large sizes; the dash stays one solid
+            light blue so the two halves never look like the same object.
+          </p>
+          <p class="file">logo-x-minus.svg</p>
+        </div>
+      </section>
+
+      <section>
+        <div class="tiles">
+          <div class="tile"><img src="logo-x-minus-badge.svg" alt="App icon" width="112" /></div>
+          <div class="tile dark"><img src="logo-x-minus-badge.svg" alt="App icon on dark" width="72" /></div>
+        </div>
+        <div>
+          <h2>2. App icon</h2>
+          <p class="meta">
+            For favicons, the desktop icon, store listings and social avatars. A dark plate carries the
+            mark so it survives a light browser tab and a dark dock without a second file.
+          </p>
+          <p class="file">logo-x-minus-badge.svg</p>
+        </div>
+      </section>
+
+      <section>
+        <div class="tiles">
+          <div class="tile"><img src="logo-x-minus-stacked.svg" alt="Stacked mark" width="112" /></div>
+          <div class="sizes">
+            <figure><img src="logo-x-minus-stacked.svg" alt="" width="16" /><figcaption>16</figcaption></figure>
+            <figure><img src="logo-x-minus-stacked.svg" alt="" width="24" /><figcaption>24</figcaption></figure>
+            <figure><img src="logo-x-minus-stacked.svg" alt="" width="32" /><figcaption>32</figcaption></figure>
+          </div>
+        </div>
+        <div>
+          <h2>3. Stacked</h2>
+          <p class="meta">
+            The tight square: X above the dash. This is the one that still reads at 16px, because the two
+            halves stay legible when they are stacked rather than side by side. Use it for the tab icon
+            inside the app if the badge feels too heavy.
+          </p>
+          <p class="file">logo-x-minus-stacked.svg</p>
+        </div>
+      </section>
+
+      <section>
+        <div class="tiles">
+          <!-- Inlined, not <img>: an SVG loaded as an image cannot inherit currentColor, so the
+               file would paint black on every background. Inline it and it follows the theme. -->
+          <div class="tile">
+            <svg viewBox="0 0 136 100" width="180" aria-label="One-ink mark" style="color:#0f1114">
+              <g fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round">
+                <path d="M21 27 L67 73"/><path d="M67 27 L21 73"/><path d="M84 50 L118 50" opacity="0.55"/>
+              </g>
+            </svg>
+          </div>
+          <div class="tile blue">
+            <svg viewBox="0 0 136 100" width="180" aria-label="One-ink mark on blue" style="color:#ffffff">
+              <g fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round">
+                <path d="M21 27 L67 73"/><path d="M67 27 L21 73"/><path d="M84 50 L118 50" opacity="0.55"/>
+              </g>
+            </svg>
+          </div>
+        </div>
+        <div>
+          <h2>4. One ink</h2>
+          <p class="meta">
+            <code>currentColor</code>, with the dash held apart by opacity instead of a second colour.
+            For anywhere only one ink is available: single-colour print, a badge, an engraved plate, an
+            inline icon inside the app. It has to be <em>inlined</em> to inherit the theme &mdash; an SVG
+            loaded through <code>&lt;img&gt;</code> cannot see the page's colour and paints black.
+          </p>
+          <p class="file">logo-x-minus-mono.svg</p>
+        </div>
+      </section>
+    </main>
+
+    <div class="swatches">
+      <div class="swatch"><span class="chip" style="background: #2563eb"></span>X &middot; blue <code>#2563EB</code></div>
+      <div class="swatch"><span class="chip" style="background: #1d4ed8"></span>X deep <code>#1D4ED8</code></div>
+      <div class="swatch"><span class="chip" style="background: #7dd3fc"></span>&ndash; lighter blue <code>#7DD3FC</code></div>
+      <div class="swatch"><span class="chip" style="background: #0b1220"></span>plate <code>#0B1220</code></div>
+      <div class="swatch"><span class="chip" style="background: #9ceaf0"></span>UI accent <code>#9CEAF0</code></div>
+    </div>
+  </body>
+</html>

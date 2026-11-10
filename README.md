@@ -1,3 +1,5 @@
+<img src="images/logo-x-minus.svg" alt="Unsloth X8" width="150" align="right" />
+
 # Unsloth X8
 
 A fork of [Unsloth](https://github.com/unslothai/unsloth) that keeps the training stack and pushes on the Studio: the Scaler can grow **or** shrink a checkpoint, and Labs is a set of working engines rather than a preview.
@@ -6,7 +8,41 @@ The upstream project is the fastest way to fine-tune open models on one GPU. Thi
 
 > **Branch:** `x8-main` is the branch this fork is developed on. `main` mirrors the imported upstream tree.
 >
-> **Releases:** [v1.0.0 … v1.3.0](https://github.com/Goldodemon-Automation/unsloth_X-/releases) — see [Releases](#releases) below.
+> **Releases:** [v1.0.0 … v1.4.0](https://github.com/Goldodemon-Automation/unsloth_X-/releases) — see [Releases](#releases) below.
+
+---
+
+## Branding: this fork is blue, upstream is green
+
+The UI accent moved from Unsloth's green (`#17b88b`) to a **light blue** (`#9ceaf0`, a light cyan), in
+both light and dark mode, and every primary control follows it. If a screenshot or a build still shows
+green, it is upstream's theme, not this fork's.
+
+| | Upstream Unsloth | This fork |
+| --- | --- | --- |
+| Accent | light green `#17b88b` | **light blue** `#9ceaf0` |
+| Ink on the accent | white | dark `#0f1114` (white on `#9ceaf0` scores ~1.3:1) |
+| Mark | the Unsloth wordmark | the **X–** mark below |
+
+The mark is the fork in one glyph: an **X** in blue, a **–** in a lighter blue, apart from it.
+Four constructions, one for each place it has to live; [images/logo-options.html](images/logo-options.html)
+shows them all, on light and dark, at the sizes they are meant for.
+
+| File | Use |
+| --- | --- |
+| [images/logo-x-minus.svg](images/logo-x-minus.svg) | Horizontal, two inks — README headers, splash screens |
+| [images/logo-x-minus-badge.svg](images/logo-x-minus-badge.svg) | App icon — favicon, desktop icon, store listing, avatar |
+| [images/logo-x-minus-stacked.svg](images/logo-x-minus-stacked.svg) | Stacked — the tight square that still reads at 16px |
+| [images/logo-x-minus-mono.svg](images/logo-x-minus-mono.svg) | One ink, `currentColor` — inline it to inherit the theme; as an `<img>` it paints black |
+
+| Colour | Hex | Where |
+| --- | --- | --- |
+| X, blue | `#2563EB` (deep `#1D4ED8`) | the X |
+| Dash, lighter blue | `#7DD3FC` | the – |
+| Badge plate | `#0B1220` | behind the app icon |
+| UI accent | `#9CEAF0` | primary buttons, switches, active rows |
+
+The palette, the accent tokens and how to change them are in [docs/theming.md](docs/theming.md).
 
 ---
 
@@ -24,6 +60,10 @@ The upstream project is the fastest way to fine-tune open models on one GPU. Thi
 | **Integrated GPUs** | Intel Arc/Xe, AMD APUs and Apple Silicon train with a budget built from the memory they *share* with the system, not the small carve-out the driver reports. |
 | **NPU, honestly** | Vendor-neutral detection (AMD XDNA, Intel NPU 3/4, Qualcomm Hexagon, Apple ANE) and a runtime matrix. What an NPU can do for a run is planned, not promised: tokenizing, checkpoint scoring and QAT calibration, with the backward pass on another device. |
 | **Device picker** | One list of every device with its memory, kind and capability, plus a recommended precision in the capability card, in the Train wizard, remembered per installation. |
+| **Secure by default** | Brute-force accounting on every credential check (sign-in, refresh, password change), a CORS policy that cannot be combined with credentials, a nonced preview page, and `base-uri` in the desktop webview |
+| **Faster startup** | SDK imports that only some endpoints need are deferred behind their handlers, guarded by a test so they cannot drift back onto the startup path |
+| **Faster browsing** | Model and cache inventories are keyed on a cheap directory fingerprint (path, size, mtime) instead of walking two gigabytes per request |
+| **Intel, tuned** | bf16 on AMX/AVX512-BF16 CPUs instead of blanket fp32, and an XPU-build check that says whether an Intel iGPU can train at all |
 | **Faster UI** | Run history renders a first screen and grows as you scroll instead of re-mounting every card on each poll, with stable keys and a memoised card; a perf layer (`src/lib/perf/`) measures marks, long tasks and interaction latency so the next change can be proven instead of assumed. |
 | **Licensing** | Additions original to this fork are under [NRC-3](LICENSE-NRC-3.md); inherited code keeps its upstream license. |
 
@@ -160,6 +200,7 @@ From the repository root: `pre-commit run --all-files` (Ruff and the repo's lint
 | [docs/labs.md](docs/labs.md) | The Labs switch, the experiment registry, Artifacts and Pipelines |
 | [docs/simulated-training.md](docs/simulated-training.md) | The Debugging simulator that runs a job with no hardware behind it |
 | [docs/compute-targets.md](docs/compute-targets.md) | CPU, integrated-GPU and NPU training: the registry, the shared-memory budget, the environment each target sets, and the NPU's real limits |
+| [docs/igpu.md](docs/igpu.md) | Intel iGPUs: the XPU wheel, pinning one GPU on a hybrid machine, and a symptom-first troubleshooting table |
 | [docs/ui-performance.md](docs/ui-performance.md) | The frontend perf layer: how to turn it on, what each module measures, the bounds that keep it from leaking, and how to answer "is this page slow" with a number |
 | [docs/theming.md](docs/theming.md) | Palettes, accent tokens, changing the UI color |
 | [docs/README.md](docs/README.md) | Repository map and the local CRLF trap |
@@ -180,6 +221,7 @@ This fork's own release series starts at **v1**, and each release carries notes 
 | [`v1.2.2`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.2) | The review fixes: the device pin now reaches the loader, an unreadable GPU is no longer called usable, a CPU is budgeted against free RAM, the polled route caches its probe, and the target write is owner-gated. |
 | [`v1.2.3`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.3) | NPU refusal messages name the right vendor: an Intel machine is no longer told that no AMD NPU was found. |
 | [`v1.3.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.3.0) | The CPU run is tuned for the machine it lands on; the start path's device rules and the polled probe cache are tested; the device card survives a failed probe; the two capability answers agree. |
+| [`v1.4.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.4.0) | The fork's mark and colour identity; three security gaps closed (CORS credentials, unthrottled credential checks, the preview/Tauri CSPs); deferred startup imports; fingerprinted inventories; bf16 on Intel CPUs and an XPU check for Intel iGPUs. |
 
 Releases are tags on `x8-main`. They are independent of the wheel version in `unsloth/_version.py`,
 which tracks the upstream package this fork imports.
