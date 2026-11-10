@@ -438,3 +438,35 @@ Nothing deferred in this scope. The NPU assist queue has no live consumer yet �
 capability report and UI are here and the tokenizer/evaluator adapters arrive with the first installed
 provider that can act on the payloads; that is recorded in `docs/releases/v1.1.0.md` under Limits
 rather than hidden.
+
+## Published
+
+The series is cut and public. Tags `v1.0.0`, `v1.1.0`, `v1.2.0`, `v1.2.1` on `x8-main`, each with a
+release whose body is the matching `docs/releases/` file:
+
+- `v1.0.0` (`9dbca5622`) — compute-target registry, integrated-GPU budget, target environment,
+  Train-wizard picker, capacity check sized per target.
+- `v1.1.0` (`832ce77f6`) — vendor-neutral NPU detection, runtime matrix, NPU assist planner and queue,
+  `/api/compute/npu/assist`, the NPU card.
+- `v1.2.0` (`ba9e9b42d`, docs in `ba9e9b42d`/`963da4868`) — "what can this machine do" card and the
+  `src/lib/perf` measurement layer.
+- `v1.2.1` (`963da4868`) — windowed, memoised run history; plus the corrections an audit of the three
+  earlier release bodies against the code turned up.
+
+An independent audit of the notes against the code found four claims the code did not support. Three
+were fixed in code rather than in prose: `fit.py` ignored the target's own budget whenever
+`gpu_memory_gb` was present (which the wizard always sends on a GPU host, so the integrated-GPU path
+could not run), `use-compute-targets` dropped `requested` so the estimate kept the page-load target
+after a pick, and 4-bit on an integrated GPU was reported as unavailable without being enforced. The
+fourth — `torch_missing` rendering as a raw token — was a missing sentence in the capability card. The
+rest of the findings were wording, and every earlier release body was re-published from the corrected
+files with `gh release edit`.
+
+Three gates are red on this tree for reasons that predate the series, and none of them is caused by it.
+`npm test` (frontend) has ~51 failures and stalls for hours on an assistant-ui Markdown test;
+`biome check` is red repo-wide (the new files add no errors); and `bundle:check` was already over its
+startup budget at `98a74ea13` — measured there with a detached worktree, 2034.8 KB transfer against a
+2010.5 KB budget, versus 2035.2 KB now, so this series adds 0.4 KB of the overage and none of the
+cause. `studio/backend/tests/test_npu_detect.py` fails on Windows without symlink privileges (8 tests,
+`WinError 1314`), and `tests/test_ci_backend_pytest_shards.py` reports every file as unclaimed on
+Windows because it matches forward-slash paths.
