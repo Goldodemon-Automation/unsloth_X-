@@ -372,6 +372,7 @@ from routes.engines import router as engines_router
 from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
 from routes.whisper import router as whisper_router
 from routes.npu import router as npu_router
+from routes.compute import router as compute_router
 from routes.preview import router as preview_router
 from hub.routes import (
     inventory_router as hub_inventory_router,
@@ -1889,6 +1890,7 @@ app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
 app.include_router(engines_router, prefix = "/api/engines", tags = ["engines"])
 app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
 app.include_router(npu_router, prefix = "/api/npu", tags = ["npu"])
+app.include_router(compute_router, prefix = "/api/compute", tags = ["compute"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(advanced_router, prefix = "/api/advanced", tags = ["advanced"])
 app.include_router(labs_router, prefix = "/api/labs", tags = ["labs"])

@@ -4043,6 +4043,25 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     )
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
+    # Before every import below: the device override and the allocator keys are read at import time
+    # by torch, SYCL and Unsloth's own device module, so setting them later would change nothing.
+    from core.training.compute_target_env import (
+        apply_compute_target_environment,
+        describe_compute_target,
+    )
+
+    try:
+        _target_env = apply_compute_target_environment(config)
+        print(describe_compute_target(config), file = sys.stderr, flush = True)
+        if _target_env.get("__error__"):
+            print(
+                f"Compute target defaults were not applied: {_target_env['__error__']}",
+                file = sys.stderr,
+                flush = True,
+            )
+    except Exception as _target_exc:  # noqa: BLE001 - a slower run beats a run that never starts
+        print(f"Compute target setup failed: {_target_exc}", file = sys.stderr, flush = True)
+
     from utils.security.hub_data_files import install as guard_hub_data_files
 
     guard_hub_data_files()
@@ -4805,7 +4824,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     if config.get("training_type") == "Policy Alignment":
         try:
             from core.advanced.rl_trainer import run_policy_alignment
-
             run_policy_alignment(event_queue, stop_queue, config)
         except Exception as exc:  # noqa: BLE001 - reported to the UI
             logger.error("Policy Alignment failed: %s", exc)
@@ -5484,7 +5502,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             if output_dir and not stopped_in_training:
                 try:
                     from core.advanced.integration import run_auto_eval
-
                     run_auto_eval(
                         advanced = config.get("advanced"),
                         baseline_model = config.get("actual_model_repo_id")

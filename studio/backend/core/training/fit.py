@@ -58,6 +58,57 @@ def _probe_gpu_gb() -> Optional[float]:
         return None
 
 
+def _target_budget_gb(spec: Mapping[str, Any]) -> tuple[Optional[float], Optional[str], list[str]]:
+    """The memory budget of the device the run will actually use, plus what to say about it.
+
+    Only consulted when the caller names a `compute_target`, so an estimate that does not name a
+    device keeps its old behaviour exactly -- including the "did not report a size" verdict, which is
+    how a host with no accelerator reads. Naming one is what makes this useful on the targets the
+    plain probe cannot describe: `torch.cuda.get_device_properties` answers nothing on an Intel XPU,
+    and on an integrated GPU it answers with the carve-out rather than the shared pool behind it.
+
+    Returns (budget_gb, source, notes). An unusable target answers (None, "unresolved", [reason]) and
+    the caller falls back to the unknown verdict instead of refusing the estimate.
+    """
+    requested = str(spec.get("compute_target") or "").strip()
+    if not requested:
+        return None, None, []
+    try:
+        from core.training.device_targets import TargetProbe, resolve_training_target
+        from utils.hardware import accelerator_budget
+    except Exception as error:  # noqa: BLE001 - a missing registry degrades to the old estimate
+        return None, "unresolved", [f"The compute-target registry is unavailable: {error}"]
+
+    try:
+        probe = TargetProbe.detect()
+        target = resolve_training_target(requested, probe)
+    except Exception as error:  # noqa: BLE001 - TrainingTargetError and probe failures alike
+        return None, "unresolved", [str(error)]
+
+    integrated = target.kind == "igpu"
+    dedicated = (
+        accelerator_budget.carveout_bytes(getattr(probe, "gpus", ()))
+        if integrated
+        else target.memory_bytes
+    )
+    report = accelerator_budget.budget_report(
+        integrated = integrated,
+        dedicated_bytes = dedicated,
+        system_memory_bytes = getattr(probe, "system_memory_bytes", None),
+    )
+    usable = report.get("usable_bytes")
+    source = f"target:{target.kind}"
+    notes = [report["notes"]] if report.get("notes") else []
+    if target.kind == "cpu":
+        # A CPU run's ceiling is RAM, and only part of it: the fit check should plan against what is
+        # free, not against the installed total that the OS and the dataset pipeline also need.
+        notes.append(
+            "A CPU run competes with the operating system for this memory; expect the real ceiling "
+            "to be a few GB lower."
+        )
+    return (float(usable) / GB if usable else None), source, notes
+
+
 def estimate(spec: Mapping[str, Any]) -> dict[str, Any]:
     source = str(spec.get("model") or "").strip()
     if not source:
@@ -79,13 +130,23 @@ def estimate(spec: Mapping[str, Any]) -> dict[str, Any]:
         accumulation = max(1, int(spec.get("gradient_accumulation") or 1))
         rank = max(1, int(spec.get("lora_rank") or 16))
     except (TypeError, ValueError) as error:
-        raise ValueError("batch_size, max_seq_length, gradient_accumulation and lora_rank must be numbers.") from error
+        raise ValueError(
+            "batch_size, max_seq_length, gradient_accumulation and lora_rank must be numbers."
+        ) from error
 
     load_in_4bit = bool(spec.get("load_in_4bit")) or method == "qlora"
     gradient_checkpointing = bool(spec.get("gradient_checkpointing", True))
     budget_gb = spec.get("gpu_memory_gb")
+    budget_source = "explicit"
+    target_notes: list[str] = []
     if budget_gb in (None, ""):
-        budget_gb = _probe_gpu_gb()
+        budget_source = "probe"
+        budget_gb, selected_source, target_notes = _target_budget_gb(spec)
+        if selected_source:
+            budget_source = selected_source
+        if budget_gb in (None, ""):
+            budget_gb = _probe_gpu_gb()
+            budget_source = "probe" if budget_gb not in (None, "") else "unreported"
     try:
         budget = float(budget_gb) if budget_gb not in (None, "") else None
     except (TypeError, ValueError) as error:
@@ -156,7 +217,9 @@ def estimate(spec: Mapping[str, Any]) -> dict[str, Any]:
         if not load_in_4bit and method != "full":
             suggestions.append("Load in 4-bit (QLoRA) to cut the weight footprint by about 3.6x.")
         if method in ("lora", "qlora") and rank > 16:
-            suggestions.append(f"Lower the LoRA rank from {rank} to 16; the adapter state shrinks with it.")
+            suggestions.append(
+                f"Lower the LoRA rank from {rank} to 16; the adapter state shrinks with it."
+            )
         if method in ("full", "cpt") and verdict == "over":
             suggestions.append(
                 "Full training keeps fp32 optimizer state for every parameter. Use LoRA/QLoRA, "
@@ -171,16 +234,15 @@ def estimate(spec: Mapping[str, Any]) -> dict[str, Any]:
         suggestions.append(
             "The host did not report a GPU memory size, so only the requirement could be estimated."
         )
+        if budget_source == "unresolved" and target_notes:
+            # Name what went wrong with the named target: "unknown" on its own reads as a bug.
+            suggestions.extend(target_notes)
 
     return {
         "model": source,
         "method": method,
         "params": params,
-        "params_label": (
-            f"{params / 1e9:.2f}B"
-            if params >= 1e9
-            else f"{params / 1e6:.1f}M"
-        ),
+        "params_label": (f"{params / 1e9:.2f}B" if params >= 1e9 else f"{params / 1e6:.1f}M"),
         "trainable_params": int(trainable),
         "config": {
             "hidden_size": hidden,
@@ -195,6 +257,10 @@ def estimate(spec: Mapping[str, Any]) -> dict[str, Any]:
             "gradient_checkpointing": gradient_checkpointing,
         },
         "budget_gb": round(budget, 2) if budget else None,
+        # Where the ceiling came from, so the UI can say "this card shares system memory" instead of
+        # presenting a shared number as if it were a dedicated card's private VRAM.
+        "budget_source": budget_source,
+        "target_notes": target_notes,
         "required_gb": round(required / GB, 2),
         "headroom_gb": headroom,
         "verdict": verdict,

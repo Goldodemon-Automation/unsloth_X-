@@ -2,6 +2,8 @@
 // Copyright 2026-present the X8 authors. All rights reserved. See /LICENSE-NRC-3.md
 
 import { Badge } from "@/components/ui/badge";
+import { ComputeTargetPicker } from "@/features/compute-targets/compute-target-picker";
+import { useComputeTargets } from "@/features/compute-targets/use-compute-targets";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -58,6 +60,16 @@ export function TrainingPresetSection(): ReactElement {
   const gradientCheckpointing = useTrainingConfigStore(
     (state) => state.gradientCheckpointing,
   );
+
+  // The device the run will use. The hook caches, so mounting the wizard again does not re-probe the
+  // hardware; `choose` stores the choice server-side and updates the cache, so the capacity check
+  // below sizes for the same device the run will use.
+  const {
+    data: computeTargets,
+    choose: chooseComputeTarget,
+    loading: computeTargetsLoading,
+  } = useComputeTargets();
+
 
   const [custom, setCustom] = useState<StoredTrainingPreset[]>([]);
   const [saving, setSaving] = useState(false);
@@ -118,6 +130,9 @@ export function TrainingPresetSection(): ReactElement {
         loraRank,
         gradientCheckpointing,
         gpuMemoryGb: gpu.available ? gpu.memoryTotalGb : null,
+        // Sent so the estimate describes the device the run will actually use: an integrated GPU
+        // plans against shared memory, a CPU run against RAM.
+        computeTarget: computeTargets?.requested ?? computeTargets?.resolved ?? null,
       });
       setFit(report);
     } catch (failure) {
@@ -223,6 +238,34 @@ export function TrainingPresetSection(): ReactElement {
         )}
       </div>
 
+      {computeTargets ? (
+        <div className="rounded-lg border border-border/70 bg-background/40 p-3">
+          {/* Not going through i18n yet: the locale overlays gain this surface in the next
+              translation pass, and a half-translated picker reads worse than an English one. */}
+          <span className="text-ui-11 font-medium text-foreground">Run on</span>
+          <p className="mt-1 text-ui-10 leading-relaxed text-muted-foreground/70">
+            The device this run trains on. The capacity check below sizes the run for it: an
+            integrated GPU plans against the memory it shares with the system, and a CPU run
+            against RAM.
+          </p>
+          <ComputeTargetPicker
+            className="mt-2"
+            targets={computeTargets.targets}
+            npu={computeTargets.npu ?? null}
+            value={computeTargets.resolved}
+            disabled={computeTargetsLoading}
+            onChange={(id) => {
+              void chooseComputeTarget(id).then(() => setFit(null));
+            }}
+          />
+          {computeTargets.budget?.notes ? (
+            <p className="mt-2 text-ui-10 leading-relaxed text-muted-foreground/70">
+              {computeTargets.budget.notes}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="rounded-lg border border-border/70 bg-background/40 p-3">
         <div className="flex flex-wrap items-center gap-2">
           <span className="flex items-center gap-1.5 text-ui-11 font-medium text-foreground">
@@ -323,6 +366,18 @@ export function TrainingPresetSection(): ReactElement {
                       />
                     )}
                     <span>{suggestion}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {fit.target_notes && fit.target_notes.length > 0 ? (
+              <ul className="flex flex-col gap-1">
+                {fit.target_notes.map((note) => (
+                  <li
+                    key={note}
+                    className="text-ui-10 leading-relaxed text-muted-foreground/70"
+                  >
+                    {note}
                   </li>
                 ))}
               </ul>

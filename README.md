@@ -5,6 +5,8 @@ A fork of [Unsloth](https://github.com/unslothai/unsloth) that keeps the trainin
 The upstream project is the fastest way to fine-tune open models on one GPU. This fork keeps that and adds a layer for the work that comes *around* a run — sizing it, scaling the model first, chaining stages, scoring the result, and knowing what a produced folder is allowed to do next.
 
 > **Branch:** `x8-main` is the branch this fork is developed on. `main` mirrors the imported upstream tree.
+>
+> **Releases:** [v1.0.0 … v1.2.0](https://github.com/Goldodemon-Automation/unsloth_X-/releases) — see [Releases](#releases) below.
 
 ---
 
@@ -18,6 +20,10 @@ The upstream project is the fastest way to fine-tune open models on one GPU. Thi
 | **Labs engines** | CMT, Scale-before-training, Benchmarks, Artifacts, Pipelines, the shrink repair preset and Cleanup — each backed by tests, behind a single switch. |
 | **Automated training** | Samples 2-8 datasets by category, runs 2-72 trainings across CMT/CPT/FFT, benchmarks each, keeps the best and continues it over repeated rounds. |
 | **Run records** | Every merge, scale, CMT and pipeline output writes `run_manifest.json` and a copy of the license notice beside the checkpoint. |
+| **CPU training** | A host with no accelerator trains the CoRA/QLoRA recipe on stock `transformers` + `peft`. Explicitly chosen, never a silent fallback, and labelled with what it costs. |
+| **Integrated GPUs** | Intel Arc/Xe, AMD APUs and Apple Silicon train with a budget built from the memory they *share* with the system, not the small carve-out the driver reports. |
+| **Device picker** | One list of every device with its capability and a recommended batch/dtype, in the Train wizard, remembered per installation. |
+| **Faster UI** | Run history renders a window instead of every card, off-screen rows skip layout, and a perf layer (`src/lib/perf/`) is there to prove the next change helped. |
 | **Licensing** | Additions original to this fork are under [NRC-3](LICENSE-NRC-3.md); inherited code keeps its upstream license. |
 
 ### The two Scaler directions
@@ -27,6 +33,22 @@ The upstream project is the fastest way to fine-tune open models on one GPU. Thi
 **Shrink** removes blocks or narrows each block's MLP. Neither can be function-preserving: a removed block is a removed residual contribution, and a removed channel is a smaller projection. The run reports the drift it measured against the base and hands you a checkpoint that needs a recovery pass; the Labs **shrink repair** preset is that pass — it measures the gap, trains, measures again, and passes or fails the result against a tolerance you set. Shrinking is the right tool when you have a fine-tune whose behaviour you want at a smaller shape; if you only need training to fit in less VRAM, QLoRA or a smaller base checkpoint is less work.
 
 Both directions plan from `config.json` alone, so the slider answers before any weights load.
+
+### Runs on what you have
+
+Training used to need a CUDA card. It now picks from four targets, and says what each one can do
+instead of greying the page out:
+
+| Target | Training | Notes |
+| --- | --- | --- |
+| CPU | Yes, slow | CoRA/QLoRA on stock `transformers` + `peft`. Roughly 50-100x slower than a GPU, so it is a deliberate choice, not a fallback. |
+| Integrated GPU | Yes | Intel Arc/Xe, AMD APUs and Apple Silicon. The budget is the memory shared with the system (60% of RAM, floored at the driver's carve-out), not the 512 MB `total_memory` reports. |
+| Discrete GPU | Yes | Unchanged: the normal case. |
+| NPU | Not trainable | AMD XDNA, Intel NPU 3/4, Qualcomm Hexagon, Apple ANE. No vendor exposes a backward pass, so the NPU takes tokenizing, checkpoint scoring and QAT calibration while training runs elsewhere. Asking for NPU-only training is answered with that reason. |
+
+The picker lives in the Train wizard's capacity card, and the capacity check sizes for whichever
+device is selected. The full reference, including the environment each target sets and why, is
+[docs/compute-targets.md](docs/compute-targets.md).
 
 ---
 
@@ -120,6 +142,12 @@ The Scaler's own suites are `tests/test_advanced_scaling.py`,
 `tests/test_advanced_scaling_routes.py` and `tests/test_engine_shrink.py`; the
 last one builds a tiny Llama and performs the block surgery for real.
 
+The compute-target suites are `tests/test_device_targets.py` (the registry and its capability
+rules), `tests/test_accelerator_budget.py` (the shared-memory budget and allocator defaults),
+`tests/test_compute_target_env.py` (what the worker's environment becomes), `tests/test_compute_route.py`,
+`tests/test_npu_assist.py` (the NPU planner and offload queue) and, at the repository root,
+`tests/test_forced_training_device.py` (the opt-in `UNSLOTH_TRAINING_DEVICE` override).
+
 From the repository root: `pre-commit run --all-files` (Ruff and the repo's lint scripts).
 
 ---
@@ -130,8 +158,25 @@ From the repository root: `pre-commit run --all-files` (Ruff and the repo's lint
 | --- | --- |
 | [docs/labs.md](docs/labs.md) | The Labs switch, the experiment registry, Artifacts and Pipelines |
 | [docs/simulated-training.md](docs/simulated-training.md) | The Debugging simulator that runs a job with no hardware behind it |
+| [docs/compute-targets.md](docs/compute-targets.md) | CPU, integrated-GPU and NPU training: the registry, the shared-memory budget, the environment each target sets, and the NPU's real limits |
 | [docs/theming.md](docs/theming.md) | Palettes, accent tokens, changing the UI color |
 | [docs/README.md](docs/README.md) | Repository map and the local CRLF trap |
+
+---
+
+## Releases
+
+This fork's own release series starts at **v1**, and each release carries notes in
+[docs/releases/](docs/releases/):
+
+| Tag | What it is |
+| --- | --- |
+| [`v1.0.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.0.0) | CPU and integrated-GPU training: the compute-target registry, the shared-memory budget, the Train-wizard device picker, and the target's environment applied before torch loads. |
+| [`v1.1.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.1.0) | NPU support: vendor-neutral detection, the runtime matrix, and NPU-assisted training that plans what an NPU can really do instead of claiming a backward pass. |
+| [`v1.2.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.0) | The UI pass: windowed run history, off-screen rows skipping layout, a perf measurement layer, and the device picker and NPU card surfaced where the decision is made. |
+
+Releases are tags on `x8-main`. They are independent of the wheel version in `unsloth/_version.py`,
+which tracks the upstream package this fork imports.
 
 ---
 

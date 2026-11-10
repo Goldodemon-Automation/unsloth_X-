@@ -12,6 +12,11 @@
 __all__ = [
     "is_hip",
     "npu_is_available",
+    "forced_training_device",
+    "device_capabilities",
+    "npu_device_name",
+    "CAPABILITY_KEYS",
+    "TRAINING_DEVICE_ENV",
     "get_device_type",
     "DEVICE_TYPE",
     "DEVICE_TYPE_TORCH",
@@ -83,12 +88,69 @@ def npu_is_available():
         return False
 
 
+# Opt-in device override. Unsloth is built for accelerators: dozens of branches assume one exists and
+# an accelerator that silently degrades to CPU turns a broken driver into a run that is 50-100x slower
+# instead of one that refuses. So CPU/iGPU/NPU selection is explicit, never a fallback -- the Studio's
+# device picker sets this for a job the user chose to run there.
+#
+# Values: "cpu", "igpu", "npu", "cuda", "xpu", "hip", "mps". "igpu" maps onto the vendor's real
+# accelerator type (xpu/hip/mps) because there is no separate torch backend for an integrated GPU:
+# what makes it integrated is its shared memory, which the caller sizes for, not a different kernel set.
+TRAINING_DEVICE_ENV = "UNSLOTH_TRAINING_DEVICE"
+_FORCED_DEVICE_TYPES = ("cpu", "igpu", "npu", "cuda", "xpu", "hip", "mps")
+
+
+def forced_training_device():
+    """The override from ``UNSLOTH_TRAINING_DEVICE``, lowercased, or None.
+
+    Validated here rather than in get_device_type so a typo is reported once with the accepted
+    spellings instead of arriving at the loader as an unexplained branch.
+    """
+    raw = os.environ.get(TRAINING_DEVICE_ENV, "")
+    value = raw.strip().lower()
+    if not value or value == "auto":
+        return None
+    if value not in _FORCED_DEVICE_TYPES:
+        raise ValueError(
+            f"Unsloth: {TRAINING_DEVICE_ENV}={raw!r} is not a device this build knows. "
+            f"Use one of: {', '.join(_FORCED_DEVICE_TYPES)}, or unset it to auto-detect."
+        )
+    return value
+
+
 @functools.cache
 def get_device_type():
     # MLX first: torch is never imported on the MLX runtime, so claiming "cuda" here would NameError in
     # get_device_count. Matches unsloth/__init__.py and unsloth_zoo.device_type.
     if _IS_MLX:
         return "mlx"
+    forced = forced_training_device()
+    # "igpu" is resolved to the accelerator that actually exists, since the kernels are the same ones
+    # a discrete card runs; only the memory budget differs, and that is the caller's business.
+    if forced == "cpu":
+        return "cpu"
+    if forced == "npu":
+        return "npu"
+    if forced == "igpu":
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            return "xpu"
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            return "hip" if is_hip() else "cuda"
+        if getattr(getattr(torch, "backends", None), "mps", None) is not None:
+            try:
+                if torch.backends.mps.is_available():
+                    return "mps"
+            except Exception:
+                pass
+        # An integrated GPU was asked for and none is usable: say so rather than quietly train on
+        # the CPU, which is the slow surprise this override exists to prevent.
+        raise RuntimeError(
+            f"Unsloth: {TRAINING_DEVICE_ENV}=igpu was requested but no integrated GPU backend is "
+            "usable (torch.xpu, torch.cuda/ROCm and MPS all report unavailable). Unset it to "
+            f"auto-detect, or set {TRAINING_DEVICE_ENV}=cpu to train on the CPU deliberately."
+        )
+    if forced is not None:
+        return forced
     # Test-only CPU fallback: report "cuda" so every DEVICE_TYPE == "cuda" branch behaves identically.
     # Read once per process (function is cached).
     if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
@@ -144,6 +206,89 @@ def get_device_count():
 
 
 DEVICE_COUNT: int = get_device_count()
+
+# The capability keys every caller shares, in the order the Studio shows them. One list because the
+# registry, the fit check and the UI all describe the same device: three hand-rolled dicts drifted
+# apart before, and a bnb flag that disagreed with the loader is how a 4-bit run reached a host that
+# could not execute it.
+CAPABILITY_KEYS = (
+    "bf16",
+    "fp16",
+    "bnb4bit",
+    "triton",
+    "grad_checkpoint",
+    "compile",
+    "flash_attn",
+)
+
+
+def device_capabilities(device_type = None):
+    """What a device type can actually execute, as booleans keyed by CAPABILITY_KEYS.
+
+    Answers the question every caller was guessing at from `DEVICE_TYPE == "cuda"` string compares.
+    Conservative by construction: an unmeasured fact is False, because a False costs a slower path
+    while a wrong True kills the run mid-step. Never raises and never probes hardware beyond the
+    cheap queries this module already made.
+    """
+    kind = (device_type or DEVICE_TYPE or "").strip().lower()
+    caps = dict.fromkeys(CAPABILITY_KEYS, False)
+    if kind in ("cuda", "hip", "xpu"):
+        # accelerator: the vendors' kernel stacks all provide these, except where a measured arch
+        # says otherwise below.
+        caps.update(
+            bf16 = True,
+            fp16 = True,
+            bnb4bit = bool(ALLOW_BITSANDBYTES),
+            triton = True,
+            grad_checkpoint = True,
+            compile = True,
+            flash_attn = kind != "hip",
+        )
+        if kind == "hip":
+            # gfx10 (RDNA 1/2) advertises bf16 it lacks and Triton's dot then takes the process down
+            # in LLVM with no Python exception (issue 7922), so the arch decides, not the vendor.
+            try:
+                archs = hip_visible_archs()
+            except Exception:
+                archs = []
+            if archs:
+                caps["bf16"] = not any(arch_lacks_bf16(arch) for arch in archs)
+            else:
+                # Unreadable arch is unmeasured, and unmeasured is False.
+                caps["bf16"] = False
+        if kind == "xpu":
+            # Intel's XPU build ships Triton, but its kernels do not cover every arch; the caller
+            # that needs a specific kernel checks the model's own gate.
+            caps["flash_attn"] = False
+    elif kind == "npu":
+        # No vendor exposes a backward pass, so nothing here is usable for *training*; the Studio
+        # runs an NPU as an assist device and this dict is what tells it so.
+        caps.update(grad_checkpoint = True)
+    elif kind == "mps":
+        caps.update(
+            bf16 = False,
+            fp16 = True,
+            grad_checkpoint = True,
+        )
+    else:
+        # CPU: fp32 only. bf16 is emulated in software on CPUs without AVX512-BF16/AMX, and there is
+        # no Triton, no bitsandbytes training kernel and no torch.compile backend that pays off.
+        caps.update(
+            grad_checkpoint = True,
+        )
+    return caps
+
+
+@functools.cache
+def npu_device_name():
+    """The first NPU's reported name, or None. Guarded: a wedged driver must not break a status read."""
+    if _IS_MLX or not npu_is_available():
+        return None
+    try:
+        return str(torch.npu.get_device_properties(0).name)
+    except Exception:
+        return None
+
 
 # 4-bit quantization requires a block size of 64: Instinct (MI) has a warp size of 64 against 32
 # elsewhere. Since bitsandbytes 0.49.0 pre-quantized 64-blockwise models work on Radeon (Navi)
@@ -399,13 +544,32 @@ def resolve_hip_gpu_stats_name(gpu_stats):
     return "AMD GPU. "
 
 
-_DEVICE_MODULE = None if _IS_MLX else getattr(torch, DEVICE_TYPE_TORCH, None)
-if not _IS_MLX and _DEVICE_MODULE is None:
+# torch exposes a namespace per accelerator (torch.cuda, torch.xpu, torch.npu) but none for the CPU:
+# the CPU is the interpreter's own backend, not a module. Resolving it by getattr would raise
+# "PyTorch does not provide the cpu backend" on exactly the hosts the override was added for, so the
+# CPU is named here and every consumer below already handles a None module.
+_CPU_DEVICE_TYPES = ("cpu",)
+_DEVICE_MODULE = (
+    None
+    if _IS_MLX or DEVICE_TYPE_TORCH in _CPU_DEVICE_TYPES
+    else getattr(torch, DEVICE_TYPE_TORCH, None)
+)
+if not _IS_MLX and DEVICE_TYPE_TORCH not in _CPU_DEVICE_TYPES and _DEVICE_MODULE is None:
     raise RuntimeError(f"Unsloth: PyTorch does not provide the {DEVICE_TYPE_TORCH} backend.")
 
 
 def get_device_stats() -> tuple[str, str, float]:
     """Return (name, stats_snippet, max_memory_gb)."""
+    if DEVICE_TYPE_TORCH in _CPU_DEVICE_TYPES:
+        # System RAM is the budget a CPU run has to fit inside, so report it where a caller expects
+        # a device's total memory rather than raising and telling a CPU host it has no devices.
+        total = 0
+        try:
+            import psutil
+            total = int(psutil.virtual_memory().total)
+        except Exception:
+            total = 0
+        return "CPU. ", "CPU training: no accelerator in use.", round(total / 1024**3, 3)
     if _DEVICE_MODULE is None:
         raise RuntimeError("Unsloth: GPU statistics are unavailable on the MLX runtime.")
     gpu_stats = _DEVICE_MODULE.get_device_properties(0)

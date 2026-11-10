@@ -1469,6 +1469,37 @@ _CHECKPOINT_SUBFOLDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _DECISION_FULL_FINETUNING_LR = "2.5e-5"
 
 
+def _resolved_compute_target(request: TrainingStartRequest):
+    """The device this run will train on, or None for auto.
+
+    The request wins, then the target the user picked on the Train page, then "auto". Resolving here
+    rather than in the worker is what lets an unsupported choice be refused *before* a job id is
+    issued: a run that starts and then discovers it cannot use the device leaves a failed job in the
+    history and an unloaded chat model behind it.
+
+    Returns the registry's TrainingTarget (None on auto). Raises HTTPException with the registry's
+    own message when the target is absent or unsupported on this machine.
+    """
+    from core.training.device_targets import TrainingTargetError, resolve_training_target
+    from utils.compute_target_settings import get_selected_compute_target
+
+    requested = (request.compute_target or "").strip()
+    if not requested:
+        requested = get_selected_compute_target()
+    try:
+        target = resolve_training_target(requested)
+    except TrainingTargetError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+    if target.kind in ("cpu", "npu", "igpu"):
+        logger.info(
+            "Training will run on %s (%s); requested %r",
+            target.id,
+            target.name,
+            requested,
+        )
+    return target
+
+
 def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool = False) -> None:
     request.decision_layout = None
     if not request.is_decision:
@@ -1757,6 +1788,9 @@ class TrainingFitRequest(PydanticBaseModel):
     lora_rank: int = PydanticField(16, ge = 1, le = 1024)
     gradient_checkpointing: bool = True
     gpu_memory_gb: Optional[float] = PydanticField(None, gt = 0, le = 4096)
+    # Where the run will train. Naming a target changes where the budget comes from: an integrated
+    # GPU's ceiling is the shared pool, not the carve-out, and a CPU run's is system RAM.
+    compute_target: Optional[str] = PydanticField(None, max_length = 64)
 
 
 @router.post("/fit")
@@ -1770,9 +1804,16 @@ def estimate_training_fit(
     the host reports no GPU memory.
     """
     from core.training import fit as training_fit
+    from utils.compute_target_settings import get_selected_compute_target
 
+    spec = request.model_dump()
+    # The target the user picked is the one the run will use, so it is the one this estimate must
+    # describe. Sent explicitly by the wizard, or read from the stored choice; "auto" resolves the
+    # default device, which is what the start endpoint will resolve too.
+    if not spec.get("compute_target"):
+        spec["compute_target"] = get_selected_compute_target()
     try:
-        return training_fit.estimate(request.model_dump())
+        return training_fit.estimate(spec)
     except ValueError as error:
         raise HTTPException(status_code = 400, detail = str(error)) from error
 
@@ -2230,6 +2271,7 @@ async def start_training(
         return await _start_simulated_training()
 
     await asyncio.to_thread(_validate_decision_request, request, via_api_key)
+    compute_target = await asyncio.to_thread(_resolved_compute_target, request)
     if request.drafter is not None and request.drafter.enabled:
         from core.training.training import should_use_mlx_training_backend
         if should_use_mlx_training_backend():
@@ -2595,7 +2637,6 @@ async def start_training(
         moe_scope_patch: dict[str, Any] = {}
         if request.moe_expert_scope:
             from core.training.moe_targets import resolve_target_modules, scope_selectors
-
             try:
                 resolved_targets = resolve_target_modules(
                     request.moe_expert_scope,
@@ -2719,6 +2760,15 @@ async def start_training(
             "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
             "subject": current_subject,
             "gpu_ids": request.gpu_ids,
+            "compute_target": compute_target.id if compute_target is not None else "auto",
+            "compute_target_vendor": (
+                compute_target.vendor if compute_target is not None else None
+            ),
+            # Only an integrated GPU needs the shared-memory defaults; a discrete card that shares
+            # an address space with nothing must not be given an APU's allocator settings.
+            "compute_target_integrated": bool(
+                compute_target is not None and compute_target.kind == "igpu"
+            ),
             "s3_config": request.s3_config.model_dump() if request.s3_config else None,
             "advanced": (
                 request.advanced.model_dump(exclude_none = True)
@@ -2820,7 +2870,6 @@ async def start_training(
 
         if resume_output_dir and resume_run:
             from core.training.resume import training_run_config
-
             resume_report = await asyncio.to_thread(
                 resume_safety.evaluate_resume,
                 resume_output_dir,

@@ -24,6 +24,14 @@ export interface TrainingFitReport {
     gradient_checkpointing: boolean;
   };
   budget_gb: number | null;
+  /**
+   * Where the ceiling came from: "explicit", "probe", "target:cpu|igpu|dgpu|npu", "unresolved" or
+   * "unreported". The UI says "this card shares system memory" instead of presenting a shared
+   * budget as if it were private VRAM.
+   */
+  budget_source?: string;
+  /** Plain sentences the budget module wrote, e.g. an integrated GPU sharing system memory. */
+  target_notes?: string[];
   required_gb: number;
   headroom_gb: number | null;
   verdict: "fits" | "tight" | "over" | "unknown";
@@ -55,6 +63,8 @@ export async function fetchTrainingFit(input: {
   loraRank: number;
   gradientCheckpointing: GradientCheckpointing;
   gpuMemoryGb?: number | null;
+  /** The compute target the estimate is for; omitted, the server uses the stored choice. */
+  computeTarget?: string | null;
 }): Promise<TrainingFitReport> {
   const response = await authFetch("/api/train/fit", {
     method: "POST",
@@ -68,6 +78,7 @@ export async function fetchTrainingFit(input: {
       gradient_accumulation: input.gradientAccumulation,
       lora_rank: input.loraRank,
       gradient_checkpointing: input.gradientCheckpointing !== "none",
+      ...(input.computeTarget ? { compute_target: input.computeTarget } : {}),
       gpu_memory_gb: input.gpuMemoryGb ?? null,
     }),
   });

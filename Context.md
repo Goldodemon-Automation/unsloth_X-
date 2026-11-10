@@ -338,3 +338,101 @@ for RAM, and disk would size from `growth_ratio` the same way, but that is a sep
 decision. The front-trim decision recorded under Performance needs
 `test_end_to_end_webhook.py` relaxed or `RetainedSeries` moved to a deque, and the
 measured saving does not justify either.
+
+# Compute targets: CPU, iGPU and NPU (v1.0.0 – v1.2.0)
+
+Scope: everything in the three v1 releases — the compute-target registry, the integrated-GPU memory
+budget, the target's environment in the training worker, NPU detection and NPU-assisted training, and
+the frontend surfaces for all of it (device picker, NPU card, perf layer, windowed run history).
+
+## Files this work owns
+
+Backend, new:
+
+- `studio/backend/core/training/device_targets.py` — the registry: one probe, capability rules as pure
+  functions of measured facts, the resolution rules, and the JSON payload.
+- `studio/backend/core/training/compute_target_env.py` — the target as subprocess environment, applied
+  as the first statement of `run_training_process`.
+- `studio/backend/core/training/npu_assist.py` — the NPU assist planner and the bounded offload queue.
+- `studio/backend/utils/hardware/accelerator_budget.py` — the shared-memory rule and the allocator
+  defaults, plus `carveout_bytes()` used by both the route and the fit check.
+- `studio/backend/utils/hardware/npu_providers.py` — the runtime matrix.
+- `studio/backend/utils/compute_target_settings.py` — the remembered target (read total, write strict).
+- `studio/backend/routes/compute.py` — `GET /api/compute/targets`, `POST /api/compute/target`,
+  `GET /api/compute/npu/assist`.
+
+Backend, changed:
+
+- `studio/backend/utils/hardware/npu.py` — the AMD path kept byte-for-byte; a vendor matrix added.
+- `unsloth/device_type.py` — `UNSLOTH_TRAINING_DEVICE` opt-in override, `device_capabilities()`,
+  `npu_device_name()`, and the CPU arm for `_DEVICE_MODULE`/`get_device_stats()`.
+- `studio/backend/core/training/worker.py`, `fit.py`, `routes/training.py`, `models/training.py`,
+  `main.py` — the wiring: resolve on start, apply in the child, size for the target, register the route.
+
+## What changed, and why
+
+**The regression that started it.** A host with no accelerator could not name the device it was about
+to train on: `get_device_type()` raised, and the Studio's only vocabulary was `DeviceType` plus a
+global `CHAT_ONLY`. CPU training existed (the CoRA recipe on stock transformers + peft) and could not
+be described, sized or explained. `device_targets.list_training_targets()` returns the CPU row first
+and always supported, which is what makes the path representable; `resolve_training_target("cpu")` no
+longer raises, and that is pinned by
+`test_device_targets.py::test_a_cpu_only_host_now_resolves_cpu_instead_of_raising`.
+
+**`UNSLOTH_TRAINING_DEVICE` is opt-in, and that is the point.** Making "cpu" the fallback of
+`get_device_type()` would have broken four existing tests that pin the upstream contract — a missing
+accelerator must still raise — and, worse, would have turned a broken driver into a run that is 50-100x
+slower instead of a run that refuses. So the override is explicit, `igpu` resolves to whichever
+accelerator backend answers (and refuses rather than training on the CPU when none does), and
+`tests/test_forced_training_device.py` pins both halves. That test found the first real bug in the
+change: `_DEVICE_MODULE = getattr(torch, DEVICE_TYPE_TORCH, None)` raises "PyTorch does not provide the
+cpu backend" on exactly the hosts the override exists for, because torch has no `torch.cpu` namespace.
+The CPU is now named, and `get_device_stats()` reports system RAM there.
+
+**The iGPU budget is not `total_memory`.** An integrated GPU reports its carve-out (often 512 MB) while
+the driver allocates out of system RAM. The rule is `max(carveout, system_memory * 0.6)`, defined once
+in `accelerator_budget.py`, used by the route and by `fit.py::_target_budget_gb` through the shared
+`carveout_bytes()`. `fit.py` only consults it when the spec names a `compute_target`, so every existing
+call — including the "did not report a size" verdict that a torch-less host depends on — is unchanged,
+which `test_training_fit.py` pins.
+
+**Capability rules are pure.** No 4-bit on an integrated GPU (bitsandbytes has no kernels there, so a
+4-bit load dequantizes on the CPU per step); no bf16 on AMD gfx10 (Triton's dot kills the process in
+LLVM, issue #7922 — reusing the same prefix rule `arch_lacks_bf16` already encodes); an unmeasured fact
+is `false`. `grad_checkpoint` is the one capability the CPU and NPU rows state, because it is plain
+autograd.
+
+**The NPU is exposed, never offered.** It always appears in the list when present, always with
+`supported: false`, and `default_training_target()` never returns it. `npu_training_capability()`
+reports `mode: "assist"` at best, and `plan_npu_assist(requested="full")` answers with
+`no_backward_pass` and a note naming the assist path. The offload queue is bounded and lossy on
+purpose: a training step that waits on a queue is a slower training step.
+
+**Divergent sources of truth were the risk, not the code.** Capability keys, the memory budget, the
+target ids and the refusal tokens each live in exactly one module (`CAPABILITY_KEYS` in `device_type.py`
+for the library, the registry for the Studio, `VALID_COMPUTE_TARGETS` in the settings module, the
+refusal set in `npu_assist.py`), and `accelerator_budget.carveout_bytes()` exists so the route and the
+fit check cannot disagree about which number is the carve-out.
+
+## Verification
+
+Backend: 170 tests green across `test_device_targets.py`, `test_compute_route.py`,
+`test_compute_target_env.py`, `test_compute_target_settings.py`, `test_accelerator_budget.py`,
+`test_npu_vendors.py`, `test_npu_providers.py`, `test_npu_assist.py`, `test_training_fit.py` and
+`test_chat_only_reason.py`. `tests/test_forced_training_device.py` (repo root) is green, and
+`tests/test_device_helpers.py` still passes unchanged.
+
+Two suites fail on this Windows host for reasons that predate the change and do not reproduce on Linux:
+`studio/backend/tests/test_npu_detect.py` needs symlink privileges (8 tests, `WinError 1314`), and
+`tests/test_ci_backend_pytest_shards.py` compares forward-slash paths against `fnmatch`, so every
+Windows path reads as unclaimed (it reports all 1,746 files dropped, not just the new ones).
+
+Frontend: `npm run typecheck` clean (tsc 7.0.2), `npm test` green for the new suites, `npm run build`
+green, `npm run i18n:check` clean.
+
+## Next task
+
+Nothing deferred in this scope. The NPU assist queue has no live consumer yet — the planner, queue,
+capability report and UI are here and the tokenizer/evaluator adapters arrive with the first installed
+provider that can act on the payloads; that is recorded in `docs/releases/v1.1.0.md` under Limits
+rather than hidden.

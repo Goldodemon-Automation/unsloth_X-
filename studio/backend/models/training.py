@@ -837,6 +837,15 @@ class TrainingStartRequest(BaseModel):
         _resolve_inventory_handle
     )
 
+    compute_target: Optional[str] = Field(
+        None,
+        max_length = 64,
+        description = (
+            "Where the run trains: 'auto' (default), 'cpu', 'igpu', 'dgpu' or 'npu'. "
+            "Resolved against the machine's compute-target registry, so an unsupported target is "
+            "refused with the reason rather than silently trained somewhere else."
+        ),
+    )
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = (
