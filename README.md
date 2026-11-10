@@ -1,6 +1,4 @@
-<img src="images/logo-x-minus-icon.svg" alt="Unsloth X8" width="105" align="left" />
-
-# Unsloth X8
+# <img src="images/logo-x-minus-icon.svg" width="46" align="middle" alt="" /> Unsloth X8
 
 A fork of [Unsloth](https://github.com/unslothai/unsloth). It keeps the training stack and pushes on the
 Studio: the Scaler can grow **or** shrink a checkpoint, Labs is working engines rather than a preview,
