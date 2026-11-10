@@ -2204,6 +2204,13 @@ fn main() {
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
     shell_path::fix_path();
 
+    // Before any child exists: an NPU-flavored build opens the NPU gate on its own environment, so
+    // the first-run installer, the backend it launches and anything the backend spawns all see the
+    // same answer. Setting it per-spawn instead is how one of them ends up without it.
+    for (name, value) in install::flavor_npu_env() {
+        std::env::set_var(name, value);
+    }
+
     setup_logging();
     log_panics();
     info!("Unsloth desktop app starting");

@@ -646,3 +646,26 @@ without copying files around. Both copies hash to `0fe45b728144830e…`; the rep
 The public half is committed at `studio/src-tauri/x8-updater.key.pub` and is what every build verifies
 against. Losing the private key means no future updates: the only recovery is a new keypair, a new
 build carrying its public half, and a reinstall for everyone already on an earlier build.
+
+## Six installers, and what "-npu" means
+
+A flavor is a compile-time environment pair for the first-run installer, so "does the NPU work on
+cpu-gpu / cpu / gpu" has a layered answer:
+
+- The NPU **code** ships in every flavor -- it is the same app. Nothing about an NPU install needs a
+  different Python stack, because the NPU is driven by Lemonade/FastFlowLM, which the Studio installs
+  on demand and which exist for AMD XDNA 2 only.
+- The NPU is **off unless `UNSLOTH_STUDIO_ENABLE_NPU=1`**, which the backend reads once at startup.
+  So on the base three installers the NPU half is present but dark, and a user has to set the variable
+  themselves.
+- The NPU is **inference and assist only**. No vendor exposes a backward pass; no installer changes
+  that.
+
+So the three new flavors are `cpu-npu`, `gpu-npu`, `gpu-cpu-npu`: their base stack unchanged, plus the
+gate opened for the shell's own process before it spawns anything, so the installer, the backend and
+whatever the backend launches all inherit the same answer. `install_env()` groups the NPU flavor beside
+its base arm -- that is the whole of "same stack" -- and `npu_env()` is the only difference.
+
+`cargo test install::` covers the mapping, the shared install env and the gate (53 tests). The workflow
+matrix is now six flavors with the universal build first and the NPU variants last, and its
+distinctness check covers all six -- six signatures, six different hashes, or the release fails.

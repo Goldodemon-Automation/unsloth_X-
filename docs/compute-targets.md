@@ -128,7 +128,9 @@ Runtime QNN, Vitis AI, FastFlowLM, Lemonade, Windows ML. All rows are always pre
 ones are marked.
 
 Detection is off unless `UNSLOTH_STUDIO_ENABLE_NPU=1` is set, matching the existing NPU inference
-gate.
+gate. The desktop installers whose filename ends in `-npu` set that variable for you at launch; the
+others leave it unset. It gates detection and inference, never training — nothing can enable an
+NPU backward pass that does not exist.
 
 **No NPU can train a model.** No vendor exposes a backward pass to PyTorch. What the NPU can do is
 the work around a training step, and `core/training/npu_assist.py` plans exactly that:

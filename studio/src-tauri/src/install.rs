@@ -998,6 +998,12 @@ enum DesktopFlavor {
     Gpu,
     /// Probe and install whatever the machine can run. Every non-release build.
     CpuGpu,
+    /// The CPU stack, with the NPU gate on at launch.
+    CpuNpu,
+    /// The CUDA stack, with the NPU gate on at launch.
+    GpuNpu,
+    /// The universal stack, with the NPU gate on at launch.
+    GpuCpuNpu,
 }
 
 impl DesktopFlavor {
@@ -1009,7 +1015,32 @@ impl DesktopFlavor {
         match option_env!("UNSLOTH_DESKTOP_FLAVOR") {
             Some("cpu") => Self::Cpu,
             Some("gpu") => Self::Gpu,
+            Some("cpu-npu") => Self::CpuNpu,
+            Some("gpu-npu") => Self::GpuNpu,
+            Some("gpu-cpu-npu") => Self::GpuCpuNpu,
             _ => Self::CpuGpu,
+        }
+    }
+
+    /// Whether this build starts the backend with the NPU gate open.
+    ///
+    /// `UNSLOTH_STUDIO_ENABLE_NPU` is read once, by the backend, and it decides whether the NPU
+    /// panel, NPU model loads and NPU ids exist at all. A user could set it by hand; a flavor that
+    /// says NPU in its filename has to do it for them, or the name is a claim the app does not meet.
+    fn enables_npu(self) -> bool {
+        matches!(self, Self::CpuNpu | Self::GpuNpu | Self::GpuCpuNpu)
+    }
+
+    /// The environment that opens the NPU gate for this process and everything it spawns.
+    ///
+    /// Applied to the desktop shell's own environment at startup rather than to one child: the
+    /// installer, the `unsloth studio` backend and anything the backend launches all inherit it,
+    /// and a gate that is set on some paths and not others is worse than one that is never set.
+    pub(crate) fn npu_env(self) -> &'static [(&'static str, &'static str)] {
+        if self.enables_npu() {
+            &[("UNSLOTH_STUDIO_ENABLE_NPU", "1")]
+        } else {
+            &[]
         }
     }
 
@@ -1021,18 +1052,29 @@ impl DesktopFlavor {
     /// The universal flavor deliberately emits nothing, so its install is the unpinned,
     /// auto-detecting one every earlier build already performed.
     fn install_env(self) -> &'static [(&'static str, &'static str)] {
+        // The NPU flavors share their base arm on purpose: the NPU is driven by Lemonade/FastFlowLM,
+        // which the Studio installs on demand, so an "NPU installer" is the same Python stack with
+        // the gate open, not a different one.
         match self {
-            Self::Cpu => &[
+            Self::Cpu | Self::CpuNpu => &[
                 ("UNSLOTH_TORCH_INDEX_FAMILY", "cpu"),
                 ("UNSLOTH_LLAMA_CPP_BACKEND", "cpu"),
             ],
             // No family pin here on purpose: which CUDA leaf is correct depends on the
             // driver, which only the installer can see. Pinning it from the build would
             // hand a cu126 build to a card that needs cu128.
-            Self::Gpu => &[("UNSLOTH_LLAMA_CPP_BACKEND", "cuda")],
-            Self::CpuGpu => &[],
+            Self::Gpu | Self::GpuNpu => &[("UNSLOTH_LLAMA_CPP_BACKEND", "cuda")],
+            Self::CpuGpu | Self::GpuCpuNpu => &[],
         }
     }
+}
+
+/// The NPU gate this build's flavor wants applied to the process environment, or nothing.
+///
+/// Public to the crate for `main`; the enum stays private because nothing else should branch on a
+/// flavor -- `install_env` and `npu_env` are the only places a flavor is allowed to mean something.
+pub(crate) fn flavor_npu_env() -> &'static [(&'static str, &'static str)] {
+    DesktopFlavor::baked().npu_env()
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1778,6 +1820,26 @@ mod tests {
 
         // No torch pin for the GPU flavor: the leaf follows the driver, not the build.
         assert_eq!(DesktopFlavor::Gpu.install_env(), &[("UNSLOTH_LLAMA_CPP_BACKEND", "cuda")]);
+    }
+
+    #[test]
+    fn the_npu_flavors_are_their_base_stack_with_the_gate_open() {
+        // The name has to mean something: the stack is untouched, and the gate is the only
+        // difference between `cpu` and `cpu-npu`.
+        assert_eq!(DesktopFlavor::CpuNpu.install_env(), DesktopFlavor::Cpu.install_env());
+        assert_eq!(DesktopFlavor::GpuNpu.install_env(), DesktopFlavor::Gpu.install_env());
+        assert_eq!(
+            DesktopFlavor::GpuCpuNpu.install_env(),
+            DesktopFlavor::CpuGpu.install_env()
+        );
+
+        assert_eq!(
+            DesktopFlavor::CpuNpu.npu_env(),
+            &[("UNSLOTH_STUDIO_ENABLE_NPU", "1")]
+        );
+        assert_eq!(DesktopFlavor::Cpu.npu_env(), &[]);
+        assert_eq!(DesktopFlavor::Gpu.npu_env(), &[]);
+        assert_eq!(DesktopFlavor::CpuGpu.npu_env(), &[]);
     }
 
     #[test]
