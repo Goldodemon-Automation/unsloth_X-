@@ -133,3 +133,11 @@ python -m pytest tests/test_security_hardening.py tests/test_cors_origins.py \
     tests/test_preview_routes.py tests/test_keyless_api_access_adversarial.py \
     tests/test_file_security.py tests/test_consent_gate.py -q
 ```
+
+## Host allow-list (`UNSLOTH_TRUSTED_HOSTS`)
+
+The audit's "no Host allow-list" item now has a control, off by default: set
+`UNSLOTH_TRUSTED_HOSTS=studio.example,*.internal` and any request whose `Host` matches none of the
+patterns is refused with 400. Loopback literals and `localhost` always pass, so enabling it cannot lock
+a user out of their own machine, and leaving it unset is the previous behaviour exactly — LAN, tunnel and
+Colab modes carry Host values a single list cannot know. WebSocket scopes pass through unchanged.

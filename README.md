@@ -81,6 +81,7 @@ one backend.
 | **Scaler** | Grow a checkpoint (more depth, wider feed-forward) or shrink it, planned from `config.json` alone so the slider answers before weights load |
 | **Fit check** | Sizes a run from the card before anything starts, so an out-of-memory job is caught at plan time |
 | **Devices** | CPU, integrated GPU, discrete GPU and NPU in one registry, with honest capability per device and a picker in the Train wizard |
+| **Optional host allow-list** | `UNSLOTH_TRUSTED_HOSTS` refuses a foreign `Host` when you set it, and changes nothing when you do not |
 | **Caches that earn it** | Device probes, NPU runtime scans, Hub metadata and dataset fingerprints are cached on a key that changes when the answer would — bounded, self-expiring, never a different answer |
 | **Labs** | CMT, Scale-before-training, Benchmarks, Artifacts, Pipelines, the shrink repair preset and Cleanup — each an engine with tests, behind one switch |
 | **Automated training** | Samples 2-8 datasets, runs 2-72 trainings across CMT/CPT/FFT, benchmarks each, keeps the best and continues over rounds |
