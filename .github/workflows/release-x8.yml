@@ -6,7 +6,7 @@ name: Release X8 Desktop (Windows)
 # this fork's own Windows build, signed with this fork's updater key, together with
 # the latest.json that studio/src-tauri/tauri.conf.json points at:
 #
-#   https://github.com/GoldodemonINC/unsloth_8X/releases/latest/download/latest.json
+#   https://github.com/Goldodemon-Automation/unsloth_X-/releases/latest/download/latest.json
 #
 # One release carries three builds of the same app, one per flavor (cpu, gpu,
 # cpu-gpu). They differ only in the environment the desktop shell hands to the
@@ -352,7 +352,7 @@ jobs:
               'platforms': {
                   'windows-x86_64': {
                       'signature': signature,
-                      'url': 'https://github.com/GoldodemonINC/unsloth_8X/releases/download/'
+                      'url': 'https://github.com/Goldodemon-Automation/unsloth_X-/releases/download/'
                              f'v{version}/{urllib.parse.quote(asset_name)}',
                   }
               },
@@ -430,7 +430,7 @@ jobs:
           if not (entry.get('signature') or '').strip():
               sys.exit('windows-x86_64 entry has no signature; every client would reject it')
 
-          expected = f'https://github.com/GoldodemonINC/unsloth_8X/releases/download/{tag}/'
+          expected = f'https://github.com/Goldodemon-Automation/unsloth_X-/releases/download/{tag}/'
           url = entry.get('url') or ''
           if not url.startswith(expected):
               sys.exit(f'windows-x86_64 URL is not pinned to {tag}: {url}')
