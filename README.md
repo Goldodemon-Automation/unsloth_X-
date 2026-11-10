@@ -24,7 +24,7 @@ The upstream project is the fastest way to fine-tune open models on one GPU. Thi
 | **Integrated GPUs** | Intel Arc/Xe, AMD APUs and Apple Silicon train with a budget built from the memory they *share* with the system, not the small carve-out the driver reports. |
 | **NPU, honestly** | Vendor-neutral detection (AMD XDNA, Intel NPU 3/4, Qualcomm Hexagon, Apple ANE) and a runtime matrix. What an NPU can do for a run is planned, not promised: tokenizing, checkpoint scoring and QAT calibration, with the backward pass on another device. |
 | **Device picker** | One list of every device with its capability and a recommended batch/dtype, in the Train wizard, remembered per installation. |
-| **Faster UI** | Run history renders a window instead of every card, off-screen rows skip layout, and a perf layer (`src/lib/perf/`) is there to prove the next change helped. |
+| **Faster UI** | A perf layer (`src/lib/perf/`) measures marks, long tasks and interaction latency on demand, off unless enabled, so a speed change can be proven instead of assumed. |
 | **Licensing** | Additions original to this fork are under [NRC-3](LICENSE-NRC-3.md); inherited code keeps its upstream license. |
 
 ### The two Scaler directions
@@ -174,7 +174,7 @@ This fork's own release series starts at **v1**, and each release carries notes 
 | --- | --- |
 | [`v1.0.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.0.0) | CPU and integrated-GPU training: the compute-target registry, the shared-memory budget, the Train-wizard device picker, and the target's environment applied before torch loads. |
 | [`v1.1.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.1.0) | NPU support: vendor-neutral detection, the runtime matrix, and NPU-assisted training that plans what an NPU can really do instead of claiming a backward pass. |
-| [`v1.2.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.0) | The UI pass: windowed run history, off-screen rows skipping layout, a perf measurement layer, and the device picker and NPU card surfaced where the decision is made. |
+| [`v1.2.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.0) | The UI pass: a "what can this machine do" card for the device decision, and a perf layer (`src/lib/perf/`) that measures marks, long tasks and interaction latency on demand. |
 
 Releases are tags on `x8-main`. They are independent of the wheel version in `unsloth/_version.py`,
 which tracks the upstream package this fork imports.

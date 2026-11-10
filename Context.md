@@ -343,7 +343,7 @@ measured saving does not justify either.
 
 Scope: everything in the three v1 releases — the compute-target registry, the integrated-GPU memory
 budget, the target's environment in the training worker, NPU detection and NPU-assisted training, and
-the frontend surfaces for all of it (device picker, NPU card, perf layer, windowed run history).
+the frontend surfaces for all of it (device picker, capability card, NPU card, perf layer).
 
 ## Files this work owns
 
@@ -427,8 +427,10 @@ Two suites fail on this Windows host for reasons that predate the change and do 
 `tests/test_ci_backend_pytest_shards.py` compares forward-slash paths against `fnmatch`, so every
 Windows path reads as unclaimed (it reports all 1,746 files dropped, not just the new ones).
 
-Frontend: `npm run typecheck` clean (tsc 7.0.2), `npm test` green for the new suites, `npm run build`
-green, `npm run i18n:check` clean.
+Frontend: `npm run typecheck` clean (tsc 7.0.2), 46 tests green across the perf, compute-target and
+NPU-assist suites, `npm run build` green, `npm run i18n:check` clean. The full `npm test` walk is not
+a usable gate on this host: it stalls for hours on a pre-existing assistant-ui Markdown test that has
+nothing to do with this work.
 
 ## Next task
 

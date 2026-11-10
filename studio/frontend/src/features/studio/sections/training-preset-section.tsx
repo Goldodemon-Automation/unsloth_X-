@@ -2,13 +2,15 @@
 // Copyright 2026-present the X8 authors. All rights reserved. See /LICENSE-NRC-3.md
 
 import { Badge } from "@/components/ui/badge";
-import { ComputeTargetPicker } from "@/features/compute-targets/compute-target-picker";
-import { useComputeTargets } from "@/features/compute-targets/use-compute-targets";
-import { NpuTrainingCard } from "@/features/npu/npu-training-card";
-import type { NpuAssistRequested } from "@/features/npu/npu-training-assist";
-import { useNpuTrainingAssist } from "@/features/npu/use-npu-training-assist";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { ComputeCapabilityCard } from "@/features/compute-targets/compute-capability-card";
+import { ComputeTargetPicker } from "@/features/compute-targets/compute-target-picker";
+import { useComputeTargets } from "@/features/compute-targets/use-compute-targets";
+import type { NpuAssistRequested } from "@/features/npu/npu-training-assist";
+import { NpuTrainingCard } from "@/features/npu/npu-training-card";
+import { useNpuTrainingAssist } from "@/features/npu/use-npu-training-assist";
+import { useTrainingConfigStore } from "@/features/training";
 import {
   type TrainingFitReport,
   fetchTrainingFit,
@@ -21,7 +23,6 @@ import {
   loadStoredPresets,
   writeStoredPresets,
 } from "@/features/training/lib/training-presets";
-import { useTrainingConfigStore } from "@/features/training";
 import { useInferenceGpuInfo } from "@/hooks/use-gpu-info";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
@@ -53,7 +54,9 @@ export function TrainingPresetSection(): ReactElement {
   const t = useT();
   const gpu = useInferenceGpuInfo();
   const selectedModel = useTrainingConfigStore((state) => state.selectedModel);
-  const trainingMethod = useTrainingConfigStore((state) => state.trainingMethod);
+  const trainingMethod = useTrainingConfigStore(
+    (state) => state.trainingMethod,
+  );
   const contextLength = useTrainingConfigStore((state) => state.contextLength);
   const batchSize = useTrainingConfigStore((state) => state.batchSize);
   const gradientAccumulation = useTrainingConfigStore(
@@ -118,7 +121,9 @@ export function TrainingPresetSection(): ReactElement {
     writeStoredPresets(next);
   };
 
-  const use = (preset: StoredTrainingPreset | (typeof BUILTIN_PRESETS)[number]) => {
+  const use = (
+    preset: StoredTrainingPreset | (typeof BUILTIN_PRESETS)[number],
+  ) => {
     applyPreset(preset);
     setFit(null);
     toast.success(t("studio.presets.applied"), { description: preset.name });
@@ -144,7 +149,8 @@ export function TrainingPresetSection(): ReactElement {
         gpuMemoryGb: gpu.available ? gpu.memoryTotalGb : null,
         // Sent so the estimate describes the device the run will actually use: an integrated GPU
         // plans against shared memory, a CPU run against RAM.
-        computeTarget: computeTargets?.requested ?? computeTargets?.resolved ?? null,
+        computeTarget:
+          computeTargets?.requested ?? computeTargets?.resolved ?? null,
       });
       setFit(report);
     } catch (failure) {
@@ -219,7 +225,7 @@ export function TrainingPresetSection(): ReactElement {
         {saving ? (
           <span className="flex items-center gap-1">
             <input
-              autoFocus
+              autoFocus={true}
               value={name}
               onChange={(event) => setName(event.target.value)}
               onKeyDown={(event) => {
@@ -239,11 +245,7 @@ export function TrainingPresetSection(): ReactElement {
             </Button>
           </span>
         ) : (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => setSaving(true)}
-          >
+          <Button size="sm" variant="outline" onClick={() => setSaving(true)}>
             <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
             {t("studio.presets.saveCurrent")}
           </Button>
@@ -256,9 +258,9 @@ export function TrainingPresetSection(): ReactElement {
               translation pass, and a half-translated picker reads worse than an English one. */}
           <span className="text-ui-11 font-medium text-foreground">Run on</span>
           <p className="mt-1 text-ui-10 leading-relaxed text-muted-foreground/70">
-            The device this run trains on. The capacity check below sizes the run for it: an
-            integrated GPU plans against the memory it shares with the system, and a CPU run
-            against RAM.
+            The device this run trains on. The capacity check below sizes the
+            run for it: an integrated GPU plans against the memory it shares
+            with the system, and a CPU run against RAM.
           </p>
           <ComputeTargetPicker
             className="mt-2"
@@ -275,6 +277,16 @@ export function TrainingPresetSection(): ReactElement {
               {computeTargets.budget.notes}
             </p>
           ) : null}
+          {/* The picker answers "where will this run"; this answers "what can this machine do",
+              which is the question behind a greyed-out device or a missing 4-bit option. */}
+          <details className="mt-2 text-ui-10 text-muted-foreground/80">
+            <summary className="cursor-pointer">
+              What can this machine do?
+            </summary>
+            <div className="mt-2">
+              <ComputeCapabilityCard data={computeTargets} />
+            </div>
+          </details>
           {computeTargets.npu ? (
             <div className="mt-3">
               <NpuTrainingCard
@@ -308,7 +320,9 @@ export function TrainingPresetSection(): ReactElement {
             ) : (
               <HugeiconsIcon icon={DashboardSpeed01Icon} className="size-3.5" />
             )}
-            {checking ? t("studio.presets.checking") : t("studio.presets.check")}
+            {checking
+              ? t("studio.presets.checking")
+              : t("studio.presets.check")}
           </Button>
           {fit ? (
             <Badge

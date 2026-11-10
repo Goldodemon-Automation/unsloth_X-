@@ -29,9 +29,14 @@ import { isTauri } from "./lib/api-base";
 import { setHubSessionRefresh } from "./lib/hf-endpoint";
 import { watchInputModality } from "./lib/input-modality";
 import { watchOverlayScrollbarGutter } from "./lib/overlay-scrollbar";
+import { installPerf } from "./lib/perf";
 import { watchSpellCheck } from "./lib/spellcheck";
 
 setHubSessionRefresh(refreshSession);
+
+// Perf instrumentation for the "make the UI faster" work; inert unless the
+// session opted in (?perf=1), so the default build pays one boolean check.
+installPerf();
 
 const rootElement = document.getElementById("root");
 if (!rootElement) {
