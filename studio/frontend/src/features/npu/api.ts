@@ -220,3 +220,20 @@ async function readDownloadStream(
   }
   throw new Error("The download ended before it completed");
 }
+
+/**
+ * Training assist (what the NPU can and cannot do for a training run) lives in
+ * ./npu-training-assist.ts together with its parser and display helpers, so the
+ * card, the hook and the request stay in one place. Only the types are
+ * re-exported here: a value re-export would make this module load that file at
+ * import time, which the request-shape tests stub out.
+ */
+export type {
+  NpuAssistCapability,
+  NpuAssistMode,
+  NpuAssistRefusal,
+  NpuAssistRequested,
+  NpuAssistTask,
+  NpuTrainingAssist,
+  NpuTrainingAssistOptions,
+} from "./npu-training-assist";

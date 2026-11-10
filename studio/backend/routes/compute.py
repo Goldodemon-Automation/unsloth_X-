@@ -136,3 +136,43 @@ async def choose_compute_target(
         "target": asdict(resolved),
         "targets": payload["targets"],
     }
+
+
+@router.get("/npu/assist")
+async def npu_assist_plan(
+    eval_enabled: bool = False,
+    qat: bool = False,
+    requested: str = "auto",
+    current_subject: str = Depends(get_current_subject),
+) -> dict:
+    """What the NPU would do for a run on this machine, in the words the UI shows.
+
+    Read-only preview: it plans, it does not start anything. `requested="full"` is answered with a
+    refusal that names the reason, which is the whole point of exposing the mode -- a user who asks
+    for NPU-only training deserves to be told no vendor ships a backward pass, not to be silently
+    put on the assist path.
+    """
+    from core.training.npu_assist import plan_npu_assist
+
+    cap = await asyncio.to_thread(_npu_capability)
+    try:
+        primary = await asyncio.to_thread(resolve_training_target, None, None)
+    except Exception:  # noqa: BLE001 - a plan is still answerable without a primary device
+        primary = None
+    plan = await asyncio.to_thread(
+        plan_npu_assist,
+        cap,
+        requested = requested,
+        primary_kind = getattr(primary, "kind", "cpu"),
+        eval_enabled = eval_enabled,
+        qat = qat,
+    )
+    return {
+        "enabled": plan.enabled,
+        "mode": plan.mode,
+        "tasks": list(plan.tasks),
+        "providers": list(plan.providers),
+        "refused_reason": plan.refused_reason,
+        "notes": list(plan.notes),
+        "capability": cap,
+    }

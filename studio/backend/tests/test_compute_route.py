@@ -217,3 +217,31 @@ def test_choosing_an_unknown_target_is_refused(client, stored):
 
 def test_an_empty_target_is_rejected_by_the_schema(client):
     assert client.post("/api/compute/target", json = {"target": ""}).status_code == 422
+
+
+def test_the_npu_assist_preview_answers_even_without_a_usable_npu(client):
+    response = client.get("/api/compute/npu/assist", params = {"requested": "assist"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["enabled"] is False
+    # A refusal names the reason, which is the whole point of exposing the mode.
+    assert body["refused_reason"] == "absent"
+    assert body["capability"]["mode"] == "unavailable"
+
+
+def test_an_auto_npu_request_that_cannot_be_helped_explains_itself(client):
+    body = client.get("/api/compute/npu/assist").json()
+
+    # Auto asked for nothing, so it is not a refusal -- but the notes still say why nothing happened.
+    assert body["enabled"] is False
+    assert body["refused_reason"] is None
+    assert body["notes"]
+
+
+def test_the_npu_assist_preview_refuses_a_full_request_with_the_reason(client):
+    response = client.get("/api/compute/npu/assist", params = {"requested": "full"})
+
+    body = response.json()
+    assert body["enabled"] is False
+    assert body["refused_reason"] == "no_backward_pass"

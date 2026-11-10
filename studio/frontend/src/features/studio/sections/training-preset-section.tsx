@@ -4,6 +4,9 @@
 import { Badge } from "@/components/ui/badge";
 import { ComputeTargetPicker } from "@/features/compute-targets/compute-target-picker";
 import { useComputeTargets } from "@/features/compute-targets/use-compute-targets";
+import { NpuTrainingCard } from "@/features/npu/npu-training-card";
+import type { NpuAssistRequested } from "@/features/npu/npu-training-assist";
+import { useNpuTrainingAssist } from "@/features/npu/use-npu-training-assist";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -70,6 +73,15 @@ export function TrainingPresetSection(): ReactElement {
     loading: computeTargetsLoading,
   } = useComputeTargets();
 
+  // The NPU is never the primary device, so what it can do here is decided once and offered beside
+  // the picker rather than hidden in settings: it changes how the run is arranged.
+  // "full" is reachable from the card on purpose: asking for it is how the UI can answer with the
+  // reason no NPU can train a model yet, instead of never offering the mode.
+  const [npuRequested, setNpuRequested] = useState<NpuAssistRequested>("auto");
+  const npuAssist = useNpuTrainingAssist({
+    requested: npuRequested,
+    active: Boolean(computeTargets?.npu),
+  });
 
   const [custom, setCustom] = useState<StoredTrainingPreset[]>([]);
   const [saving, setSaving] = useState(false);
@@ -262,6 +274,19 @@ export function TrainingPresetSection(): ReactElement {
             <p className="mt-2 text-ui-10 leading-relaxed text-muted-foreground/70">
               {computeTargets.budget.notes}
             </p>
+          ) : null}
+          {computeTargets.npu ? (
+            <div className="mt-3">
+              <NpuTrainingCard
+                assist={npuAssist.assist}
+                error={npuAssist.error}
+                loading={npuAssist.loading}
+                onRequest={(next) => {
+                  setNpuRequested(next);
+                  npuAssist.refresh();
+                }}
+              />
+            </div>
           ) : null}
         </div>
       ) : null}
