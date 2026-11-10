@@ -151,6 +151,10 @@ const BAR_PILL =
   "flex h-9 items-center gap-2 rounded-full px-4 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
 const BAR_ROUND =
   "flex size-9 items-center justify-center rounded-full outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring";
+// A breadcrumb link is a text button in the page's header chrome, so it takes the same ring as
+// every other control on the screen rather than the browser's default outline.
+const CRUMB_LINK =
+  "rounded-sm outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
 
 function EmptyState({
   icon,
@@ -751,7 +755,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       <button
         type="button"
         onClick={() => go({ show: "folders" })}
-        className="shrink-0 transition-colors hover:text-foreground"
+        className={cn(CRUMB_LINK, "shrink-0")}
       >
         {t("shell.navigation.library")}
       </button>
@@ -765,7 +769,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
           <button
             type="button"
             onClick={() => go({ folder: folder.id })}
-            className="truncate transition-colors hover:text-foreground"
+            className={cn(CRUMB_LINK, "truncate")}
           >
             {folder.name}
           </button>
@@ -920,7 +924,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     }
     if (empty && folderId) {
       return (
-        <div className="mt-6 flex min-h-[calc(420px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-5 rounded-xl border border-dashed border-border bg-muted/50">
+        <div className="mt-6 flex min-h-[calc(420px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-5 rounded-xl border border-dashed border-border bg-muted/40">
           <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.5} className="size-8" />
           {uploadButton}
           <p className="text-sm text-muted-foreground">{t("library.empty.dropHere")}</p>
@@ -1139,7 +1143,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               onClick={() => requestDelete(deletableSelection())}
               className={cn(
                 BAR_PILL,
-                "border border-red-500/70 text-red-600 transition-colors hover:bg-red-500/15 dark:text-red-400",
+                // The destructive token, not a red step: --destructive is one colour in both
+                // themes, so the pill that removes files matches the delete dialog's own copy.
+                "border border-destructive/40 text-destructive transition-colors hover:bg-destructive/15",
               )}
             >
               <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />

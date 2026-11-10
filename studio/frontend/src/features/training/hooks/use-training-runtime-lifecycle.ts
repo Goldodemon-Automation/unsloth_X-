@@ -15,6 +15,7 @@ import {
   isAbortError,
   streamTrainingProgress,
 } from "../api/train-api";
+import { nextPollDelay, shouldStop } from "../lib/poll-policy";
 import {
   isTrainingStatusRequestCurrent,
   trainingStatusRequestKey,
@@ -31,6 +32,12 @@ import type { TrainingRuntimeStore } from "../types/runtime";
 const STATUS_POLL_INTERVAL_MS = 3000;
 const METRICS_POLL_INTERVAL_MS = 5000;
 const IDLE_POLL_INTERVAL_MS = 30000;
+/**
+ * Consecutive failed polls a stream spends before it stops asking. The slow
+ * recovery stream takes over when the fast one gives up, so the page keeps
+ * healing without the fast cadence hammering a backend that is down.
+ */
+const MAX_POLL_ATTEMPTS = 8;
 const STREAM_RECONNECT_DELAY_MS = 1500;
 const GENERIC_TRAINING_STREAM_ERROR = "Training stream error";
 const DEFAULT_TRAINING_ERROR_BODY = "Your training run stopped with an error.";
@@ -104,6 +111,232 @@ function maybeNotifyTrainingTerminalTransition(
   }
 }
 
+interface PollStreamSpec {
+  /** The stream's name, used by `isStopped`. */
+  name: string;
+  /** The delay a healthy poll of this stream uses. */
+  baseMs: number;
+  /** True once the thing being polled is done and the stream can stop. */
+  finished: () => boolean;
+  /** True when a request is worth making right now. */
+  eligible: () => boolean;
+  /** Makes the request. Answers false when the request failed. */
+  request: () => Promise<boolean>;
+}
+
+interface PollStreamState {
+  spec: PollStreamSpec;
+  dueAt: number;
+  /** Consecutive failed attempts. A success clears it. */
+  failures: number;
+  failed: boolean;
+  /** An armed stream has a due time and may wake the timer. */
+  armed: boolean;
+  stopReason: "finished" | "budget" | null;
+}
+
+interface PollScheduler {
+  /** Arms the streams that can poll now and drops the ones that cannot. */
+  sync(): void;
+  /** Arms the streams and starts the timer. */
+  start(): void;
+  /** Cancels the timer. */
+  stop(): void;
+  /** Whether a stream has stopped, by name. */
+  isStopped: (name: string) => boolean;
+}
+
+/**
+ * One timer for every poll cadence.
+ *
+ * The Train page used to run three `setInterval` timers. A request that took
+ * longer than its interval could overlap the next one, a backend that was down
+ * was still hit at the full rate, and the 3s timer had no reason to stop, so a
+ * run that had already finished kept it alive for as long as the page stayed
+ * open. Here every cadence is a stream with its own due time and the timer
+ * wakes for the earliest one; the delay comes from the poll policy (the base
+ * delay while the backend answers, a capped backoff while it does not, longer
+ * while the tab is hidden), and a stream stops when its run has finished or
+ * when it has spent its attempt budget.
+ */
+function createPollScheduler(
+  specs: PollStreamSpec[],
+  options: { maxAttempts: number; hidden: () => boolean },
+): PollScheduler {
+  const states: PollStreamState[] = specs.map((spec) => ({
+    spec,
+    dueAt: 0,
+    failures: 0,
+    failed: false,
+    armed: false,
+    stopReason: null,
+  }));
+
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
+  let ticking = false;
+
+  const delayFor = (state: PollStreamState): number =>
+    nextPollDelay({
+      baseMs: state.spec.baseMs,
+      // The retry index: the first delay after a failure is the base delay.
+      attempt: Math.max(0, state.failures - 1),
+      failed: state.failed,
+      hidden: options.hidden(),
+    });
+
+  const revive = (state: PollStreamState): void => {
+    state.failures = 0;
+    state.failed = false;
+    state.stopReason = null;
+    state.armed = false;
+  };
+
+  const schedule = (): void => {
+    if (disposed) {
+      return;
+    }
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    const now = Date.now();
+    let dueAt = Infinity;
+    for (const state of states) {
+      if (!state.armed) {
+        continue;
+      }
+      dueAt = Math.min(dueAt, state.dueAt);
+    }
+    if (!Number.isFinite(dueAt)) {
+      return;
+    }
+    timer = setTimeout(() => {
+      timer = null;
+      void tick();
+    }, Math.max(0, dueAt - now));
+  };
+
+  const sync = (): void => {
+    if (disposed) {
+      return;
+    }
+    const now = Date.now();
+    let changed = false;
+    for (const state of states) {
+      if (state.stopReason === "finished" && !state.spec.finished()) {
+        // A new run: the watch starts over.
+        revive(state);
+        changed = true;
+      } else if (state.stopReason === null && state.spec.finished()) {
+        state.stopReason = "finished";
+        state.armed = false;
+        changed = true;
+      }
+      const eligible = state.stopReason === null && state.spec.eligible();
+      if (eligible && !state.armed) {
+        state.armed = true;
+        state.dueAt = now + delayFor(state);
+        changed = true;
+      } else if (!eligible && state.armed) {
+        state.armed = false;
+        changed = true;
+      }
+    }
+    if (changed) {
+      schedule();
+    }
+  };
+
+  async function tick(): Promise<void> {
+    if (disposed || ticking) {
+      return;
+    }
+    ticking = true;
+    let answered = false;
+    try {
+      const now = Date.now();
+      for (const state of states) {
+        if (disposed) {
+          return;
+        }
+        if (!state.armed || state.dueAt > now) {
+          continue;
+        }
+        if (!state.spec.eligible()) {
+          // The target went away between arming and firing. `sync` arms it
+          // again when it comes back.
+          state.armed = false;
+          continue;
+        }
+        let ok = false;
+        try {
+          ok = await state.spec.request();
+        } catch {
+          ok = false;
+        }
+        if (disposed) {
+          return;
+        }
+        if (ok) {
+          answered = true;
+          state.failures = 0;
+          state.failed = false;
+        } else {
+          state.failures += 1;
+          state.failed = true;
+        }
+        state.dueAt = Date.now() + delayFor(state);
+        if (
+          shouldStop({
+            finished: state.spec.finished(),
+            attempts: state.failures,
+            maxAttempts: options.maxAttempts,
+          })
+        ) {
+          state.stopReason = "budget";
+          state.armed = false;
+        }
+      }
+    } finally {
+      ticking = false;
+    }
+    if (disposed) {
+      return;
+    }
+    if (answered) {
+      // The backend answered, so a stream that only ran out of attempts goes
+      // back to work.
+      for (const state of states) {
+        if (state.stopReason === "budget") {
+          revive(state);
+        }
+      }
+    }
+    sync();
+    schedule();
+  }
+
+  return {
+    sync,
+    start: () => {
+      sync();
+      schedule();
+    },
+    stop: () => {
+      disposed = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    },
+    isStopped: (name: string) =>
+      states.some(
+        (state) => state.spec.name === name && state.stopReason !== null,
+      ),
+  };
+}
+
 export function useTrainingRuntimeLifecycle(): void {
   useEffect(() => {
     const clearStartError = () => {
@@ -154,10 +387,14 @@ export function useTrainingRuntimeLifecycle(): void {
       runtimeStore.getState().setSseConnected(false);
     };
 
-    const pollMetrics = async (options?: { fresh?: boolean }) => {
-      if (!hasAuthToken()) return;
+    // Both pollers answer with whether the request worked: the polling loop
+    // needs it to back off while the backend is down.
+    const pollMetrics = async (options?: {
+      fresh?: boolean;
+    }): Promise<boolean> => {
+      if (!hasAuthToken()) return true;
       const initial = runtimeStore.getState();
-      if (!initial.jobId) return;
+      if (!initial.jobId) return true;
       const requestKey = trainingStatusRequestKey(initial);
       try {
         const metrics = await getTrainingMetrics(initial.jobId, requestKey, {
@@ -165,21 +402,24 @@ export function useTrainingRuntimeLifecycle(): void {
         });
         const current = runtimeStore.getState();
         if (disposed || !isTrainingStatusRequestCurrent(requestKey, current)) {
-          return;
+          return true;
         }
         current.applyMetrics(metrics);
+        return true;
       } catch (error) {
         if (!isAbortError(error) && !disposed && hasAuthToken()) {
           runtimeStore.getState().setSseConnected(false);
         }
+        // An aborted request is not a failure of the backend.
+        return isAbortError(error);
       }
     };
 
     const pollStatus = async (options?: {
       fresh?: boolean;
       suppressNativeNotifications?: boolean;
-    }) => {
-      if (!hasAuthToken()) return;
+    }): Promise<boolean> => {
+      if (!hasAuthToken()) return true;
       const initial = runtimeStore.getState();
       const requestKey = trainingStatusRequestKey(initial);
       try {
@@ -188,7 +428,7 @@ export function useTrainingRuntimeLifecycle(): void {
         });
         const current = runtimeStore.getState();
         if (disposed || !isTrainingStatusRequestCurrent(requestKey, current)) {
-          return;
+          return true;
         }
 
         const previousState = initial;
@@ -211,10 +451,13 @@ export function useTrainingRuntimeLifecycle(): void {
         } else {
           stopStream();
         }
+        return true;
       } catch (error) {
         if (!isAbortError(error) && !disposed && hasAuthToken()) {
           runtimeStore.getState().setSseConnected(false);
         }
+        // An aborted request is not a failure of the backend.
+        return isAbortError(error);
       }
     };
 
@@ -320,57 +563,87 @@ export function useTrainingRuntimeLifecycle(): void {
       }
     };
 
-    const unsubscribeRuntime = runtimeStore.subscribe(
-      (state, previousState) => {
-        if (state.jobId !== previousState.jobId) {
-          stopStream();
-        }
-      },
-    );
-
-    void hydrate();
-
     const isIdle = () => {
       const s = runtimeStore.getState();
       return s.phase === "idle" && !s.isTrainingRunning;
     };
 
-    const statusTimer = setInterval(() => {
-      const s = runtimeStore.getState();
-      if (!s.hasHydrated || s.isHydrating) {
-        return;
-      }
-      if (isIdle()) {
-        return;
-      }
-      void pollStatus();
-    }, STATUS_POLL_INTERVAL_MS);
+    // A run that reached a terminal phase is over: the fast cadences have
+    // nothing left to ask for, and the slow recovery stream takes over.
+    const isTerminal = () => {
+      const phase = runtimeStore.getState().phase;
+      return phase === "completed" || phase === "error" || phase === "stopped";
+    };
 
-    const metricsTimer = setInterval(() => {
-      if (isIdle()) return;
-      const s = runtimeStore.getState();
-      if (shouldUseLiveSync(s) || s.currentStep > 0) {
-        void pollMetrics();
-      }
-    }, METRICS_POLL_INTERVAL_MS);
+    let scheduler: PollScheduler | null = null;
 
-    // Low-frequency poll: recovers failed hydration and catches out-of-band state changes.
-    const idleTimer = setInterval(() => {
-      const s = runtimeStore.getState();
-      if (!s.hasHydrated || s.isHydrating) {
-        return;
-      }
-      if (!isIdle()) {
-        return;
-      }
-      void pollStatus();
-    }, IDLE_POLL_INTERVAL_MS);
+    scheduler = createPollScheduler(
+      [
+        {
+          name: "status",
+          baseMs: STATUS_POLL_INTERVAL_MS,
+          finished: () => isTerminal(),
+          eligible: () => {
+            const s = runtimeStore.getState();
+            if (!s.hasHydrated || s.isHydrating) {
+              return false;
+            }
+            return !isIdle() && !isTerminal();
+          },
+          request: () => pollStatus(),
+        },
+        {
+          name: "metrics",
+          baseMs: METRICS_POLL_INTERVAL_MS,
+          finished: () => isTerminal(),
+          eligible: () => {
+            const s = runtimeStore.getState();
+            if (isIdle() || isTerminal()) {
+              return false;
+            }
+            return shouldUseLiveSync(s) || s.currentStep > 0;
+          },
+          request: () => pollMetrics(),
+        },
+        {
+          // Low-frequency poll: recovers failed hydration, catches out-of-band
+          // state changes, and keeps the page alive when the fast status
+          // stream has given up its attempt budget.
+          name: "idle",
+          baseMs: IDLE_POLL_INTERVAL_MS,
+          finished: () => false,
+          eligible: () => {
+            const s = runtimeStore.getState();
+            if (!s.hasHydrated || s.isHydrating) {
+              return false;
+            }
+            return isIdle() || isTerminal() || scheduler?.isStopped("status");
+          },
+          request: () => pollStatus(),
+        },
+      ],
+      {
+        maxAttempts: MAX_POLL_ATTEMPTS,
+        hidden: () => document.visibilityState === "hidden",
+      },
+    );
+
+    const unsubscribeRuntime = runtimeStore.subscribe(
+      (state, previousState) => {
+        if (state.jobId !== previousState.jobId) {
+          stopStream();
+        }
+        scheduler?.sync();
+      },
+    );
+
+    void hydrate();
+
+    scheduler.start();
 
     return () => {
       disposed = true;
-      clearInterval(statusTimer);
-      clearInterval(metricsTimer);
-      clearInterval(idleTimer);
+      scheduler?.stop();
       unsubscribeRuntime();
       stopStream();
     };

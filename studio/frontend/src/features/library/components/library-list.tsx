@@ -25,6 +25,13 @@ function targetKey(target: LibraryTarget): string {
 const ROW_INSET = "pl-4 pr-6";
 // Gap, not padding, so each row's hover area keeps its width.
 export const LIST_ROW_GAP = "gap-1";
+// The device picker's row treatment (compute-target-picker.tsx's IDLE_CLASS/SELECTED_CLASS), in
+// the same tokens: `accent` lifts a row in both themes, where `muted` went flat in dark, and the
+// row's own actions menu already brightens with `hover:bg-accent`. One hover for the screen.
+const ROW_HOVER = "hover:bg-accent/60";
+const ROW_SELECTED = "bg-accent hover:bg-accent";
+// One ring for every control a row offers, spelled as the shared focus class is.
+const ROW_FOCUS = "outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 const CELL = "hidden text-ui-13 text-muted-foreground sm:block";
 const ACTIVITY_COLUMN = "w-48 shrink-0";
@@ -60,7 +67,8 @@ function SortHeader({
       onClick={() => onSortChange(column)}
       aria-sort={active ? (sort.desc ? "descending" : "ascending") : undefined}
       className={cn(
-        "flex items-center gap-1 text-left transition-colors hover:text-foreground",
+        "flex items-center gap-1 rounded-sm text-left transition-colors hover:text-foreground",
+        ROW_FOCUS,
         active && "text-foreground",
         className,
       )}
@@ -96,7 +104,7 @@ function GutterCheckbox({
         }}
         aria-label={label}
         className={cn(
-          "rounded-full border-neutral-300 opacity-0 transition-opacity focus-visible:opacity-100 dark:border-input",
+          "rounded-full border-input opacity-0 transition-opacity focus-visible:opacity-100",
           group === "row"
             ? "group-hover/library-row:opacity-100"
             : "group-hover/library-head:opacity-100",
@@ -137,9 +145,10 @@ function Row({
   return (
     <div
       className={cn(
-        "group/library-row relative flex items-center gap-4 rounded-[14px] transition-colors hover:bg-muted dark:hover:bg-muted/60",
+        "group/library-row relative flex items-center gap-4 rounded-[14px] text-foreground transition-colors",
+        ROW_HOVER,
         ROW_INSET,
-        selected && "bg-muted dark:bg-muted/60",
+        selected && ROW_SELECTED,
       )}
     >
       <GutterCheckbox
@@ -156,7 +165,10 @@ function Row({
         type="button"
         aria-pressed={selecting ? selected : undefined}
         onClick={(event) => (selecting ? onToggle(event.shiftKey) : onOpen())}
-        className="flex min-w-0 flex-1 items-center gap-4 rounded-lg py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className={cn(
+          "flex min-w-0 flex-1 items-center gap-4 rounded-lg py-2 text-left",
+          ROW_FOCUS,
+        )}
       >
         {tile}
         <span className="flex min-w-0 items-center gap-2 text-ui-14 text-foreground">{name}</span>

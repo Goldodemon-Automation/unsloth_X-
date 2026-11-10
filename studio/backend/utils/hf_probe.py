@@ -25,7 +25,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Callable, Hashable, Optional, Union
+from typing import Any, Callable, Hashable, Optional, Union
 
 from loggers import get_logger
 
@@ -174,8 +174,8 @@ class NegativeVerdictCache:
             else:
                 self._entries.pop(key, None)
 
-    def probe_lock(self, key: Hashable) -> threading.RLock:
-        """The lock that serialises probes for *key*.
+    def probe_lock(self, key: Hashable) -> Any:
+        """The reentrant lock that serialises probes for *key*.
 
         Reentrant, so a probe that asks this cache about its own key cannot deadlock.
         """
@@ -268,9 +268,21 @@ def invalidate_probe_cache(key: Optional[Hashable] = None) -> None:
 
 
 def _endpoint_url(endpoint: Optional[str]) -> str:
-    """The URL to probe: the caller's, else the configured Hub endpoint."""
+    """The URL to probe: the caller's, else the configured Hub endpoint.
+
+    The configured value goes through ``utils.hf_endpoint``, so the probe asks about the
+    endpoint the backend itself uses: a value that module rejects is replaced by the
+    official Hub there, and probing the rejected value instead would answer a question
+    nothing else in the process asks.
+    """
     if endpoint:
         return str(endpoint).strip().rstrip("/")
+    try:
+        from utils.hf_endpoint import get_hf_endpoint
+
+        return get_hf_endpoint().rstrip("/")
+    except Exception:  # noqa: BLE001 - fall through to the raw value
+        pass
     try:
         from utils.utils import hf_endpoint_url
 
