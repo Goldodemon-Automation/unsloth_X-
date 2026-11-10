@@ -503,3 +503,32 @@ inference backend still speaking AMD-only while the Studio reported a vendor mat
 The brief's "only spawn 16" is a lifetime cap, not a block on admitting new work once the count is
 reached; "three running at all times" was an operational floor. Twelve were spawned across this
 series, partitioned by exclusive file ownership so no two ever edited the same file.
+
+## Round two (v1.3.0)
+
+Five fixes the first verification pass named, each one a gap that had been *observed* rather than
+guessed at:
+
+- **CPU tuning.** `core/training/cpu_tuning.py` decides threads, inter-op threads, attention,
+  dataloader workers, checkpointing and dtype from measured facts; `_load_cpu_model` applies them and
+  logs the plan on one line. Two choices were made un-risky rather than clever: a model that rejects
+  `attn_implementation` is retried without it (the load worked before the change, so it must keep
+  working), and the dataloader count is applied on Linux only, where the argument-build block's own
+  comment says the spawn-platform hazard does not apply.
+- **The start path's rules are testable.** `_apply_target_constraints` and `_compute_target_config`
+  moved out of the request handler; `tests/test_training_start_target.py` pins request-over-stored,
+  stored-over-auto, the 400 on a refused target and — the one that matters most — that the config the
+  worker receives is exactly what `compute_target_env` reads. The worker enforces the iGPU 4-bit rule
+  itself too, because a resumed run, the CLI and older queued jobs never pass through the route.
+- **The device card survives a failed probe.** It used to render only on success, so a failed GET left
+  a hole and the capacity check fell back to the server's stored choice without saying so.
+- **One capability answer.** The registry read `find_spec` where the loader reads `ALLOW_BITSANDBYTES`
+  and `native_kernels_ready`; a parity test now holds the key sets and the `grad_checkpoint` answers
+  together.
+- **The polled probe is single-flight.** The cache's `asyncio.Lock` was dead (the payload is built on
+  a worker thread), so two Train pages ran two full probes; it is a `threading.Lock` with
+  double-checked caching, and the TTL, invalidation and owner gate are covered by tests.
+
+One agent on this wave was cancelled by the harness mid-verification. Its two files and the trainer
+edit were on disk and complete; I re-ran the suite (13 tests), read the diff, and then made the two
+hardening changes above myself before committing — a cancelled agent is not a finished one.
