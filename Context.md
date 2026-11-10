@@ -470,3 +470,36 @@ startup budget at `98a74ea13` — measured there with a detached worktree, 2034.
 cause. `studio/backend/tests/test_npu_detect.py` fails on Windows without symlink privileges (8 tests,
 `WinError 1314`), and `tests/test_ci_backend_pytest_shards.py` reports every file as unclaimed on
 Windows because it matches forward-slash paths.
+
+## The review pass (v1.2.2)
+
+A code-level review of this work found eleven defects; `3371a3602` fixes them and the release body in
+`docs/releases/v1.2.2.md` records each one. The three that mattered:
+
+- **The pin reached half the program.** `UNSLOTH_TRAINING_DEVICE` was read by `unsloth/device_type.py`
+  and not by `utils/hardware/hardware.py`, which is what decides `cpu_training_host()`, the optimizer
+  normalisation and the GPU list the loader receives. A GPU host pinned to the CPU reported CUDA to
+  the loader, so one process ran in two device modes. `detect_hardware()` honours the pin now (reason
+  token `pinned_to_cpu`, so the sidebar does not offer to repair a deliberate choice), and the pin
+  outranks MLX, which previously made a CPU selection on Apple Silicon train on the GPU.
+- **A partial torch read produced a supported dGPU with `device: "cpu"`.** The fit check would size a
+  card that could not be read. `_torch_devices` now discards a partial read, and `supported` requires
+  a backend string as well as an installed torch.
+- **An `igpu` device pin could abort a run.** Unsloth's `igpu` resolves by *raising* when no
+  integrated backend answers, so a child that lost the GPU died in the loader instead of naming the
+  device it used. The pin is gone for `igpu`; the shared-memory flags are the part the run needs, and
+  the card is already selected through `CUDA_VISIBLE_DEVICES`/`ZE_AFFINITY_MASK`.
+
+Also fixed: Intel discrete cards reporting unified memory, the CPU row carrying installed rather than
+free RAM (and `budget_report` having no CPU arm, so it said "This GPU has …" for a CPU), the polled
+`/api/compute/targets` re-probing everything per request (now a 60 s cache with POST invalidation),
+`POST /api/compute/target` not being owner-gated while every neighbouring settings write is, an
+unguarded budget import that could 500 the polled GET, `carveout_bytes` taking the first integrated
+card instead of the resolved one, the NPU refusal tokens being published incompletely, and the
+inference backend still speaking AMD-only while the Studio reported a vendor matrix.
+
+## On subagent budget
+
+The brief's "only spawn 16" is a lifetime cap, not a block on admitting new work once the count is
+reached; "three running at all times" was an operational floor. Twelve were spawned across this
+series, partitioned by exclusive file ownership so no two ever edited the same file.
