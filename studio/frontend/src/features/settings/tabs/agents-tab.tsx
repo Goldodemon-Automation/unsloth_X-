@@ -1471,7 +1471,9 @@ export function AgentsTab() {
         </div>
 
         {variantsFailed ? (
-          <p className="text-ui-11 leading-relaxed text-status-warning">
+          /* A read that failed, said in the token the device screens use for one. The command
+             still runs on the values that did load, so this stays a line of text, not a banner. */
+          <p className="text-ui-11 leading-relaxed text-destructive">
             {t("settings.agents.quantizationLoadError")}
           </p>
         ) : null}

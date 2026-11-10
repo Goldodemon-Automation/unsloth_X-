@@ -172,6 +172,33 @@ def test_the_default_bound_is_128():
     assert gguf_archs.HEADER_CACHE.max_entries == 128
 
 
+def test_a_bulky_tokenizer_array_is_skipped_not_read(tmp_path):
+    """A vocabulary is tens of thousands of entries; the walk must skip over it.
+
+    The fields wanted here are in the general and architecture-scoped blocks, which a
+    GGUF writes before the tokenizer, so the array is stepped over rather than read.
+    """
+    vocabulary = [f"token{i}\x00" for i in range(5000)]
+    array = struct.pack("<IQ", 8, len(vocabulary))  # element type 8 (string), count
+    for token in vocabulary:
+        array += _string(token)
+
+    body = b"GGUF" + struct.pack("<I", 3) + struct.pack("<QQ", 0, 4)
+    body += _string("general.architecture") + struct.pack("<I", 8) + _string("qwen3")
+    body += _string("general.file_type") + struct.pack("<I", 4) + struct.pack("<I", 15)
+    body += _string("qwen3.context_length") + struct.pack("<I", 4) + struct.pack("<I", 32768)
+    body += _string("tokenizer.ggml.tokens") + struct.pack("<I", 9) + array
+
+    path = tmp_path / "vocab.gguf"
+    path.write_bytes(body)
+
+    header = gguf_archs.parse_gguf_header(str(path))
+
+    assert header["architecture"] == "qwen3"
+    assert header["quant"] == "Q4_K_M"
+    assert header["context_length"] == 32768
+
+
 def test_a_missing_file_raises_and_is_not_cached(tmp_path):
     """A missing file raises what it always raised, and nothing about it is stored."""
     missing = str(tmp_path / "nope.gguf")

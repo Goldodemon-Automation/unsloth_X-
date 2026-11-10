@@ -35,6 +35,7 @@ import {
   useTrainingConfigStore,
   useTrainingRuntimeStore,
 } from "@/features/training";
+import { explainTrainingFailure } from "@/features/training/lib/failure-hints";
 import { useGpuUtilization, useSystemInfo } from "@/hooks";
 import type { GpuUtilization } from "@/hooks/use-gpu-utilization";
 import { type TranslationKey, useT } from "@/i18n";
@@ -114,6 +115,11 @@ export function ProgressSection({
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   const isOwner = useIsAccountOwner();
   const trainingMethodLabel = getTrainingMethodLabel(data.trainingMethod);
+  // A failed run's error is read as a cause and a setting to change, never dumped:
+  // see src/features/training/lib/failure-hints.ts for what each line comes from.
+  const failure = data.error
+    ? explainTrainingFailure({ message: data.error })
+    : null;
 
   const config = useTrainingConfigStore(
     useShallow((state) => ({
@@ -384,10 +390,23 @@ export function ProgressSection({
             />
           )}
 
-          {data.error && (
-            <p className="rounded-2xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-red-500 leading-relaxed">
-              {data.error}
-            </p>
+          {data.error && failure && (
+            <div className="flex flex-col gap-1 rounded-2xl border border-destructive/30 bg-destructive/5 px-3 py-2">
+              <p className="text-ui-11 font-medium text-foreground">
+                {failure.title}
+              </p>
+              <p className="text-ui-10 leading-relaxed text-muted-foreground">
+                {failure.hint}
+              </p>
+              <details className="group">
+                <summary className="w-fit cursor-pointer select-none text-ui-10 text-muted-foreground hover:text-foreground">
+                  {t("studio.postmortem.logLabel")}
+                </summary>
+                <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-background/60 p-2.5 font-mono text-ui-10 leading-relaxed text-muted-foreground">
+                  {data.error}
+                </pre>
+              </details>
+            </div>
           )}
 
           {data.warnings.length > 0 && (

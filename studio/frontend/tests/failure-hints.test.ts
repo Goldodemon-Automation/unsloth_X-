@@ -9,7 +9,7 @@ import {
   explainTrainingFailure,
 } from "../src/features/training/lib/failure-hints.ts";
 
-/** Verbatim shapes of what the backend puts in `training_progress.error`. */
+/** Verbatim shapes of what the backend puts in the run's error field. */
 const BACKEND_MESSAGES: Record<string, string> = {
   // core/training/worker.py, the OOM branch of the run's top-level handler.
   oom: "GPU ran out of VRAM during training.\nTo fix: reduce max_seq_length (e.g. 2048-4096), enable gradient_checkpointing=True, lower per_device_train_batch_size, or use a smaller model / higher quantization.",
@@ -27,8 +27,7 @@ const BACKEND_MESSAGES: Record<string, string> = {
     "Access denied for 'meta-llama/Llama-3.1-8B'. This model is gated or private. Please add a Hugging Face token with access and try again.",
   gatedHub: "OSError: 401 Client Error. You are trying to access a gated repo.",
   // core/training/disk_preflight.py's blocker, and the OS error it prevents.
-  disk:
-    "The run needs about 61.00 GB but only 12.40 GB is free on ./outputs, so it would stop mid-training.",
+  disk: "The run needs about 61.00 GB but only 12.40 GB is free on ./outputs, so it would stop mid-training.",
   diskErrno: "OSError: [Errno 28] No space left on device",
   // core/training/training.py, a run the user stopped.
   interrupted: "Training stopped.",
@@ -76,6 +75,8 @@ const CASES: ReadonlyArray<{
     mentions: ["resume"],
   },
 ];
+
+const SENTENCE_END = /[.!?]$/;
 
 test("each failure the backend emits gets its own reading", () => {
   for (const { kind, messages, mentions } of CASES) {
@@ -146,11 +147,14 @@ test("a title quotes the run, not the traceback around it", () => {
   const explanation = explainTrainingFailure({
     message: [
       "Traceback (most recent call last):",
-      "  File \"/env/train.py\", line 12, in <module>",
+      '  File "/env/train.py", line 12, in <module>',
       "AssertionError: heads must divide hidden_size",
     ].join("\n"),
   });
-  assert.equal(explanation.title, "AssertionError: heads must divide hidden_size");
+  assert.equal(
+    explanation.title,
+    "AssertionError: heads must divide hidden_size",
+  );
 
   const long = explainTrainingFailure({
     message: `ValueError: ${"an explanation far too long for a heading ".repeat(6)}`,
@@ -184,7 +188,7 @@ test("retryable is false only when the fix lives outside the run", () => {
 });
 
 test("every hint names a concrete setting or action", () => {
-  const CONCRETE = [
+  const concrete = [
     "batch size",
     "sequence length",
     "4-bit",
@@ -206,11 +210,11 @@ test("every hint names a concrete setting or action", () => {
     const explanation = explainTrainingFailure({ kind });
     assert.ok(explanation.hint.length > 40, `${kind} has no real hint`);
     assert.ok(
-      CONCRETE.some((term) => explanation.hint.toLowerCase().includes(term)),
+      concrete.some((term) => explanation.hint.toLowerCase().includes(term)),
       `${kind} names nothing to change: ${explanation.hint}`,
     );
     assert.ok(
-      /[.!?]$/.test(explanation.hint.trim()),
+      SENTENCE_END.test(explanation.hint.trim()),
       `${kind}'s hint is not a sentence`,
     );
   }

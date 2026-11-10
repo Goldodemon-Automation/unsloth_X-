@@ -102,6 +102,11 @@ _MAX_KEY_BYTES = 1 << 20
 _MAX_STRING_BYTES = 1 << 22
 _MAX_ARRAY_ELEMENTS = 1 << 30
 
+# How many metadata entries the walk looks at. A GGUF's header holds a few hundred
+# entries at most, so this is a guard against a corrupt count, not a limit that
+# decides an answer: the walk stops as soon as it has what it came for.
+_MAX_KV_ENTRIES = 65536
+
 # llama.cpp's file-type enum (``general.file_type``), which is how a GGUF names its
 # quantization. Unknown values (newer llama.cpp releases add them) read as None
 # rather than as a guess.
@@ -155,9 +160,9 @@ def _read_u64(handle) -> int:
     return struct.unpack("<Q", _read_exact(handle, 8))[0]
 
 
-def _read_string(handle) -> str:
+def _read_string(handle, limit: int = _MAX_STRING_BYTES) -> str:
     length = _read_u64(handle)
-    if length > _MAX_STRING_BYTES:
+    if length > limit:
         raise ValueError("GGUF string length out of range")
     return _read_exact(handle, length).decode("utf-8", "replace")
 
@@ -220,8 +225,8 @@ def parse_gguf_header(path: str) -> Dict[str, Any]:
         if magic != _GGUF_MAGIC:
             raise ValueError(f"{path} is not a GGUF file")
 
-        for _ in range(kv_count):
-            key = _read_string(handle)
+        for _ in range(min(kv_count, _MAX_KV_ENTRIES)):
+            key = _read_string(handle, _MAX_KEY_BYTES)
             vtype = _read_u32(handle)
             if vtype == _VTYPE_STRING and key == "general.architecture":
                 architecture = _read_string(handle)
@@ -237,6 +242,11 @@ def parse_gguf_header(path: str) -> Dict[str, Any]:
                 )[0]
             else:
                 _skip_value(handle, vtype)
+            if key.startswith("tokenizer."):
+                # The tokenizer block is written last, and it is the bulky one (a
+                # vocabulary is tens of thousands of entries). Everything wanted here
+                # is in the general and architecture-scoped blocks before it.
+                break
             if architecture is not None and file_type is not None and architecture in contexts:
                 break
 

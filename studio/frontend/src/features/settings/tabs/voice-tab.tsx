@@ -358,6 +358,8 @@ function SttModelPicker({
                         {sttModelName(model)}
                       </span>
                       {RECOMMENDED_STT_MODELS.has(model) ? (
+                        /* The same green as the row's dot, tinted behind the label: one token for
+                           the row, so pill and dot follow the theme together. */
                         <span className="shrink-0 rounded-full bg-status-success/15 px-1.5 py-px text-ui-9 font-medium text-status-success">
                           {t("settings.voice.dictation.sttRecommended")}
                         </span>

@@ -18,6 +18,13 @@
  *
  * Pure and dependency-free, so a node test imports it directly, the way the
  * compute-target contract does (`src/features/compute-targets/types.ts`).
+ *
+ * It sits beside `training-failure-postmortem.ts`, which buckets a log into a kind
+ * (oom, nan, disk, auth, dataset, timeout) for translated card copy. This module
+ * names the causes that list has no bucket for — a host with no accelerator, a run
+ * the user stopped — and adds the answer the start actions need: whether running it
+ * again unchanged could help. Neither reads the other, so a test pins each on its
+ * own.
  */
 
 /** The failures this module can name, plus the case it leaves unexplained. */
@@ -260,7 +267,7 @@ const UNKNOWN_HINT =
 /** Python prints tracebacks; a title should not open with one. */
 const LOG_NOISE_PREFIXES = [
   "traceback (most recent call last)",
-  "file \"",
+  'file "',
   "during handling of the above exception",
   "the above exception was the direct cause",
 ];
