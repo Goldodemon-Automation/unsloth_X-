@@ -7,6 +7,7 @@ header, never the session bearer in ``?token=`` the library download route alrea
 import asyncio
 import sys
 from pathlib import Path
+from urllib.parse import urlencode
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -68,11 +69,12 @@ def no_credential(monkeypatch):
     monkeypatch.setattr(auth_module, "subject_for_header_or_query_token", refuse)
 
 
-def _request(*headers):
+def _request(*headers, **query):
     scope = {
         "type": "http",
         "method": "GET",
         "path": "/",
+        "query_string": urlencode(query).encode(),
         "headers": [(name.encode(), value.encode()) for name, value in headers],
     }
     return Request(scope)
@@ -94,7 +96,7 @@ def test_a_minted_link_opens_the_canvas_routes_without_a_bearer(client, no_crede
 
 def test_a_link_resolves_to_the_subject_it_was_minted_for():
     link = inf_mod._sign_canvas_link("unsloth")
-    subject = asyncio.run(inf_mod._authenticate_header_or_query(_request(), None, link))
+    subject = asyncio.run(inf_mod._authenticate_header_or_query(_request(link = link), None))
     assert subject == "unsloth"
 
 
@@ -104,8 +106,8 @@ def test_the_header_bearer_wins_over_a_link(monkeypatch):
 
     monkeypatch.setattr(auth_module, "subject_for_header_or_query_token", resolve)
     link = inf_mod._sign_canvas_link("someone-else")
-    request = _request(("authorization", "Bearer a-session"))
-    assert asyncio.run(inf_mod._authenticate_header_or_query(request, None, link)) == "signed-in"
+    request = _request(("authorization", "Bearer a-session"), link = link)
+    assert asyncio.run(inf_mod._authenticate_header_or_query(request, None)) == "signed-in"
 
 
 def test_an_expired_or_wrong_scope_link_is_refused(client, clock, no_credential):

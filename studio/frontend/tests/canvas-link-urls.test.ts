@@ -24,7 +24,8 @@ const QUERY_TOKEN = /[?&]token=/;
 const QUERY_LINK = /link=/;
 const SCRIPT_FILE = /\.tsx?$/;
 const DOWNLOAD_BUILDER = /export function libraryDownloadPath\([\s\S]*?\n}/;
-const DOWNLOAD_WRAPPER = /export async function libraryDownloadUrl\([\s\S]*?\n}/;
+const DOWNLOAD_WRAPPER =
+  /export async function libraryDownloadUrl\([\s\S]*?\n}/;
 const ANY_TOKEN = /token/i;
 
 const CANVAS_CARD = "components/assistant-ui/sandbox-files-view.tsx";
@@ -34,7 +35,9 @@ const LIBRARY_API = "features/library/api.ts";
 function sources(): string[] {
   const found: string[] = [];
   const walk = (relative: string) => {
-    for (const entry of readdirSync(new URL(relative, SRC), { withFileTypes: true })) {
+    for (const entry of readdirSync(new URL(relative, SRC), {
+      withFileTypes: true,
+    })) {
       const path = `${relative}${entry.name}`;
       if (entry.isDirectory()) {
         walk(`${path}/`);
@@ -52,12 +55,20 @@ test("no frontend file builds a URL with a session token in the query string", (
   // Sanity: the walk really did find the tree, so an empty result means "no offenders".
   assert.ok(files.length > 500, `only ${files.length} files walked`);
   const offenders = files.filter((file) => QUERY_TOKEN.test(read(file)));
-  assert.deepEqual(offenders, [], `these build a ?token= URL: ${offenders.join(", ")}`);
+  assert.deepEqual(
+    offenders,
+    [],
+    `these build a ?token= URL: ${offenders.join(", ")}`,
+  );
 });
 
 test("the canvas and library callers name the query the routes take", () => {
   for (const file of [CANVAS_CARD, LIBRARY_API]) {
-    assert.match(read(file), QUERY_LINK, `${file} never says what the route accepts`);
+    assert.match(
+      read(file),
+      QUERY_LINK,
+      `${file} never says what the route accepts`,
+    );
   }
 });
 
@@ -74,14 +85,20 @@ test("the canvas file card authorizes with a header, not a URL", () => {
 test("the library download builder takes a link and never a token", () => {
   const source = read(LIBRARY_API);
   const builder = DOWNLOAD_BUILDER.exec(source)?.[0];
-  assert.ok(builder, "libraryDownloadPath is gone: the download URL has no one builder");
+  assert.ok(
+    builder,
+    "libraryDownloadPath is gone: the download URL has no one builder",
+  );
   assert.match(builder, /new URLSearchParams\(\{ id: item\.id \}\)/);
   assert.match(builder, /query\.set\("link", link\)/);
   assert.doesNotMatch(builder, ANY_TOKEN);
 
   // The async wrapper asks for the URL through the builder and appends nothing of its own.
   const wrapper = DOWNLOAD_WRAPPER.exec(source)?.[0];
-  assert.ok(wrapper, "libraryDownloadUrl is gone: the native save has nothing to call");
+  assert.ok(
+    wrapper,
+    "libraryDownloadUrl is gone: the native save has nothing to call",
+  );
   assert.match(wrapper, /libraryDownloadPath\(item\)/);
   assert.doesNotMatch(wrapper, ANY_TOKEN);
 });

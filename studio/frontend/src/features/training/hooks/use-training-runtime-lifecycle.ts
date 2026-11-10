@@ -121,6 +121,11 @@ interface PollStreamSpec {
    * unless a later poll succeeds, which puts it back to work.
    */
   maxAttempts: number;
+  /**
+   * What the stream watches. A change means a new watch (a new run), so a
+   * stream that stopped for that run starts over.
+   */
+  watch: () => string;
   /** True once the thing being polled is done and the stream can stop. */
   finished: () => boolean;
   /** True when a request is worth making right now. */
@@ -131,6 +136,8 @@ interface PollStreamSpec {
 
 interface PollStreamState {
   spec: PollStreamSpec;
+  /** The watch the stream is on. */
+  watchKey: string;
   dueAt: number;
   /** Consecutive failed attempts. A success clears it. */
   failures: number;
@@ -170,6 +177,7 @@ function createPollScheduler(
 ): PollScheduler {
   const states: PollStreamState[] = specs.map((spec) => ({
     spec,
+    watchKey: spec.watch(),
     dueAt: 0,
     failures: 0,
     failed: false,
@@ -225,9 +233,18 @@ function createPollScheduler(
     );
   };
 
-  const syncState = (state: PollStreamState, now: number): boolean => {
+  const refreshWatch = (state: PollStreamState): boolean => {
+    // A new watch, or a run that is over and another one took its place:
+    // whatever stopped this stream starts over.
+    const watchKey = state.spec.watch();
+    if (watchKey !== state.watchKey) {
+      state.watchKey = watchKey;
+      if (state.stopReason !== null) {
+        revive(state);
+        return true;
+      }
+    }
     if (state.stopReason === "finished" && !state.spec.finished()) {
-      // A new run: the watch starts over.
       revive(state);
       return true;
     }
@@ -236,17 +253,21 @@ function createPollScheduler(
       state.armed = false;
       return true;
     }
+    return false;
+  };
+
+  const syncState = (state: PollStreamState, now: number): boolean => {
+    let changed = refreshWatch(state);
     const eligible = state.stopReason === null && state.spec.eligible();
     if (eligible && !state.armed) {
       state.armed = true;
       state.dueAt = now + delayFor(state);
-      return true;
-    }
-    if (!eligible && state.armed) {
+      changed = true;
+    } else if (!eligible && state.armed) {
       state.armed = false;
-      return true;
+      changed = true;
     }
-    return false;
+    return changed;
   };
 
   const sync = (): void => {
@@ -615,6 +636,7 @@ export function useTrainingRuntimeLifecycle(): void {
           name: "status",
           baseMs: STATUS_POLL_INTERVAL_MS,
           maxAttempts: MAX_POLL_ATTEMPTS,
+          watch: () => runtimeStore.getState().jobId ?? "",
           finished: () => isTerminal(),
           eligible: () => {
             const s = runtimeStore.getState();
@@ -630,6 +652,7 @@ export function useTrainingRuntimeLifecycle(): void {
           name: "metrics",
           baseMs: METRICS_POLL_INTERVAL_MS,
           maxAttempts: MAX_POLL_ATTEMPTS,
+          watch: () => runtimeStore.getState().jobId ?? "",
           finished: () => isTerminal(),
           eligible: () => {
             const s = runtimeStore.getState();
@@ -649,6 +672,7 @@ export function useTrainingRuntimeLifecycle(): void {
           // The last resort: it keeps a slow heartbeat for as long as the page
           // is open, so a page that outlived an outage still heals.
           maxAttempts: Number.POSITIVE_INFINITY,
+          watch: () => "",
           finished: () => false,
           eligible: () => {
             const s = runtimeStore.getState();

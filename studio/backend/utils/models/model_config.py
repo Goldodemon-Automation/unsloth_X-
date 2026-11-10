@@ -3,6 +3,7 @@
 
 """Model and LoRA configuration handling."""
 
+from collections import OrderedDict
 from dataclasses import dataclass, replace as _dataclass_replace
 from typing import Optional, Dict, Any
 from utils.paths.storage_roots import own_entry, within_account
@@ -57,6 +58,7 @@ import structlog
 from loggers import get_logger
 import contextlib as _contextlib
 from contextvars import ContextVar
+import copy
 import os
 import re
 import subprocess
@@ -73,6 +75,7 @@ import yaml
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.child_stdio import utf8_child_env
 from utils.hf_cache_settings import active_hf_hub_cache, get_hf_cache_paths
+import utils.hub_metadata_cache as _hub_metadata_cache
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
@@ -551,6 +554,186 @@ for canonical_file, model_names in MODEL_NAME_MAPPING.items():
         _REVERSE_MODEL_MAPPING[model_name.lower()] = canonical_file
 
 
+# ---------------------------------------------------------------------------
+# config.json parse cache
+# ---------------------------------------------------------------------------
+
+# Bounded so a sweep over many models (or many users) cannot grow this forever.
+_CONFIG_CACHE_MAX_ENTRIES = 256
+
+
+class _ConfigJsonNotPublished(Exception):
+    """Internal: the repo publishes no config.json.
+
+    Converted to ``None`` at the read's boundary and never stored, so a repo
+    that later publishes one is not answered from a stale absence.
+    """
+
+
+class _ConfigParseCache:
+    """Parsed ``config.json`` answers for local files, keyed by file identity.
+
+    The key is ``(resolved path, st_mtime_ns, st_size)`` plus whatever else can
+    change the answer (the AutoConfig variants below). Rewriting the file
+    changes the key, and a deleted file makes the key unbuildable -- the stat
+    fails, the read runs, and it raises exactly what it raises today -- so an
+    absent or unreadable config is never answered from a stale entry. A read
+    that raises stores nothing.
+
+    Hub repos are not handled here: their answers live in
+    ``utils.hub_metadata_cache``, keyed ``(repo, revision)`` with one TTL per
+    answer -- not two caches with two TTLs. ``invalidate`` below drops both.
+    """
+
+    def __init__(self, max_entries: int = _CONFIG_CACHE_MAX_ENTRIES) -> None:
+        self._lock = threading.Lock()
+        self._entries: "OrderedDict[Tuple[Any, ...], Any]" = OrderedDict()
+        self._max_entries = max_entries
+
+    def get(self, key: Tuple[Any, ...]) -> Optional[Any]:
+        with self._lock:
+            value = self._entries.get(key)
+            if value is not None:
+                self._entries.move_to_end(key)
+            return value
+
+    def put(self, key: Tuple[Any, ...], value: Any) -> None:
+        with self._lock:
+            self._entries[key] = value
+            self._entries.move_to_end(key)
+            while len(self._entries) > self._max_entries:
+                self._entries.popitem(last = False)
+
+    def invalidate(self, path: Optional[str] = None) -> None:
+        """Drop every entry, or only the entries for one config.json (its file or its model dir)."""
+        with self._lock:
+            if path is None:
+                self._entries.clear()
+                return
+            target = _config_json_identity(path)
+            if target is None:
+                return
+            for key in [k for k in self._entries if k[1] == target]:
+                del self._entries[key]
+
+
+_config_parse_cache = _ConfigParseCache()
+
+
+def _config_json_identity(path: str) -> Optional[str]:
+    """Resolved path of the config.json ``path`` names: the file itself, or its model dir."""
+    try:
+        candidate = Path(normalize_path(path)).expanduser()
+        if candidate.name != "config.json":
+            candidate = candidate / "config.json"
+        return os.path.realpath(str(candidate))
+    except Exception:
+        return None
+
+
+def _config_file_cache_key(suffix: Tuple[Any, ...], config_path) -> Optional[Tuple[Any, ...]]:
+    """Cache key for a local config.json: ``(resolved path, st_mtime_ns, st_size)`` + suffix.
+
+    None when the file cannot be stat'ed: the read still runs and raises what it
+    raises, and nothing is cached -- a missing file must not become a stale hit.
+    """
+    try:
+        st = Path(config_path).stat()
+        resolved = os.path.realpath(str(config_path))
+    except OSError:
+        return None
+    return ("file", resolved, st.st_mtime_ns, st.st_size, *suffix)
+
+
+def _parse_config_file(config_path) -> dict:
+    """One read + parse of a config.json. Wrapped by the cache above: a raise here
+    (missing file, unreadable file, bad JSON) propagates and stores nothing."""
+    return json.loads(Path(config_path).read_text(encoding = "utf-8-sig"))
+
+
+def _cached_local_config_json(config_path) -> dict:
+    """Parsed config.json for a local file: re-parsed only when the file changes."""
+    key = _config_file_cache_key((), config_path)
+    if key is not None:
+        hit = _config_parse_cache.get(key)
+        if hit is not None:
+            return copy.deepcopy(hit)
+    value = _parse_config_file(config_path)
+    if key is not None:
+        _config_parse_cache.put(key, copy.deepcopy(value))
+    return value
+
+
+def _fetcher_scope(fetcher: Any) -> str:
+    """Identity of a fetch callable, for a cache scope.
+
+    A swapped or stubbed client is asking a new question, so its answers must
+    never be replayed for the real client or for another stub -- the rule
+    ``hub_metadata_cache.client_scope`` applies to a swapped Hub client.
+    Descriptors unwrap to the function behind them: a bound method is a fresh
+    object on every access and would scope every call to itself.
+    """
+    while isinstance(fetcher, (staticmethod, classmethod)):
+        fetcher = getattr(fetcher, "__func__", None)
+    try:
+        return _hub_metadata_cache.client_scope(fetcher)
+    except Exception:
+        return "client?"
+
+
+def _raw_config_scope(hf_token: HfTokenArg, local_files_only: bool) -> str:
+    """Hub cache scope for a raw config.json answer.
+
+    Content is per ``(repo, revision)``, the cache key; the scope keeps apart the
+    answers that can legitimately differ: which credential may read the file at
+    all (a refused caller is answered None, never another token's parse), a
+    cache-only contract, and the client that would fetch it.
+    """
+    try:
+        from huggingface_hub import hf_hub_download
+        from utils.hf_probe import hf_file_definitely_absent
+
+        fetchers = f"{_fetcher_scope(hf_hub_download)}|{_fetcher_scope(hf_file_definitely_absent)}"
+    except Exception:
+        fetchers = "client?"
+    return f"{_token_fingerprint(hf_token)!r}|lfo={bool(local_files_only)}|{fetchers}"
+
+
+def _auto_config_scope(
+    token: HfTokenArg, trust_remote_code: bool, local_files_only: bool, use_auth: bool
+) -> str:
+    """Cache scope for a loaded AutoConfig (same rule as _raw_config_scope).
+
+    ``trust_remote_code`` can change the config class the load returns, and the
+    auth modes are different credentials, so each is its own answer.
+    """
+    try:
+        from transformers import AutoConfig
+
+        fetcher = _fetcher_scope(vars(AutoConfig).get("from_pretrained"))
+    except Exception:
+        fetcher = "client?"
+    return (
+        f"{_token_fingerprint(token)!r}|trc={bool(trust_remote_code)}"
+        f"|lfo={bool(local_files_only)}|auth={bool(use_auth)}|{fetcher}"
+    )
+
+
+def invalidate(path: Optional[str] = None) -> None:
+    """Drop cached config.json answers so the next call re-reads.
+
+    ``path`` names a config.json, its model directory, or a Hub repo id; None
+    drops everything. The Hub-side answers live in ``utils.hub_metadata_cache``
+    (one TTL per answer), so dropping them also drops that module's model_info
+    answers for the same key -- those only cost a re-fetch.
+    """
+    _config_parse_cache.invalidate(path)
+    if path is None:
+        _hub_metadata_cache.invalidate()
+    elif not is_local_path(path):
+        _hub_metadata_cache.invalidate(path)
+
+
 def load_model_config(
     model_name: str,
     use_auth: bool = False,
@@ -569,6 +752,47 @@ def load_model_config(
     ``local_files_only`` keeps the config read on the local HF cache (offline
     export), so an offline probe never blocks on the network. ``revision`` pins
     remote reads to the same Hub revision used for the eventual model load.
+
+    The load is cached, so one page interaction does not re-parse the same
+    config.json: a local model by its config.json's file identity, a Hub repo by
+    ``(repo, revision)`` with one TTL per answer (``utils.hub_metadata_cache``).
+    A load that raises caches nothing, so a missing or gated config keeps
+    raising what it raises today.
+    """
+    scope = _auto_config_scope(token, trust_remote_code, local_files_only, use_auth)
+    if is_local_path(model_name):
+        config_path = Path(normalize_path(model_name)).expanduser() / "config.json"
+        key = _config_file_cache_key(("auto", scope), config_path)
+        if key is not None:
+            hit = _config_parse_cache.get(key)
+            if hit is not None:
+                return hit
+        config = _load_model_config_uncached(
+            model_name, use_auth, token, trust_remote_code, local_files_only, revision
+        )
+        if key is not None:
+            _config_parse_cache.put(key, config)
+        return config
+
+    def _fetch(repo: str, rev: Optional[str]):
+        return _load_model_config_uncached(
+            repo, use_auth, token, trust_remote_code, local_files_only, rev
+        )
+
+    return _hub_metadata_cache.model_info_cached(_fetch, model_name, revision, scope = scope)
+
+
+def _load_model_config_uncached(
+    model_name: str,
+    use_auth: bool,
+    token: Optional[str],
+    trust_remote_code: bool,
+    local_files_only: bool,
+    revision: Optional[str],
+):
+    """load_model_config's read, run only when the cache holds no answer.
+
+    Raises are never cached, so the gates below keep raising what they raise.
     """
     from transformers import AutoConfig
 
@@ -829,59 +1053,79 @@ def _read_raw_config_json(
     revision: Optional[str] = None,
 ) -> Optional[dict]:
     """config.json as a dict, read without executing any repo code; None when the repo publishes none.
-    Raises on read errors: callers decide what an unreadable config means."""
-    current = (
-        None
-        if revision is not None
-        else _current_cached_snapshot(model_name, hf_token, local_files_only)
-    )
+    Raises on read errors: callers decide what an unreadable config means.
+
+    Parsing is cached: a local file by ``(resolved path, st_mtime_ns, st_size)``,
+    a Hub repo by ``(repo, revision)`` with one TTL per answer. A read that
+    raises caches nothing, and a repo that publishes none is re-asked rather
+    than answered from a stale absence.
+    """
     if is_local_path(model_name):
         config_path = Path(normalize_path(model_name)).expanduser() / "config.json"
-    elif current is not None and (current[0] / "config.json").is_file():
-        # The current commit's own copy: skips the absence probe and the freshness check.
-        config_path = current[0] / "config.json"
-    elif current is not None and "config.json" not in current[1]:
-        # The document just said the repo publishes none; the probe below re-asks.
-        logger.debug("'%s' has no config.json on the Hub", model_name)
-        return None
-    else:
-        from huggingface_hub import hf_hub_download
-        from utils.hf_probe import hf_file_definitely_absent
+        return _cached_local_config_json(config_path)
 
-        # Avoid caching the expected 404 for GGUF repos without config.json.
-        if not local_files_only and hf_file_definitely_absent(
-            model_name,
-            "config.json",
-            revision = revision,
-            token = hf_token,
-        ):
-            logger.debug("'%s' has no config.json on the Hub", model_name)
-            return None
-        download_kwargs = {
-            "repo_id": model_name,
-            "filename": "config.json",
-            "token": hf_token,
-            "local_files_only": local_files_only,
-            "cache_dir": active_hf_hub_cache(),
-        }
-        if revision is not None:
-            download_kwargs["revision"] = revision
-        # Measured: hf_hub_download falls back to the cache even with
-        # local_files_only=False, never consulting the credential, so a planted entry
-        # plus a dead endpoint returns a private config.json to a token that cannot read it.
-        if cached_read_refused(
-            hf_token,
-            repo_id = model_name,
-            is_cached = lambda: _config_json_already_cached(model_name, revision),
-        ):
-            return None
-        config_path = Path(
-            call_with_anonymous_retry(
-                lambda token: hf_hub_download(**{**download_kwargs, "token": token}),
-                hf_token,
-            )
+    def _fetch(repo: str, rev: Optional[str]) -> dict:
+        current = (
+            None
+            if rev is not None
+            else _current_cached_snapshot(repo, hf_token, local_files_only)
         )
-    return json.loads(config_path.read_text(encoding = "utf-8-sig"))
+        if current is not None and (current[0] / "config.json").is_file():
+            # The current commit's own copy: skips the absence probe and the freshness check.
+            config_path = current[0] / "config.json"
+        elif current is not None and "config.json" not in current[1]:
+            # The document just said the repo publishes none; the probe below re-asks.
+            logger.debug("'%s' has no config.json on the Hub", repo)
+            raise _ConfigJsonNotPublished
+        else:
+            from huggingface_hub import hf_hub_download
+            from utils.hf_probe import hf_file_definitely_absent
+
+            # Avoid caching the expected 404 for GGUF repos without config.json.
+            if not local_files_only and hf_file_definitely_absent(
+                repo,
+                "config.json",
+                revision = rev,
+                token = hf_token,
+            ):
+                logger.debug("'%s' has no config.json on the Hub", repo)
+                raise _ConfigJsonNotPublished
+            download_kwargs = {
+                "repo_id": repo,
+                "filename": "config.json",
+                "token": hf_token,
+                "local_files_only": local_files_only,
+                "cache_dir": active_hf_hub_cache(),
+            }
+            if rev is not None:
+                download_kwargs["revision"] = rev
+            # Measured: hf_hub_download falls back to the cache even with
+            # local_files_only=False, never consulting the credential, so a planted entry
+            # plus a dead endpoint returns a private config.json to a token that cannot read it.
+            if cached_read_refused(
+                hf_token,
+                repo_id = repo,
+                is_cached = lambda: _config_json_already_cached(repo, rev),
+            ):
+                raise _ConfigJsonNotPublished
+            config_path = Path(
+                call_with_anonymous_retry(
+                    lambda token: hf_hub_download(**{**download_kwargs, "token": token}),
+                    hf_token,
+                )
+            )
+        return _parse_config_file(config_path)
+
+    try:
+        answer = _hub_metadata_cache.model_info_cached(
+            _fetch,
+            model_name,
+            revision,
+            scope = _raw_config_scope(hf_token, local_files_only),
+        )
+    except _ConfigJsonNotPublished:
+        return None
+    return copy.deepcopy(answer)
 
 
 def _raw_config_has_vision_config(

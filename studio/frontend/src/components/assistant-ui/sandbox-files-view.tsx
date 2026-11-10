@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Download01Icon, FileEmpty02Icon, FolderOpenIcon } from "@hugeicons/core-free-icons";
+import {
+  Download01Icon,
+  FileEmpty02Icon,
+  FolderOpenIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
@@ -40,7 +44,10 @@ function SandboxFileRow({
   const save = useCallback(async () => {
     setBusy(true);
     try {
-      await downloadFile(await loadSandboxFile(sessionId, file.name), file.name);
+      await downloadFile(
+        await loadSandboxFile(sessionId, file.name),
+        file.name,
+      );
     } catch (error) {
       if (!isDownloadCancelled(error)) {
         toast.error(`Could not save ${file.name}.`);

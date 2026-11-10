@@ -4410,12 +4410,10 @@ def _canvas_link_subject(link: str) -> Optional[str]:
     return claims["sub"]
 
 
-async def _authenticate_header_or_query(
-    request: Request, token: Optional[str], link: Optional[str] = None
-) -> str:
-    """Resolve the bearer token from the Authorization header or a short-lived ``?link=``
-    (needed for <img src> / <iframe>, which can't send custom headers), validate it,
-    and return the subject. Raises 401 when absent.
+async def _authenticate_header_or_query(request: Request, token: Optional[str]) -> str:
+    """Resolve the bearer token from the Authorization header or the ``?link=``
+    query param (needed for <img src> / <iframe>, which can't send custom
+    headers), validate it, and return the subject. Raises 401 when absent.
 
     ``?token=`` is refused: a session bearer in a URL survives the click in history, in
     a proxy's access log and in the ``Referer`` of whatever the page links to, where a
@@ -4435,7 +4433,8 @@ async def _authenticate_header_or_query(
     # still wins, because a browser that sends one is already authenticated.
     header = request.headers.get("authorization") or ""
     bearer = header[7:].strip() if header.lower().startswith("bearer ") else ""
-    if not bearer and link and link.strip():
+    link = request.query_params.get("link") or ""
+    if not bearer and link.strip():
         subject = _canvas_link_subject(link.strip())
         if subject is None:
             raise HTTPException(status_code = 401, detail = "Invalid or expired canvas link.")
@@ -37562,7 +37561,6 @@ async def list_sandbox_files(
     session_id: str,
     request: Request,
     token: Optional[str] = None,
-    link: Optional[str] = None,
     session: Optional[str] = None,
 ):
     """Where this chat's files are, and what is in there.
@@ -37570,7 +37568,7 @@ async def list_sandbox_files(
     The path answers "where did my file go"; before this the only way to find
     one was to search the filesystem by hand.
     """
-    await _authenticate_header_or_query(request, token, link)
+    await _authenticate_header_or_query(request, token)
 
     from starlette.concurrency import run_in_threadpool
 
@@ -37626,7 +37624,6 @@ async def open_sandbox_file(
     request: Request,
     file: str,
     token: Optional[str] = None,
-    link: Optional[str] = None,
     session: Optional[str] = None,
 ):
     """Open one of this chat's sandbox files with the OS default app.
@@ -37635,7 +37632,7 @@ async def open_sandbox_file(
     the desktop app. Only document and media types open: the files are
     model-written, and a script or app would run rather than be viewed.
     """
-    await _authenticate_header_or_query(request, token, link)
+    await _authenticate_header_or_query(request, token)
     # It launches an app on the host's desktop, like the library and model reveals.
     account_access.require_installation_owner()
 
@@ -37665,7 +37662,6 @@ async def reveal_sandbox_dir(
     session_id: str,
     request: Request,
     token: Optional[str] = None,
-    link: Optional[str] = None,
     session: Optional[str] = None,
     file: Optional[str] = None,
 ):
@@ -37676,7 +37672,7 @@ async def reveal_sandbox_dir(
     The file manager is the backend host's, so this only means anything when the
     backend runs on the user's own machine, which is the desktop app.
     """
-    await _authenticate_header_or_query(request, token, link)
+    await _authenticate_header_or_query(request, token)
 
     from starlette.concurrency import run_in_threadpool
 
@@ -37779,7 +37775,6 @@ async def serve_sandbox_file(
     filename: str,
     request: Request,
     token: Optional[str] = None,
-    link: Optional[str] = None,
     session: Optional[str] = None,
 ):
     """
@@ -37795,7 +37790,7 @@ async def serve_sandbox_file(
     fetch and object URL; the link is for callers that can send no header.
     """
     # ── Authentication (header or ?link=) ───────────────────────
-    await _authenticate_header_or_query(request, token, link)
+    await _authenticate_header_or_query(request, token)
 
     # ── Filename sanitization + path containment ────────────────
     import stat as _stat
