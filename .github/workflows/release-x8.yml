@@ -20,7 +20,7 @@ name: Release X8 Desktop (Windows)
 # where the machine has one.
 #
 #   cpu      torch index pinned to cpu, llama.cpp on cpu: no GPU probe, no CUDA
-#   gpu      CUDA llama.cpp; the torch leaf stays unpinned because it follows the driver
+#   gpu      no pin: CUDA on NVIDIA, Vulkan on an Intel/AMD iGPU
 #   cpu-gpu  no pinning at all: probe and install whatever the machine can run
 #
 # The updater is pointed at cpu-gpu and only at cpu-gpu. Tauri's manifest carries one

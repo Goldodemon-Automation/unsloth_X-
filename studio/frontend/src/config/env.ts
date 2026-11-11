@@ -59,8 +59,8 @@ interface PlatformState {
   isChatOnly: () => boolean;
   // No torch accelerator: only the CPU-capable paths exist (CoRA, CPU export, merging).
   isCpuOnly: () => boolean;
-  // A measured CPU-only verdict (not an Intel Mac, not a broken GPU build): the one state where
-  // CoRA's transformers + PEFT path applies. Intel Macs report "intel_mac" and stay gated.
+  // A measured CPU-training verdict: CoRA's transformers + PEFT path applies on a host with no
+  // GPU, a CPU-only torch build, or a torch that cannot open its GPU. Intel Macs stay gated.
   isCpuTrainingHost: () => boolean;
   // true until /api/health returns a verdict; guesses cannot gate features.
   capabilitiesUnknown: () => boolean;
@@ -96,7 +96,10 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   isChatOnly: () => get().chatOnly,
   isCpuOnly: () => get().deviceBackend === "cpu",
   isCpuTrainingHost: () =>
-    get().deviceBackend === "cpu" && get().chatOnlyReason === "no_gpu",
+    get().deviceBackend === "cpu" &&
+    (get().chatOnlyReason === "no_gpu" ||
+      get().chatOnlyReason === "torch_cpu_build" ||
+      get().chatOnlyReason === "torch_cuda_unavailable"),
   // deferred detection is settled because no verdict will arrive this session.
   capabilitiesUnknown: () => {
     const state = get();

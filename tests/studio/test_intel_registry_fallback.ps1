@@ -74,7 +74,7 @@ $installText
 
 # Verbatim from install.ps1 and studio/setup.ps1.
 function Test-Xpu { param([object[]] $Names)
-    [bool]($Names | Where-Object { $_ -match "(?i)Intel.*(Arc|Data Center GPU)" } | Select-Object -First 1)
+    [bool]($Names | Where-Object { $_ -match "(?i)Intel.*(Arc|Data Center GPU)|^Intel\(R\) Graphics\s*$" } | Select-Object -First 1)
 }
 
 $VEN = "PCI\VEN_8086&DEV_56A0"
@@ -86,11 +86,13 @@ Write-Host "Intel adapters are found and classified"
 Check "Arc, English DriverDesc"        (Test-Xpu (Get-AdapterNames @(New-Adapter "0000" $ARC $VEN)))
 Check "Arc, localized DriverDesc"      (Test-Xpu (Get-AdapterNames @(New-Adapter "0000" $ARC_JP $VEN)))
 Check "Data Center GPU Max"            (Test-Xpu (Get-AdapterNames @(New-Adapter "0000" "Intel(R) Data Center GPU Max 1550" $VEN)))
+Check "Core Ultra integrated Graphics" (Test-Xpu (Get-AdapterNames @(New-Adapter "0000" "Intel(R) Graphics" $VEN)))
 Check "Arc behind an NVIDIA primary"   (Test-Xpu (Get-AdapterNames @((New-Adapter "0000" "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684"), (New-Adapter "0001" $ARC $VEN))))
 Check "Arc behind an AMD primary"      (Test-Xpu (Get-AdapterNames @((New-Adapter "0000" "AMD Radeon RX 7900 XTX" "PCI\VEN_1002&DEV_744C"), (New-Adapter "0001" $ARC $VEN))))
 
 Write-Host "Intel without XPU wheels stays off the xpu index"
 Check "iGPU, English DriverDesc"       (-not (Test-Xpu (Get-AdapterNames @(New-Adapter "0000" "Intel(R) UHD Graphics 770" $VEN))))
+Check "Iris Xe without Arc branding"   (-not (Test-Xpu (Get-AdapterNames @(New-Adapter "0000" "Intel(R) Iris(R) Xe Graphics" $VEN))))
 Check "iGPU, OEM DriverDesc"           (-not (Test-Xpu (Get-AdapterNames @(New-Adapter "0000" "OEM Display Adapter" $VEN))))
 Check "vendor id, empty DriverDesc"    (-not (Test-Xpu (Get-AdapterNames @(New-Adapter "0000" "" $VEN))))
 Check "OEM DriverDesc still an adapter" ((Get-AdapterNames @(New-Adapter "0000" "OEM Display Adapter" $VEN)).Count -eq 1)
@@ -122,7 +124,7 @@ Check "setup.ps1 uses that exact file name"      ($manifestName -and $setupText.
 
 # Key off the XPU match: hybrids report ASCII "Intel UHD" next to a localized Arc.
 foreach ($pair in @(@("install.ps1", $installText2), @("studio/setup.ps1", $setupText))) {
-    Check "$($pair[0]) gates reconciliation on the XPU regex" ($pair[1] -match '\$_xpuNameRe\s*=\s*"\(\?i\)Intel\.\*\(Arc\|Data Center GPU\)"')
+    Check "$($pair[0]) gates reconciliation on the XPU regex" ($pair[1].Contains('$_xpuNameRe = "(?i)Intel.*(Arc|Data Center GPU)|^Intel\(R\) Graphics'))
     Check "$($pair[0]) reuses it for the gate"                ($pair[1] -match 'Where-Object \{ \$_ -match \$_xpuNameRe \}')
     # @() must wrap the WHOLE if, or a one-element array unrolls to a String and += concatenates.
     Check "$($pair[0]) forces an array for the WMI names" ($pair[1] -match '\$_gpuNames = @\(if \(\$_gpuScan\.Ok\)')

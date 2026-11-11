@@ -8949,7 +8949,8 @@ main()
                         $desc = "$($props.DriverDesc)"
                         # Callers re-filter on "Intel", so a vendor-ID hit with a localized or
                         # OEM-branded DriverDesc would be found here and dropped there. Tag it
-                        # instead; still only XPU-capable if the name says Arc / Data Center GPU.
+                        # instead; still only XPU-capable if the name says Arc, Data Center GPU, or
+                        # Core Ultra's plain "Intel(R) Graphics".
                         if ("$($props.MatchingDeviceId)" -match '(?i)ven_8086') {
                             $names += if ($desc -match '(?i)intel') { $desc }
                                       elseif ($desc) { "Intel $desc" }
@@ -9030,7 +9031,7 @@ main()
     # Keeps the promotion additive: a hybrid host already gets AMD or Intel wheels.
     # Must match the Intel route's pattern exactly (asserted by test_nvidia_adapter_presence.ps1); a
     # function, not a $script: variable, since an unset $null pattern matches every string.
-    function Get-XpuCapableNameRegex { return "(?i)Intel.*(Arc|Data Center GPU)" }
+    function Get-XpuCapableNameRegex { return "(?i)Intel.*(Arc|Data Center GPU)|^Intel\(R\) Graphics\s*$" }
 
     function Test-IntelXpuRuntimeProven {
         param($Scan = $null, [string]$PythonExe = "")
@@ -9062,10 +9063,12 @@ main()
         # Same classification as the Intel route, which ignores PNP ID and status.
         if ($Scan.Ok) {
             $scanNames = @($Scan.Names | Where-Object { $_ } | ForEach-Object { "$_" })
-            if (@($scanNames | Where-Object { $_ -match (Get-XpuCapableNameRegex) }).Count -gt 0) { return $true }
+            # Plain Intel(R) Graphics is XPU-capable for the Intel route, but it is not proof that
+            # XPU works: leave a real NVIDIA driver in front of it unless PyTorch has proven XPU.
+            if (@($scanNames | Where-Object { $_ -match (Get-XpuCapableNameRegex) -and $_ -notmatch '(?i)^Intel\(R\) Graphics\s*$' }).Count -gt 0) { return $true }
             try {
                 foreach ($regName in @(Get-IntelRegistryAdapterNames)) {
-                    if ("$regName" -notmatch (Get-XpuCapableNameRegex)) { continue }
+                    if ("$regName" -notmatch (Get-XpuCapableNameRegex) -or "$regName" -match '(?i)^Intel\(R\) Graphics\s*$') { continue }
                     foreach ($wmiName in $scanNames) {
                         if ("$regName".Contains($wmiName)) { return $true }
                     }
@@ -9082,7 +9085,7 @@ main()
         if ($Scan.Ok) { return $false }
         # Same normalized names as the Intel route (it prefixes "Intel" to a VEN_8086 DriverDesc).
         try {
-            if (@(Get-IntelRegistryAdapterNames | Where-Object { "$_" -match (Get-XpuCapableNameRegex) }).Count -gt 0) { return $true }
+            if (@(Get-IntelRegistryAdapterNames | Where-Object { "$_" -match (Get-XpuCapableNameRegex) -and "$_" -notmatch '(?i)^Intel\(R\) Graphics\s*$' }).Count -gt 0) { return $true }
         } catch {}
         $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
         try {
@@ -9744,7 +9747,7 @@ main()
             # into string concatenation.
             $_gpuNames = @(if ($_gpuScan.Ok) { $_gpuScan.Names } else { Get-IntelRegistryAdapterNames })
             # One definition for both the reconciliation gate and the classification below.
-            $_xpuNameRe = "(?i)Intel.*(Arc|Data Center GPU)"
+            $_xpuNameRe = "(?i)Intel.*(Arc|Data Center GPU)|^Intel\(R\) Graphics\s*$"
             # On non-English Windows the WMI name carries no ASCII "Intel" for the
             # classification below. The registry helper resolves the PCI vendor id, so use it to
             # RE-LABEL an adapter WMI already reported, never to add one (an unmatched entry is a

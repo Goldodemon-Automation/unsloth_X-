@@ -24,7 +24,7 @@ Signed Windows installers are attached to every release since `v1.4.0`:
 | Asset | Use it when |
 | --- | --- |
 | `…_x64-cpu-gpu-setup.exe` | **Default.** Probes the machine and installs what it can run |
-| `…_x64-gpu-setup.exe` | You want the CUDA stack pinned and a GPU is guaranteed |
+| `…_x64-gpu-setup.exe` | You want the GPU build; it auto-detects CUDA or Vulkan |
 | `…_x64-cpu-setup.exe` | No GPU, or no CUDA download |
 | `…_x64-cpu-npu-setup.exe` | The CPU stack with `UNSLOTH_STUDIO_ENABLE_NPU=1` already set |
 

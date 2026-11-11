@@ -199,6 +199,7 @@ foreach ($case in @(
     @{ N = "an integrated AMD Radeon(TM) Graphics"; W = "AMD Radeon(TM) Graphics"; Id = "PCI\VEN_1002&DEV_15BF"; Blocks = $true },
     @{ N = "Intel UHD Graphics";      W = "Intel(R) UHD Graphics 770";         Id = $i4680; Blocks = $false },
     @{ N = "Intel Iris Xe";           W = "Intel(R) Iris(R) Xe Graphics";      Id = $i4680; Blocks = $false },
+    @{ N = "Intel Core Ultra graphics"; W = "Intel(R) Graphics";              Id = $i4680; Blocks = $false },
     @{ N = "Intel HD Graphics";       W = "Intel(R) HD Graphics 630";          Id = $i4680; Blocks = $false },
     @{ N = "Intel Arc A770";          W = "Intel(R) Arc(TM) A770 Graphics";    Id = $i4680; Blocks = $true },
     @{ N = "Intel Arc B580";          W = "Intel(R) Arc(TM) B580 Graphics";    Id = $i4680; Blocks = $true },

@@ -49,6 +49,7 @@ _AMD_DEVICES: dict[str, tuple[str, bool]] = {
 _INTEL_DEVICES: dict[str, tuple[str, bool]] = {
     "7d5d": ("NPU3", True),  # Meteor Lake
     "ad1d": ("NPU3", True),  # Arrow Lake / Lunar Lake
+    "fd3e": ("NPU3", True),  # Arrow Lake-H / Core Ultra 200H
     "b03e": ("NPU4", True),  # Panther Lake
     "643e": ("NPU", True),  # Keem Bay
 }

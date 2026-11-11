@@ -994,7 +994,7 @@ pub(crate) fn run_install_for_repair(
 enum DesktopFlavor {
     /// Pin the CPU stack: no GPU probe, no CUDA wheels.
     Cpu,
-    /// CUDA llama.cpp; the torch leaf stays unpinned because it follows the driver.
+    /// GPU build: no pins, so torch and llama.cpp follow the driver (CUDA or Vulkan).
     Gpu,
     /// Probe and install whatever the machine can run. Every non-release build.
     CpuGpu,
@@ -1049,12 +1049,12 @@ impl DesktopFlavor {
     /// Both names are existing installer knobs. UNSLOTH_TORCH_INDEX_FAMILY skips ALL GPU
     /// probing in install.ps1's Get-TorchIndexUrl and in install_python_stack.py, and
     /// UNSLOTH_LLAMA_CPP_BACKEND selects the llama.cpp bundle at install time (setup.ps1).
-    /// The universal flavor deliberately emits nothing, so its install is the unpinned,
-    /// auto-detecting one every earlier build already performed.
+    /// The universal and GPU flavors deliberately emit no llama.cpp pin, so their installs
+    /// auto-detect CUDA or Vulkan; the CPU and NPU flavors narrow the whole stack.
     fn install_env(self) -> &'static [(&'static str, &'static str)] {
-        // cpu-npu shares the CPU arm on purpose: the NPU is driven by Lemonade/FastFlowLM, which the
-        // Studio installs on demand, so an "NPU installer" is the same Python stack with the gate
-        // open, not a different one.
+        // cpu-npu shares the CPU arm on purpose: the NPU is driven by Lemonade/FastFlowLM,
+        // which the Studio installs on demand. The CPU llama.cpp bundle also avoids reviving
+        // the Intel iGPU Vulkan crash (#7213) on a machine sold as an NPU host.
         match self {
             Self::Cpu | Self::CpuNpu => &[
                 ("UNSLOTH_TORCH_INDEX_FAMILY", "cpu"),
@@ -1063,7 +1063,8 @@ impl DesktopFlavor {
             // No family pin here on purpose: which CUDA leaf is correct depends on the
             // driver, which only the installer can see. Pinning it from the build would
             // hand a cu126 build to a card that needs cu128.
-            Self::Gpu => &[("UNSLOTH_LLAMA_CPP_BACKEND", "cuda")],
+            // No llama.cpp pin either: CUDA on NVIDIA, Vulkan on an Intel/AMD iGPU.
+            Self::Gpu => &[],
             Self::CpuGpu => &[],
         }
     }
@@ -1818,8 +1819,8 @@ mod tests {
         assert!(cpu.contains(&("UNSLOTH_TORCH_INDEX_FAMILY", "cpu")));
         assert!(cpu.contains(&("UNSLOTH_LLAMA_CPP_BACKEND", "cpu")));
 
-        // No torch pin for the GPU flavor: the leaf follows the driver, not the build.
-        assert_eq!(DesktopFlavor::Gpu.install_env(), &[("UNSLOTH_LLAMA_CPP_BACKEND", "cuda")]);
+        // No pin for the GPU flavor: CUDA or Vulkan follows the host, not the build.
+        assert!(DesktopFlavor::Gpu.install_env().is_empty());
     }
 
     #[test]

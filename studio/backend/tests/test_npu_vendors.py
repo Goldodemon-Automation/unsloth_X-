@@ -159,7 +159,7 @@ def test_detect_amd_npu_keeps_its_published_key_set(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(
     "product, family",
-    [("7d5d", "NPU3"), ("ad1d", "NPU3"), ("b03e", "NPU4"), ("643e", "NPU")],
+    [("7d5d", "NPU3"), ("ad1d", "NPU3"), ("fd3e", "NPU3"), ("b03e", "NPU4"), ("643e", "NPU")],
 )
 def test_intel_known_device_ids(tmp_path, monkeypatch, product, family):
     _fake_sysfs(monkeypatch, tmp_path)
