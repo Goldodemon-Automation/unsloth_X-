@@ -5,7 +5,7 @@ Studio: the Scaler can grow **or** shrink a checkpoint, Labs is working engines 
 and a run can train on a CPU, an integrated GPU or a discrete one.
 
 > **Branch:** `x8-main`, where this fork is developed. `main` mirrors the imported upstream tree.
-> **Releases:** [v1.0.0 … v1.4.0](https://github.com/Goldodemon-Automation/unsloth_X-/releases)
+> **Releases:** [v1.0.0 … v1.4.1](https://github.com/Goldodemon-Automation/unsloth_X-/releases)
 
 ---
 
@@ -186,6 +186,7 @@ upstream. Notes for each are in [docs/releases/](docs/releases/).
 | [`v1.2.3`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.2.3) | Vendor-correct NPU refusals |
 | [`v1.3.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.3.0) | Tuned CPU runs, tested device decisions |
 | [`v1.4.0`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.4.0) | The mark, security hardening, installers |
+| [`v1.4.1`](https://github.com/Goldodemon-Automation/unsloth_X-/releases/tag/v1.4.1) | Intel detection, matching backend, opt-in telemetry |
 
 ---
 
