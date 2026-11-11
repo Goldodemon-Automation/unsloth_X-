@@ -63,8 +63,42 @@ concurrency:
   queue: max
 
 jobs:
+  backend:
+    name: Build fork backend wheel
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # The desktop shell's Labs/merge/telemetry UI talks to routes that the
+      # upstream PyPI package does not ship. Build this fork's backend once and
+      # hand it to every installer leg, so the shell and backend cannot drift.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Build the fork backend wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --quiet build
+          rm -rf release-backend
+          python -m build --wheel --outdir release-backend
+          ls -l release-backend
+
+      - name: Upload the backend wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: x8-backend-wheel
+          path: release-backend/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
   build:
     name: Build and sign (${{ matrix.flavor }})
+    needs: backend
     runs-on: windows-latest
     timeout-minutes: 90
     permissions:
@@ -86,6 +120,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Fetch the fork backend wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: x8-backend-wheel
+          path: release-backend
 
       # The tag is hand-typed, and a stray character here publishes a release that
       # no client can ever install. Refuse anything that is not plain SemVer before

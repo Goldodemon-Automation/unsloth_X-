@@ -10719,6 +10719,29 @@ main()
         return $f
     }
 
+    # The Windows desktop bundle can carry the fork's backend wheel beside this
+    # script. The fork's frontend calls Labs/merge/telemetry routes that the
+    # upstream PyPI package does not ship, so prefer the bundled wheel when it
+    # is present and keep the normal PyPI path for standalone installs.
+    function Find-BundledBackendWheel {
+        param([string]$Root = $PSScriptRoot)
+        $dirs = @(
+            (Join-Path $Root 'backend-wheel'),
+            (Join-Path $Root 'resources\backend-wheel'),
+            $Root
+        )
+        foreach ($dir in $dirs) {
+            if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+            $wheel = Get-ChildItem -LiteralPath $dir -Filter 'unsloth-*.whl' -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^unsloth-[0-9]' } |
+                Sort-Object Name -Descending |
+                Select-Object -First 1
+            if ($wheel) { return $wheel.FullName }
+        }
+        return $null
+    }
+    $BundledBackendWheel = Find-BundledBackendWheel
+
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
     $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.10.6" }
@@ -11170,6 +11193,18 @@ main()
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
             }
+        }
+    }
+
+    # The desktop bundle installs its backend after the dependency pass: the
+    # wheel is the fork's snapshot, while the PyPI spec above only guarantees a
+    # version floor. --no-deps keeps the torch family the installer just chose.
+    if ($BundledBackendWheel) {
+        substep "installing the bundled Unsloth backend..."
+        $bundledExit = Invoke-InstallCommandRetry -Label "install bundled backend" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --no-deps -- "$BundledBackendWheel" }
+        if ($bundledExit -ne 0) {
+            Write-StudioLine "[ERROR] Failed to install the bundled Unsloth backend (exit code $bundledExit)" -ForegroundColor Red
+            return (Exit-InstallFailure "Failed to install the bundled Unsloth backend" $bundledExit)
         }
     }
 

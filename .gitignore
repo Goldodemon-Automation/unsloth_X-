@@ -286,3 +286,8 @@ release-out/
 telemetry/*.sqlite3
 telemetry/*.sqlite3-wal
 telemetry/*.sqlite3-shm
+
+# Fork backend wheel staged into the desktop bundle by the release workflow.
+# The directory stays tracked so local Tauri builds have the resource path.
+/release-backend/*.whl
+/.build-venv/

@@ -1,7 +1,8 @@
 {
   "bundle": {
     "resources": {
-      "../../install.ps1": "install.ps1"
+      "../../install.ps1": "install.ps1",
+      "../../release-backend": "backend-wheel"
     },
     "windows": {
       "signCommand": {
