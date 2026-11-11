@@ -281,3 +281,8 @@ studio/src-tauri/x8-updater.key
 
 # Local release staging (scripts/release_x8_local.py).
 release-out/
+
+# Telemetry collector's local database (opt-in reports live here).
+telemetry/*.sqlite3
+telemetry/*.sqlite3-wal
+telemetry/*.sqlite3-shm

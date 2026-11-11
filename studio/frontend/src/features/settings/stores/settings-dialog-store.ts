@@ -25,6 +25,7 @@ export const SETTINGS_TABS = [
   "keyboard-shortcuts",
   "browser",
   "debugging",
+  "telemetry",
   "labs",
   "about",
 ] as const;

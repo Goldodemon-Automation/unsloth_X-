@@ -1012,7 +1012,24 @@ async def lifespan(app: FastAPI):
 
     _api_usage_writer_lease = _acquire_api_usage_writer()
     _api_usage_callback_lease = _api_monitor.acquire_terminal_callback(_enqueue_api_usage)
+
+    # Opt-in only: the reporter waits and then checks its own switch, so starting
+    # it is not the same as collecting anything.
+    try:
+        from core.telemetry.reporter import start_reporter as _start_telemetry_reporter
+
+        _start_telemetry_reporter()
+    except Exception as exc:
+        _lifespan_log.warning("telemetry reporter failed to start: %s", exc)
+
     yield
+
+    try:
+        from core.telemetry.reporter import stop_reporter as _stop_telemetry_reporter
+
+        _stop_telemetry_reporter()
+    except Exception:
+        pass
 
     # Remove only this lifespan's callback. A concurrently live sibling keeps both the monitor sink and the
     # shared serialized writer; the final owner drains accepted receipts off the event loop before stopping the
@@ -1890,6 +1907,10 @@ app.include_router(providers_router, prefix = "/api/providers", tags = ["provide
 app.include_router(openai_codex_auth_router, prefix = "/api/providers", tags = ["providers"])
 
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
+
+from routes.telemetry import router as _telemetry_routes  # noqa: E402
+
+app.include_router(_telemetry_routes, prefix = "/api/telemetry", tags = ["telemetry"])
 app.include_router(sandbox_capability_router, prefix = "/api/sandbox", tags = ["sandbox"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])

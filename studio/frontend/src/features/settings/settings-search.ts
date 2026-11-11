@@ -350,6 +350,15 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.debugging.mode",
     "settings.debugging.keywords",
   ],
+  telemetry: [
+    "settings.telemetry.title",
+    "settings.telemetry.description",
+    "settings.telemetry.enable",
+    "settings.telemetry.endpoint",
+    "settings.telemetry.ingestKey",
+    "settings.telemetry.preview",
+    "settings.telemetry.sendNow",
+  ],
   labs: [
     "settings.labs.title",
     "settings.labs.section",

@@ -159,6 +159,7 @@ const SETTINGS_TAB_LABELS: Record<SettingsTab, TranslationKey> = {
   "keyboard-shortcuts": "settings.tabs.keyboardShortcuts",
   browser: "browser.settingsTitle",
   debugging: "settings.tabs.debugging",
+  telemetry: "settings.tabs.telemetry",
   about: "settings.tabs.about",
 };
 

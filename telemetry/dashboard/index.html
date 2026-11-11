@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>X8 Telemetry — Operator Console</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="rail">
+        <a class="brand" href="#overview" aria-label="X8 Telemetry">
+          <span class="mark">X8</span>
+          <span class="brand-copy">
+            <strong>Telemetry</strong>
+            <small>Operator console</small>
+          </span>
+        </a>
+
+        <nav class="nav" aria-label="Sections">
+          <a href="#overview" class="nav-link is-active"><span class="dot"></span>Overview</a>
+          <a href="#tokens" class="nav-link"><span class="dot"></span>Tokens</a>
+          <a href="#models" class="nav-link"><span class="dot"></span>Models</a>
+          <a href="#training" class="nav-link"><span class="dot"></span>Training</a>
+          <a href="#merges" class="nav-link"><span class="dot"></span>Merges</a>
+          <a href="#devices" class="nav-link"><span class="dot"></span>Devices</a>
+          <a href="#installs" class="nav-link"><span class="dot"></span>Installs</a>
+        </nav>
+
+        <div class="rail-foot">
+          <div class="live"><span class="pulse"></span><span id="rail-status">Connecting…</span></div>
+          <a class="rail-action" href="/api/admin/export.csv" download>Export installs.csv</a>
+          <button class="rail-action" id="logout" type="button" hidden>Sign out</button>
+          <p class="rail-note">Opt-in reports only. No prompts, replies, paths or identities are stored.</p>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="topbar-title">
+            <p class="eyebrow">Unsloth X8 · live product signal</p>
+            <h1>What people are actually running</h1>
+          </div>
+          <div class="topbar-tools">
+            <div class="window-switch" role="group" aria-label="Time window" id="window-switch"></div>
+            <button class="ghost" id="refresh" type="button" title="Reload data">Refresh</button>
+          </div>
+        </header>
+
+        <div class="sync-line">
+          <span id="sync-status">Loading telemetry…</span>
+          <span id="sync-window"></span>
+        </div>
+
+        <section class="empty" id="empty" hidden>
+          <div class="empty-card">
+            <span class="empty-mark">∅</span>
+            <h2>No installs have reported yet</h2>
+            <p>
+              Telemetry is off by default. Turn it on in
+              <strong>Settings → Telemetry</strong> in Unsloth X8, point it at this server,
+              and the first report lands here. The preview button in Settings shows the
+              exact payload before anything leaves the machine.
+            </p>
+            <div class="endpoint">
+              <code id="empty-endpoint">/api/v1/report</code>
+              <button class="ghost small" id="copy-endpoint" type="button">Copy ingest URL</button>
+            </div>
+          </div>
+        </section>
+
+        <div id="content">
+          <section class="kpis" id="overview" aria-label="Key numbers">
+            <article class="kpi accent">
+              <span class="kpi-label">Installs reporting</span>
+              <strong class="kpi-value" id="kpi-installs">—</strong>
+              <span class="kpi-sub" id="kpi-installs-sub">—</span>
+            </article>
+            <article class="kpi">
+              <span class="kpi-label">Input tokens</span>
+              <strong class="kpi-value" id="kpi-input">—</strong>
+              <span class="kpi-sub" id="kpi-input-sub">—</span>
+            </article>
+            <article class="kpi">
+              <span class="kpi-label">Output tokens</span>
+              <strong class="kpi-value" id="kpi-output">—</strong>
+              <span class="kpi-sub" id="kpi-output-sub">—</span>
+            </article>
+            <article class="kpi">
+              <span class="kpi-label">Top model</span>
+              <strong class="kpi-value model" id="kpi-top-model">—</strong>
+              <span class="kpi-sub" id="kpi-top-model-sub">—</span>
+            </article>
+            <article class="kpi">
+              <span class="kpi-label">Training runs</span>
+              <strong class="kpi-value" id="kpi-trainings">—</strong>
+              <span class="kpi-sub" id="kpi-trainings-sub">—</span>
+            </article>
+            <article class="kpi">
+              <span class="kpi-label">Merges</span>
+              <strong class="kpi-value" id="kpi-merges">—</strong>
+              <span class="kpi-sub" id="kpi-merges-sub">—</span>
+            </article>
+          </section>
+
+          <section class="panel" id="tokens">
+            <div class="panel-head">
+              <div>
+                <h2>Token flow</h2>
+                <p>Input and output across every reporting install in the selected window.</p>
+              </div>
+              <div class="legend">
+                <span><i class="swatch input"></i>Input</span>
+                <span><i class="swatch output"></i>Output</span>
+              </div>
+            </div>
+            <div class="chart-wrap">
+              <div class="chart" id="chart">
+                <svg id="chart-svg" viewBox="0 0 1000 240" preserveAspectRatio="none" role="img" aria-label="Token flow over time"></svg>
+                <div class="chart-tip" id="chart-tip" hidden></div>
+              </div>
+            </div>
+            <div class="windows" id="windows"></div>
+          </section>
+
+          <section class="panel" id="models">
+            <div class="panel-head">
+              <div>
+                <h2>Most used models</h2>
+                <p>Chat turns plus OpenAI-compatible requests, grouped by the model that answered.</p>
+              </div>
+              <span class="pill" id="model-count">—</span>
+            </div>
+            <div class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th class="rank">#</th>
+                    <th>Model</th>
+                    <th class="num">Uses</th>
+                    <th class="num">Installs</th>
+                    <th class="num">In</th>
+                    <th class="num">Out</th>
+                    <th class="share-col">Share</th>
+                  </tr>
+                </thead>
+                <tbody id="model-rows"></tbody>
+              </table>
+            </div>
+            <p class="empty-inline" id="models-empty" hidden>No model usage in this window.</p>
+          </section>
+
+          <div class="split">
+            <section class="panel" id="training">
+              <div class="panel-head">
+                <div>
+                  <h2>Training</h2>
+                  <p>What they trained, on what data, and with which method.</p>
+                </div>
+                <span class="pill" id="training-count">—</span>
+              </div>
+              <div class="stat-block">
+                <span class="stat-label">Most trained base</span>
+                <strong id="training-top-base">—</strong>
+              </div>
+              <div class="mini-cols">
+                <div>
+                  <h3>Base models</h3>
+                  <ul class="bars" id="training-bases"></ul>
+                </div>
+                <div>
+                  <h3>Trained on</h3>
+                  <ul class="bars" id="training-datasets"></ul>
+                </div>
+              </div>
+              <div class="mini-cols">
+                <div>
+                  <h3>Method</h3>
+                  <ul class="chips" id="training-methods"></ul>
+                </div>
+                <div>
+                  <h3>Outcome</h3>
+                  <ul class="chips" id="training-status"></ul>
+                </div>
+              </div>
+              <h3 class="recent-title">Recent runs</h3>
+              <div class="feed" id="training-feed"></div>
+            </section>
+
+            <section class="panel" id="merges">
+              <div class="panel-head">
+                <div>
+                  <h2>Merging</h2>
+                  <p>Which checkpoints get blended, and how.</p>
+                </div>
+                <span class="pill" id="merge-count">—</span>
+              </div>
+              <div class="stat-block">
+                <span class="stat-label">Most merged model</span>
+                <strong id="merge-top">—</strong>
+              </div>
+              <h3>Most merged parents</h3>
+              <ul class="bars" id="merge-parents"></ul>
+              <h3>Methods</h3>
+              <ul class="chips" id="merge-methods"></ul>
+              <h3 class="recent-title">Recent merges</h3>
+              <div class="feed" id="merge-feed"></div>
+            </section>
+          </div>
+
+          <section class="panel" id="devices">
+            <div class="panel-head">
+              <div>
+                <h2>Device specs</h2>
+                <p>Hardware classes among active installs, not raw host fingerprints.</p>
+              </div>
+              <span class="pill" id="device-count">—</span>
+            </div>
+            <div class="device-grid">
+              <div class="device-card">
+                <h3>GPU</h3>
+                <ul class="bars" id="device-gpus"></ul>
+              </div>
+              <div class="device-card">
+                <h3>VRAM</h3>
+                <ul class="bars" id="device-vram"></ul>
+              </div>
+              <div class="device-card">
+                <h3>System RAM</h3>
+                <ul class="bars" id="device-ram"></ul>
+              </div>
+              <div class="device-card">
+                <h3>OS</h3>
+                <ul class="chips" id="device-os"></ul>
+              </div>
+              <div class="device-card">
+                <h3>Backend</h3>
+                <ul class="chips" id="device-backends"></ul>
+              </div>
+              <div class="device-card">
+                <h3>GPU vendor</h3>
+                <ul class="chips" id="device-vendors"></ul>
+              </div>
+              <div class="device-card">
+                <h3>Versions</h3>
+                <ul class="chips" id="device-versions"></ul>
+              </div>
+              <div class="device-card">
+                <h3>Locale</h3>
+                <ul class="chips" id="device-locales"></ul>
+              </div>
+            </div>
+            <h3 class="recent-title">Feature adoption · all time</h3>
+            <ul class="feature-grid" id="features"></ul>
+          </section>
+
+          <section class="panel" id="installs">
+            <div class="panel-head">
+              <div>
+                <h2>Installs</h2>
+                <p>One row per installation. Newest heartbeat first.</p>
+              </div>
+              <div class="table-tools">
+                <input id="install-search" type="search" placeholder="Search model, GPU, OS, id…" aria-label="Search installs" />
+                <span class="pill" id="install-count">—</span>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="table installs-table">
+                <thead>
+                  <tr>
+                    <th class="sortable" data-sort="last_seen">Last seen</th>
+                    <th>Install</th>
+                    <th class="sortable" data-sort="version">Version</th>
+                    <th>Device</th>
+                    <th class="sortable" data-sort="tokens">Tokens</th>
+                    <th class="sortable" data-sort="trainings">Runs</th>
+                    <th class="sortable" data-sort="merges">Merges</th>
+                    <th>Top model</th>
+                  </tr>
+                </thead>
+                <tbody id="install-rows"></tbody>
+              </table>
+            </div>
+            <p class="empty-inline" id="installs-empty" hidden>No installs match that search.</p>
+          </section>
+        </div>
+
+        <footer class="foot">
+          <span>Unsloth X8 telemetry collector</span>
+          <span id="foot-meta">—</span>
+        </footer>
+      </main>
+    </div>
+
+    <div class="login" id="login" hidden>
+      <form class="login-card" id="login-form">
+        <span class="mark large">X8</span>
+        <h2>Operator sign-in</h2>
+        <p>This collector is protected by <code>X8_TELEMETRY_ADMIN_TOKEN</code>.</p>
+        <label for="login-token">Admin token</label>
+        <input id="login-token" type="password" autocomplete="current-password" required />
+        <button type="submit" class="primary">Open console</button>
+        <p class="login-error" id="login-error" hidden></p>
+      </form>
+    </div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

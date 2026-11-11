@@ -105,6 +105,8 @@ const TAB_LOADERS = {
     import("./tabs/agents-tab").then((m) => ({ default: m.AgentsTab })),
   debugging: () =>
     import("./tabs/debugging-tab").then((m) => ({ default: m.DebuggingTab })),
+  telemetry: () =>
+    import("./tabs/telemetry-tab").then((m) => ({ default: m.TelemetryTab })),
   labs: () => import("./tabs/labs-tab").then((m) => ({ default: m.LabsTab })),
   about: () =>
     import("./tabs/about-tab").then((m) => ({ default: m.AboutTab })),
@@ -275,6 +277,11 @@ const TABS: TabDef[] = [
     id: "debugging",
     labelKey: "settings.tabs.debugging",
     icon: ComputerTerminal01Icon,
+  },
+  {
+    id: "telemetry",
+    labelKey: "settings.tabs.telemetry",
+    icon: CloudIcon,
   },
   {
     id: "labs",
@@ -458,6 +465,7 @@ export function SettingsDialog() {
     "remote-lan": null,
     agents: null,
     debugging: null,
+    telemetry: null,
     labs: null,
     about: null,
   });
