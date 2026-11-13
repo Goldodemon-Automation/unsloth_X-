@@ -10742,6 +10742,17 @@ main()
     }
     $BundledBackendWheel = Find-BundledBackendWheel
 
+    # The desktop shell sets UNSLOTH_DESKTOP_BACKEND_VERSION for its own install, and that build's
+    # frontend calls routes the upstream PyPI package does not ship. A missing wheel here used to
+    # fall through to the PyPI floor silently, which installs "normal unsloth" and leaves the UI
+    # showing "API endpoint not found" row by row with no error anywhere. Refuse instead.
+    if (-not $BundledBackendWheel -and $env:UNSLOTH_DESKTOP_BACKEND_VERSION) {
+        Write-StudioLine "[ERROR] This desktop build is incomplete: no bundled Unsloth backend wheel was found." -ForegroundColor Red
+        Write-StudioLine "        Looked for unsloth-*.whl in backend-wheel\, resourcesackend-wheel\ and the installer root." -ForegroundColor DarkGray
+        Write-StudioLine "        Continuing would install the upstream package, which lacks the Labs, self-training and llama.cpp architecture routes." -ForegroundColor DarkGray
+        return (Exit-InstallFailure "Bundled Unsloth backend wheel is missing from this build" 1)
+    }
+
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
     $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.10.6" }
@@ -11206,6 +11217,23 @@ main()
             Write-StudioLine "[ERROR] Failed to install the bundled Unsloth backend (exit code $bundledExit)" -ForegroundColor Red
             return (Exit-InstallFailure "Failed to install the bundled Unsloth backend" $bundledExit)
         }
+
+        # Read the version back rather than assume the install took. The wheel's local segment
+        # (+x8.N) is the fork marker and cannot come from an index, so a matching version means
+        # this venv really holds the fork's backend and not the upstream package the floor allowed.
+        $installedBackend = ""
+        try {
+            $installedBackend = (& $VenvPython -c "import importlib.metadata as m; print(m.version('unsloth'))" 2>$null | Select-Object -First 1)
+            if ($installedBackend) { $installedBackend = $installedBackend.Trim() }
+        } catch {
+            $installedBackend = ""
+        }
+        if ($installedBackend -notmatch '\+x8') {
+            Write-StudioLine "[ERROR] The installed Unsloth backend is not this fork's build (found '$installedBackend', expected a +x8 local version)." -ForegroundColor Red
+            Write-StudioLine "        The UI will show 'API endpoint not found' on every route added since the upstream release." -ForegroundColor DarkGray
+            return (Exit-InstallFailure "Installed backend is not the X8 build" 1)
+        }
+        substep "backend: $installedBackend"
     }
 
     # ── Intel XPU: bitsandbytes must carry XPU kernels ──

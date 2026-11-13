@@ -465,6 +465,20 @@ def get_unsloth_version() -> str:
 UNSLOTH_VERSION = get_unsloth_version()
 STUDIO_VERSION = get_studio_version()
 
+# Which backend this process is running: this fork's build, or the upstream package that shares its
+# name. The two are the same distribution (`unsloth`) at the same base version, so only the PEP 440
+# local segment separates them -- and the routes the fork's UI calls (Labs, model self-training,
+# llama.cpp architectures) exist only in the fork. Reported so a support question can be answered
+# from /api/health instead of by guessing from a row of "API endpoint not found".
+FORK_BACKEND_MARKER = "+x8"
+
+
+def backend_build_kind(version: str) -> str:
+    """``"x8"`` for this fork's backend wheel, ``"upstream"`` for the PyPI package, ``"dev"`` in a tree."""
+    if FORK_BACKEND_MARKER in (version or ""):
+        return "x8"
+    return "dev" if (version or "") == "dev" else "upstream"
+
 
 def _load_desktop_owner() -> dict[str, str] | None:
     token = os.environ.pop("UNSLOTH_STUDIO_DESKTOP_OWNER_TOKEN", "")
@@ -2162,6 +2176,10 @@ async def liveness_check():
         "desktop_manageability_version": 2,
         "supports_desktop_auth": True,
         "supports_desktop_backend_ownership": True,
+        # See backend_build_kind: "upstream" here means the installed backend predates this UI's
+        # routes, which is the difference between a broken panel and a mismatched install.
+        "backend_build": backend_build_kind(UNSLOTH_VERSION),
+        "backend_version": UNSLOTH_VERSION,
         "studio_root_id": _studio_root_id(),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
@@ -2239,6 +2257,10 @@ async def health_check(request: Request):
     base = {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
+        # Same fact as /api/liveness: the launcher and a support check both read health, and
+        # "upstream" is the whole explanation for a panel that says "API endpoint not found".
+        "backend_build": backend_build_kind(UNSLOTH_VERSION),
+        "backend_version": UNSLOTH_VERSION,
         "service": "Unsloth UI Backend",
         # Literal True with no snapshot, not a CHAT_ONLY read: a pass in flight sets the flag False
         # before a probe that can still fall back to CPU.

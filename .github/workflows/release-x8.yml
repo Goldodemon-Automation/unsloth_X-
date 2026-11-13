@@ -87,6 +87,14 @@ jobs:
           rm -rf release-backend
           python -m build --wheel --outdir release-backend
           ls -l release-backend
+          # The wheel must carry the fork's PEP 440 local segment. Without it the installer cannot
+          # tell this backend from the upstream package of the same name and base version, which is
+          # exactly how a build ships a UI whose routes 404 row by row. Refuse before packaging.
+          wheel=$(ls release-backend/unsloth-*.whl)
+          case "$wheel" in
+            *+x8*) echo "backend wheel carries the fork marker: $wheel" ;;
+            *) echo "backend wheel has no +x8 local segment: $wheel" >&2; exit 1 ;;
+          esac
 
       - name: Upload the backend wheel
         uses: actions/upload-artifact@v4

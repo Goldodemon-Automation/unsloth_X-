@@ -15,4 +15,10 @@
 # and the torch-free MLX path in __init__.py imports it directly, which it cannot do for
 # models/_utils.py (torch, transformers, trl, peft, Triton). That is why the MLX branch
 # used to borrow unsloth_zoo's version, reporting a different package's number.
-__version__ = "2026.10.6"
+# The build segment is not decoration: it is the only thing that separates this fork's backend
+# wheel from the upstream package of the same name and release. PEP 440 local versions cannot be
+# published to PyPI, so "unsloth==2026.10.6+x8.1" can only ever be satisfied by a file we shipped --
+# pip and uv cannot silently substitute upstream's 2026.10.6 for it. Keep the base version equal to
+# the upstream release this tree is cut from; bump the +x8.N counter for every fork release that
+# changes backend routes, so an installer can tell the two apart at all.
+__version__ = "2026.10.6+x8.1"
