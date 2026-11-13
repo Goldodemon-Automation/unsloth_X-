@@ -1028,6 +1028,8 @@ export interface AutomatedTrainingDatasetSpec {
 export interface AutomatedTrainingSpec {
   source: string;
   datasets: AutomatedTrainingDatasetSpec[];
+  /** Sample a curated public Hub pool afresh for every round instead of using `datasets`. */
+  random_datasets?: boolean;
   methods?: AutomatedTrainingMethod[];
   datasets_per_round?: number;
   runs_per_round?: number;

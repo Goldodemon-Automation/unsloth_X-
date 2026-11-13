@@ -188,12 +188,18 @@ function generalTab(initialToken: string) {
     "../components/desktop-update-control": componentStub,
     "../components/documents-rag-section": componentStub,
     "../components/language-select": componentStub,
+    // The llama.cpp backend section is a sibling the General tab renders; the stub map names
+    // every import of the module under test, so a new import breaks all nine cases here unless
+    // it is named too. Stubbed rather than loaded: this suite is about the token draft, and the
+    // section reaches the network on mount.
+    "../components/llama-backend-section": componentStub,
     "../components/download-transport-row": componentStub,
     "../components/hub-settings-section": componentStub,
     "../components/notification-frequency-select": componentStub,
     "../components/settings-row": componentStub,
     "../components/settings-section": componentStub,
     "../components/studio-version-section": componentStub,
+    "../components/webhook-settings-section": componentStub,
     "../hooks/use-desktop-boolean-setting": {
       useDesktopBooleanSetting: () => ({
         error: null,

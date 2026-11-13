@@ -667,7 +667,17 @@ async def convert_q4nx(
         output_path = await asyncio.to_thread(run)
     except Exception as e:
         logger.error(f"Q4NX conversion failed: {e}", exc_info = True)
-        raise HTTPException(status_code = 400, detail = f"Q4NX conversion failed: {e}")
+        # The conversion names the source and output paths it failed on; a tunnel caller owns
+        # neither. Reduce those two to their last component first, so the reason BETWEEN them stays
+        # readable, then redact whatever else is absolute (a cache path, a missing converter).
+        from hub.utils.host_paths import redact_paths_in_text
+
+        reason = str(e)
+        for path in (request.gguf_path, request.save_directory):
+            if path:
+                reason = reason.replace(str(path), os.path.basename(str(path).rstrip("\\/")))
+        reason = redact_paths_in_text(reason).strip() or "unknown error"
+        raise HTTPException(status_code = 400, detail = f"Q4NX conversion failed: {reason}")
     return ExportOperationResponse(
         success = True,
         message = "Converted to Q4NX for the AMD NPU",

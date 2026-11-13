@@ -924,11 +924,11 @@ export const en = {
     surgery: {
       title: "Model surgery",
       description:
-        "Prune blocks, KV groups and FFN channels from a local checkpoint, then upcycle its FFN into routed experts. The plan is priced from the headers before a weight is read.",
+        "Prune blocks, KV groups and FFN channels from a checkpoint, then upcycle its FFN into routed experts. The plan is priced from the headers before a weight is read.",
       model: "Checkpoint",
-      modelPlaceholder: "C:\\models\\my-finetune",
+      modelPlaceholder: "Search the Hub, or paste org/model",
       modelHint:
-        "A local folder: surgery rewrites weights on disk. Hub checkpoints download through Training first.",
+        "A local folder or Hub id. A Hub checkpoint is downloaded into the cache first, then surgery rewrites its weights.",
       needModel: "Choose a local checkpoint folder first.",
       pruneTitle: "Prune",
       pruneHint:
@@ -972,11 +972,11 @@ export const en = {
     swap: {
       title: "Arch swap",
       description:
-        "Carry weights from one architecture into another by role: fused QKV split, Conv1D transposes undone, layers renumbered, and every lossy step named before it runs.",
+        "Carry weights from one architecture into another by role: fused QKV split, Conv1D transposes undone, layers renumbered, and every lossy step named before it runs. Hub checkpoints are downloaded into the cache first.",
       source: "Source",
       target: "Target",
-      sourcePlaceholder: "C:\\models\\gpt2-small",
-      targetPlaceholder: "C:\\models\\llama-skeleton",
+      sourcePlaceholder: "Search the Hub, or paste org/model",
+      targetPlaceholder: "Search the Hub, or paste org/model",
       extraLayers: "Surplus blocks",
       repeat: "Repeat the last block",
       zeros: "Zero them",
@@ -1299,6 +1299,9 @@ export const en = {
       removeDataset: "Remove this dataset",
       datasetHint:
         "Two to eight datasets. The category routes a dataset into the rounds that train for it; each dataset keeps its own held-out split.",
+      randomDatasets: "Random Hub datasets each round",
+      randomDatasetsHint:
+        "Each round draws a fresh, seeded mix from a curated public Hugging Face catalog, balanced across code, syntax, reasoning and general data. The seed replays the same picks.",
       needSource: "Pick a source checkpoint first.",
       needDatasets: "Automated training needs at least two datasets.",
       datasetsPerRound: "Datasets per round",
@@ -1362,7 +1365,7 @@ export const en = {
       announce: "Zoom {percent}%",
     },
     beta: "BETA",
-    brand: "unsloth",
+    brand: "X-",
     product: "Unsloth",
     accountMenu: "{name} account menu",
     updateAvailable: "Update available",
@@ -1579,7 +1582,7 @@ export const en = {
     accounts: {
       title: "Accounts",
       description:
-        "Create private Unsloth accounts. New users sign in with a one-time setup code and choose a password.",
+        "Create private X- accounts. New users sign in with a one-time setup code and choose a password.",
       username: "Username",
       create: "Create account",
       createDescription:
@@ -2469,7 +2472,7 @@ export const en = {
     },
     general: {
       title: "General",
-      description: "Global preferences for Unsloth.",
+      description: "Global preferences for X-.",
       account: "Account",
       huggingFaceToken: "Hugging Face token",
       huggingFaceTokenDescription:
@@ -2480,7 +2483,7 @@ export const en = {
       checkingToken: "Checking token...",
       tokenValidated: "Token validated",
       password: "Password",
-      passwordDescription: "Change the password for this Unsloth account.",
+      passwordDescription: "Change the password for this X- account.",
       passwordDialog: {
         trigger: "Change password",
         title: "Change password",
@@ -2652,6 +2655,14 @@ export const en = {
         revokeConfirmAction: "Revoke all links",
         revoked: "All preview links revoked",
         revokeError: "Couldn't revoke preview links",
+      },
+      modelSelfTraining: {
+        sectionTitle: "Model-operated Studio",
+        sectionDescription:
+          "Give chat models owner-level access to training and the Labs surface, including merges and automated training.",
+        enableLabel: "Let models train other models",
+        enableDescription:
+          "Adds train_model, labs, merge_models, automated_training and training tools. The model can inspect this machine, choose a dataset/base/method, merge checkpoints and adapters, run Labs experiments, start or control Training jobs, and read job history and progress. Every action uses the same preflights as the UI, and tool calls still go through the normal approval gate. No evaluation runs automatically, so a run is not guaranteed to beat the model it started from.",
       },
       managedProviderUrls: {
         sectionTitle: "Managed accounts",
@@ -2898,9 +2909,9 @@ export const en = {
       avatarShape: "Avatar shape",
       avatarShapeCircle: "Circle",
       avatarShapeRounded: "Rounded",
-      greetingSloth: "Sloth in greeting",
-      greetingSlothDescription: "Show the sloth in the chat greeting.",
-      chooseSloth: "Or pick a sloth",
+      greetingSloth: "Mark in greeting",
+      greetingSlothDescription: "Show the X- mark in the chat greeting.",
+      chooseSloth: "Or pick an avatar",
       noPicture: "No profile picture",
       noneLabel: "None",
       nameSaved: "Profile name saved",
@@ -3100,7 +3111,7 @@ export const en = {
       language: {
         title: "Language",
         label: "Display language",
-        description: "The language used by Unsloth.",
+        description: "The language used by X-.",
         autoDetect: "Auto detect",
         spellCheck: "Spell check",
         spellCheckDescription: "Underline misspelled words as you type.",
@@ -3194,6 +3205,67 @@ export const en = {
         description: "The backend llama.cpp uses to run GGUF models.",
         runningOn: "llama.cpp currently runs on {backend}.",
         hint: "Installs the llama.cpp build for this backend and keeps it across updates. Useful when the automatic choice crashes or your GPU driver does not support it. Only backends with a build for this machine are listed; training is unaffected.",
+        modelSupport: {
+          label: "Llama.cpp architecture",
+          description: "Choose the llama.cpp architecture for GGUF models.",
+          hint: "Normal uses the bundled llama.cpp. Choosing another architecture installs its runtime and uses it for the next model load. X- LLama.zig is coming soon.",
+          customBuildHint:
+            "Selected {profile}. Install that build before loading a model.",
+          status: {
+            bundled: "Uses the bundled llama.cpp runtime.",
+            installed: "Installed {tag}.",
+            notInstalled: "Not installed yet.",
+            sourceBuild:
+              "No prebuilt release. Unsloth will make a CPU source build of the pinned commit {commit} with CMake; this can take several minutes.",
+            buildToolsMissing:
+              "Dory builds from source, but CMake is not available on this machine. Install CMake, then reopen Settings.",
+            noRelease: "No prebuilt build has been published for this fork yet.",
+            noBuild:
+              "No build for this computer has been published yet. Nothing can be installed.",
+            buildNotReady:
+              "The build is not ready yet. This option will unlock when it is available.",
+            missingBinary:
+              "The installed build is missing llama-server. Reinstall it.",
+            lookupFailed:
+              "Could not check the latest build. Check your connection and try again.",
+            download: "{size} download.",
+            install: "Install",
+            installAndUse: "Install and use",
+            buildAndUse: "Build and use",
+            update: "Update",
+            use: "Use",
+            active: "Active",
+            installing: "Installing {profile}...",
+            installedToast: "{profile} is installed and active.",
+            activatedToast: "Switched to {profile}.",
+            installFailed: "Could not install the llama.cpp architecture.",
+            activateFailed: "Could not switch the llama.cpp architecture.",
+            runtimeLocked:
+              "A llama.cpp path environment variable overrides this choice.",
+            customPathIgnored:
+              "An installed architecture takes priority over the custom llama.cpp folder below. Reload the model to use it.",
+          },
+          confirm: {
+            installTitle: "Install {profile}?",
+            updateTitle: "Update {profile}?",
+            installBody:
+              "Unsloth downloads {profile} ({size}) and runs its llama-server on this machine. It is used for the next GGUF model load.",
+            installBodyUnsized:
+              "Unsloth downloads {profile} and runs its llama-server on this machine. It is used for the next GGUF model load.",
+            buildBody:
+              "Unsloth builds {profile} from source with CMake, then uses it for the next GGUF model load. This can take several minutes.",
+            stalled:
+              "The install could not be tracked; it may still finish in the background. Reopen Settings to see the result.",
+          },
+          profiles: {
+            normal: "Normal (llama.cpp)",
+            dory: "Dory (brianchmielNV/llama.cpp)",
+            bee: "Bee (BeeLlama.cpp)",
+            neurall: "Neuralls llama.cpp (neurall/llama.cpp)",
+            ik: "IK (ik_llama.cpp)",
+            x: "X- LLama.zig (coming soon)",
+          },
+        },
         autoWith: "Automatic ({backend})",
         apply: "Apply",
         applying: "Installing...",
@@ -3211,7 +3283,7 @@ export const en = {
           description: "Use your own llama-server build.",
           hint: "Choose the llama.cpp folder containing llama-server, or a build where it is under build/bin. The custom runtime is used for GGUF chat, embeddings, and supported voice models. Environment variables still take priority.",
           automatic: "Automatic (bundled)",
-          bundled: "Uses the llama.cpp runtime installed by Unsloth.",
+          bundled: "Uses the llama.cpp runtime installed by X-.",
           active:
             "Your custom llama-server will be used for the next model load.",
           environmentManaged: "Managed by the {variable} environment variable.",
@@ -4105,7 +4177,7 @@ export const en = {
     about: {
       title: "About",
       description: "Docs, release notes, feedback, and build info.",
-      studioVersion: "Unsloth Version",
+      studioVersion: "X- Version",
       packageVersion: "Package Version",
       desktopAppVersion: "Desktop App Version",
       desktopAppVersionUnavailable: "Unavailable",

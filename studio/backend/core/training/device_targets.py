@@ -123,6 +123,13 @@ class TargetProbe:
     torch_device: Optional[str] = None
     gpus: list = field(default_factory = list)
     npu: Optional[dict] = None
+    # A PyTorch NPU backend (torch.npu, e.g. Ascend/CANN) is a trainable device. This is
+    # deliberately separate from `npu`, which is the Ryzen AI inference/assist probe: a
+    # vendor NPU with no autograd must not borrow these facts.
+    npu_trainable: bool = False
+    npu_name: Optional[str] = None
+    npu_memory_bytes: Optional[int] = None
+    npu_bf16: bool = False
     bnb_available: bool = False
     triton_available: bool = False
     flash_attn_available: bool = False
@@ -145,6 +152,7 @@ class TargetProbe:
         probe.flash_attn_available = importlib.util.find_spec("flash_attn") is not None
         if probe.torch_available:
             probe.torch_device, probe.gpus = _torch_devices()
+            probe.npu_trainable, probe.npu_name, probe.npu_memory_bytes, probe.npu_bf16 = _torch_npu()
         if (
             probe.torch_device is None
             and sys.platform == "darwin"
@@ -300,6 +308,59 @@ def _torch_devices() -> tuple[Optional[str], list]:
     return "cpu", gpus
 
 
+def _torch_npu() -> tuple[bool, Optional[str], Optional[int], bool]:
+    """Whether this PyTorch build has a usable NPU backend, and what it reports.
+
+    `torch.npu` is supplied by a vendor package (Ascend's torch_npu, for example), not by
+    upstream torch. It is checked separately from CUDA/XPU because an NPU is a first-class
+    training device here: when this is True the NPU target is supported instead of being
+    offered only as an inferencing assist device.
+    """
+    try:
+        import torch
+
+        npu = getattr(torch, "npu", None)
+        if npu is None:
+            # Ascend's torch_npu patches torch only when imported; the package being installed is
+            # not enough, so give it the one import that makes torch.npu exist.
+            try:
+                import torch_npu  # noqa: F401
+            except ImportError:
+                return False, None, None, False
+            npu = getattr(torch, "npu", None)
+        if npu is None or not bool(npu.is_available()):
+            return False, None, None, False
+        count = int(npu.device_count() or 0)
+        if count <= 0:
+            return False, None, None, False
+        index = 0
+        try:
+            index = int(npu.current_device())
+        except Exception:  # noqa: BLE001 - current_device is a hint, not required
+            pass
+        name: Optional[str] = None
+        memory: Optional[int] = None
+        try:
+            name = str(npu.get_device_name(index) or "") or None
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            properties = npu.get_device_properties(index)
+            memory = int(getattr(properties, "total_memory", 0) or 0) or None
+            name = name or str(getattr(properties, "name", "") or "") or None
+        except Exception:  # noqa: BLE001
+            pass
+        bf16 = False
+        try:
+            checker = getattr(npu, "is_bf16_supported", None)
+            bf16 = bool(checker()) if callable(checker) else False
+        except Exception:  # noqa: BLE001
+            bf16 = False
+        return True, name or "PyTorch NPU", memory, bf16
+    except Exception:  # noqa: BLE001 - an unusable backend is an absent backend
+        return False, None, None, False
+
+
 def _npu_probe() -> Optional[dict]:
     """The NPU aggregate, or None when this install cannot read NPUs at all.
 
@@ -392,11 +453,15 @@ def _capabilities(
         # autograd, which works anywhere and is what keeps a CPU run inside RAM.
         return caps
     if kind == "npu":
-        # `grad_checkpoint` describes *training* capability, and no vendor exposes a backward pass
-        # to PyTorch, so it is False here. `unsloth.device_type.device_capabilities()` says True for
-        # an NPU because its dict is a per-device statement (autograd exists on the device); the two
-        # answer different questions and are not meant to match on this key.
-        caps["grad_checkpoint"] = False
+        if probe.npu_trainable:
+            # torch.npu is a real autograd backend. Keep the conservative kernels: bitsandbytes
+            # and FlashAttention are not part of the Ascend stack, and compile support varies by
+            # CANN release, so none of those are advertised without a measured gate.
+            caps.update(
+                bf16 = bool(probe.npu_bf16),
+                fp16 = True,
+                grad_checkpoint = True,
+            )
         return caps
     arch = str((gpu or {}).get("arch") or "")
     vendor = (gpu or {}).get("vendor") or "other"
@@ -447,7 +512,13 @@ def _discrete_bf16(vendor: str, arch: str) -> bool:
     return False
 
 
-def _notes_for(kind: str, target_name: str, memory_bytes: Optional[int]) -> tuple[str, ...]:
+def _notes_for(
+    kind: str,
+    target_name: str,
+    memory_bytes: Optional[int],
+    *,
+    npu_trainable: bool = False,
+) -> tuple[str, ...]:
     if kind == "cpu":
         return (
             "No accelerator is in use: training runs on the CPU and is roughly 50-100x slower "
@@ -460,9 +531,15 @@ def _notes_for(kind: str, target_name: str, memory_bytes: Optional[int]) -> tupl
             "Integrated GPUs do not support 4-bit training; the run uses 16-bit or fp32.",
         )
     if kind == "npu":
+        if npu_trainable:
+            return (
+                "This NPU exposes PyTorch's torch.npu backend, so the training loop runs on it.",
+                "4-bit loading, Triton and FlashAttention are not advertised for NPU training; "
+                "the run uses fp16/bf16 with gradient checkpointing.",
+            )
         return (
-            "NPUs have no backward pass, so a model cannot be trained on one.",
-            "An NPU can still help a run by tokenizing data and scoring checkpoints while training "
+            "This NPU has no backward pass, so a model cannot be trained on it.",
+            "It can still help a run by tokenizing data and scoring checkpoints while training "
             "runs on another device.",
         )
     if kind == "dgpu" and memory_bytes:
@@ -534,33 +611,46 @@ def list_training_targets(probe: Optional[TargetProbe] = None) -> list:
         )
 
     npu = probe.npu
-    if npu is not None and npu.get("present"):
-        target, npu_notes = _npu_target(npu)
+    if (npu is not None and npu.get("present")) or probe.npu_trainable:
+        target, npu_notes = _npu_target(npu or {})
+        if probe.npu_trainable:
+            target = probe.npu_name or target
+            npu_notes = ()
+        capabilities = _capabilities("npu", probe)
+        recommended = dict(_RECOMMENDED["npu"])
+        if probe.npu_trainable:
+            recommended.update(
+                batch_size = 1,
+                grad_accum = 8,
+                dtype = "bfloat16" if capabilities["bf16"] else "float16",
+                gradient_checkpointing = True,
+            )
+        vendor = str((npu or {}).get("primary", {}).get("vendor") or "")
         targets.append(
             TrainingTarget(
                 id = "npu",
                 device = "npu:0",
                 kind = "npu",
                 name = target,
-                vendor = str((npu.get("primary") or {}).get("vendor") or "other"),
-                memory_bytes = None,
+                vendor = vendor or ("ascend" if probe.npu_trainable else "other"),
+                memory_bytes = probe.npu_memory_bytes,
                 unified_memory = True,
-                supported = False,
+                supported = probe.npu_trainable,
                 reasons = npu_notes,
-                capabilities = _capabilities("npu", probe),
-                recommended = dict(_RECOMMENDED["npu"]),
-                notes = _notes_for("npu", target, None),
+                capabilities = capabilities,
+                recommended = recommended,
+                notes = _notes_for("npu", target, None, npu_trainable = probe.npu_trainable),
             )
         )
     return targets
 
 
 def _npu_target(npu: dict) -> tuple[str, tuple[str, ...]]:
-    """The NPU row's name and why it cannot train.
+    """The assist-only NPU row's name and why it cannot train.
 
-    A present NPU is never `supported` for training, and the reason list says which fact is missing:
-    the device cannot be enabled, no runtime is installed, or the vendor family is unsupported. All
-    three are actionable, in that order of likelihood.
+    A present vendor NPU without a PyTorch backend is reported with the fact that is missing: the
+    device cannot be enabled, no runtime is installed, or the vendor family is unsupported. A
+    trainable ``torch.npu`` target bypasses this helper's reasons and is marked supported above.
     """
     primary = npu.get("primary") or {}
     name = str(primary.get("name") or "NPU")

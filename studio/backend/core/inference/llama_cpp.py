@@ -10144,9 +10144,10 @@ class LlamaCppBackend:
         """
         Locate the llama-server binary.
 
-        Search order:
+        Search order, first usable candidate wins:
         1.  LLAMA_SERVER_PATH environment variable (direct path to binary)
         1b. UNSLOTH_LLAMA_CPP_PATH env var (custom llama.cpp install dir)
+        1c. The llama.cpp architecture activated in Settings (an installed fork)
         2.  Unsloth's custom llama.cpp folder setting
         3.  ~/.unsloth/llama.cpp/llama-server        (make build, root dir)
         4.  ~/.unsloth/llama.cpp/build/bin/llama-server  (cmake build, Linux)
@@ -10155,6 +10156,23 @@ class LlamaCppBackend:
         7.  ./llama.cpp/build/bin/llama-server        (legacy: cmake in-tree build)
         8.  llama-server on PATH                     (system install)
         9.  ./bin/llama-server                       (legacy: extracted binary)
+
+        So: the two environment variables outrank everything, the activated
+        architecture outranks the custom folder (choosing a fork must not
+        overwrite that choice), the custom folder outranks the bundled runtime,
+        and the bundled/auto-downloaded runtime is only reached when neither
+        pin is set.
+
+        The two pins differ in what happens when their binary has gone missing.
+        The custom folder is a tree the user maintains, so a missing or
+        non-executable llama-server there stops the search: silently running a
+        different runtime while Settings still shows that folder selected is the
+        bug #5941 fixed. An activated architecture is a tree this app installs
+        and replaces, so an unusable one -- no marker, a deleted binary, a
+        binary without its execute bit, a denied path -- is reported and the
+        search continues with the next step. Returning None there killed every
+        load with "run `unsloth studio setup`", advice that neither repairs a
+        fork install nor clears the pin, so the same failure came back.
         """
         binary_name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
 
@@ -10195,6 +10213,19 @@ class LlamaCppBackend:
                 "back to another binary, retry once it is available"
             )
             return None
+
+        def _architecture_problem(directory: Optional[Path], denied, name: str) -> str:
+            # Why the activated architecture cannot be used. The remedy is the
+            # same for all three, the cause is not, and a message that names the
+            # wrong cause sends the user to the wrong fix.
+            if directory is None:
+                return (
+                    "its install marker is missing, or the llama-server it records "
+                    "has been removed or cannot be executed"
+                )
+            if denied is not None:
+                return f"{denied} exists but is not executable or is access-denied"
+            return f"{directory} no longer holds {name}"
 
         def _scan_pinned(paths: list):
             # First executable candidate wins. A genuinely access-denied one
@@ -10259,6 +10290,50 @@ class LlamaCppBackend:
                 return _unavailable(locked)
             if hit:
                 return hit
+
+        # 1c. An architecture installed from Settings. It outranks the custom
+        # folder below so selecting a fork does not overwrite the user's own
+        # custom-path choice. Unlike that folder it is a tree this app installs
+        # and replaces, so an unusable one is reported and the search continues
+        # instead of returning None: "run unsloth studio setup" cannot repair a
+        # fork install, so that answer left every load failing the same way with
+        # no way out but finding this setting again.
+        architecture_id = "normal"
+        architecture_dir = None
+        try:
+            from utils.llama_cpp_architectures import (
+                active_architecture_directory,
+                active_architecture_id,
+            )
+
+            architecture_id = active_architecture_id()
+            # Only asked when a fork is selected: on the default install this
+            # saves a second settings read and marker probe per resolution.
+            if architecture_id != "normal":
+                architecture_dir = active_architecture_directory()
+        except Exception as exc:
+            # A settings read that fails must not take discovery down with it.
+            logger.warning(
+                "Could not read the llama.cpp architecture selected in Settings "
+                "(%s); continuing with the rest of the search order",
+                exc,
+            )
+            architecture_id = "normal"
+            architecture_dir = None
+        if architecture_id != "normal":
+            hit, locked = (None, None)
+            if architecture_dir is not None:
+                hit, locked = _scan_pinned(_layout_candidates(architecture_dir))
+            if hit:
+                return hit
+            logger.warning(
+                "The llama.cpp architecture %s selected in Settings cannot be "
+                "used (%s); using the next llama.cpp runtime in the search "
+                "order. Reinstall it from Settings > llama.cpp architecture, or "
+                "switch back to Normal.",
+                architecture_id,
+                _architecture_problem(architecture_dir, locked, binary_name),
+            )
 
         # 2. Unsloth setting: a deliberate pin, so a missing or inaccessible
         # selected build must not silently fall through to the bundled runtime.

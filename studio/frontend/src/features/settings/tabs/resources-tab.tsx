@@ -51,7 +51,6 @@ import {
 import { InferenceEnginesSection } from "@/features/model-picker/components/inference-engines";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { CacheStorageRows } from "../components/cache-storage-rows";
-import { LlamaBackendSection } from "../components/llama-backend-section";
 import { ModelMemorySection } from "../components/model-memory-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
@@ -1048,9 +1047,6 @@ export function ResourcesTab() {
         )}
       </SettingsSection>
 
-      {/* Below the GPU section it describes, above the memory settings that
-          apply to whichever backend is selected. */}
-      <LlamaBackendSection />
       <InferenceEnginesSection />
 
       <ModelMemorySection ref={modelMemoryRef} />

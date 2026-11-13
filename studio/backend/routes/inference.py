@@ -49,7 +49,9 @@ from hub.services.models import account_access
 from hub.services.models.account_access import media_link_account, media_link_target
 from utils.account_context import (
     OWNER_ACCOUNT_ID,
+    AccountContext,
     account_thread,
+    bind_account,
     current_account,
     current_account_id,
     is_owner_context,
@@ -4395,19 +4397,33 @@ _CANVAS_LINK_SCOPE = "canvas"
 
 
 def _sign_canvas_link(subject: str) -> str:
-    """A link token that opens the canvas/artifact routes as ``subject``."""
+    """A link token that opens the canvas/artifact routes as ``subject``.
+
+    The account rides in the signed target, exactly as a media link's does, so a link minted in a
+    managed workspace cannot open the owner's tree: the subject alone left ``current_account()`` at
+    its ``OWNER`` default and every path resolved there."""
     return scoped_link.mint(
-        _CANVAS_LINK_SECRET, _CANVAS_LINK_SCOPE, subject, ttl_s = _CANVAS_LINK_TTL
+        _CANVAS_LINK_SECRET,
+        _CANVAS_LINK_SCOPE,
+        media_link_target(subject),
+        ttl_s = _CANVAS_LINK_TTL,
     )
 
 
-def _canvas_link_subject(link: str) -> Optional[str]:
-    """The subject a valid, unexpired canvas link was minted for, else None."""
+def _canvas_link_account(link: str) -> Optional[tuple[str, AccountContext]]:
+    """The subject and the account a valid, unexpired canvas link was minted for, else None.
+
+    The target is the bare subject for an owner mint and ``account_id:subject`` for a managed one,
+    the same shape ``media_link_account`` reads; usernames hold no colon, so the subject is what
+    follows the last one."""
     try:
         claims = scoped_link.verify(_CANVAS_LINK_SECRET, link, _CANVAS_LINK_SCOPE)
     except scoped_link.ScopedLinkError:
         return None
-    return claims["sub"]
+    target = claims["sub"]
+    subject = target.rpartition(":")[2]
+    account = media_link_account(target, subject)
+    return None if account is None else (subject, account)
 
 
 async def _authenticate_header_or_query(request: Request, token: Optional[str]) -> str:
@@ -4435,12 +4451,17 @@ async def _authenticate_header_or_query(request: Request, token: Optional[str]) 
     bearer = header[7:].strip() if header.lower().startswith("bearer ") else ""
     link = request.query_params.get("link") or ""
     if not bearer and link.strip():
-        subject = _canvas_link_subject(link.strip())
-        if subject is None:
+        resolved = _canvas_link_account(link.strip())
+        if resolved is None:
             raise HTTPException(status_code = 401, detail = "Invalid or expired canvas link.")
+        subject, account = resolved
+        # Bound for the rest of the request, the way the media links do it with ``run_as``: every
+        # filesystem call below resolves through ``current_account()``, whose default is OWNER, so
+        # a managed account's link would otherwise serve the owner's workspace.
+        bind_account(account)
         return subject
     from auth.authentication import subject_for_header_or_query_token
-    return await subject_for_header_or_query_token(request, None)
+    return await subject_for_header_or_query_token(request)
 
 
 @studio_router.get("/artifact-preview-frame", include_in_schema = False)
@@ -6743,6 +6764,22 @@ async def _select_request_tools(
     else:
         # Copy so the shared module-global tool list can't be mutated by callers.
         tools = list(ALL_TOOLS)
+    # The owner switch is the opt-in, so the Studio schemas are added even though the
+    # chat tab never names them (the Settings page owns the switch). Off or non-owner
+    # removes every one before a model can see or call it.
+    from core.inference.self_training import self_training_available
+    from core.inference.studio_access import STUDIO_ACCESS_TOOL_NAMES
+
+    self_training_on = bool(tools_on and self_training_available())
+    if self_training_on:
+        tools += [
+            tool
+            for tool in ALL_TOOLS
+            if tool["function"]["name"] in STUDIO_ACCESS_TOOL_NAMES
+            and not any(t["function"]["name"] == tool["function"]["name"] for t in tools)
+        ]
+    else:
+        tools = [t for t in tools if t["function"]["name"] not in STUDIO_ACCESS_TOOL_NAMES]
     if tools_on and ui_events and payload.enabled_tools is not None:
         # Never in the default catalog: only a chat tab with the browser panel can run them, and it
         # asks by name. Without UI frames the action never reaches a tab, so the tool would only
@@ -37703,6 +37740,11 @@ async def reveal_sandbox_dir(
             sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
         return sandbox_dir if os.path.isdir(sandbox_dir) else None
 
+    # The no-``file`` branch drives the host's desktop too: the same check the file branch above
+    # and ``open`` make, before it touches the filesystem, so a managed account cannot spawn a
+    # file manager on the host either.
+    account_access.require_installation_owner()
+
     # Resolving scans the sandbox root, so it stays off the event loop.
     sandbox_dir = await run_in_threadpool(_resolve_existing)
     if sandbox_dir is None:
@@ -43440,8 +43482,15 @@ def _select_anthropic_server_tools(
     supports_vision: bool = True,
 ) -> list[dict]:
     """Select Unsloth tools requested through Anthropic tools and extensions."""
+    from core.inference.self_training import self_training_available
+    from core.inference.studio_access import STUDIO_ACCESS_TOOL_NAMES
+
+    self_training_on = self_training_available()
     available = [
-        tool for tool in all_tools if supports_vision or tool["function"]["name"] != "view_image"
+        tool
+        for tool in all_tools
+        if (supports_vision or tool["function"]["name"] != "view_image")
+        and (self_training_on or tool["function"]["name"] not in STUDIO_ACCESS_TOOL_NAMES)
     ]
     if _enabled_agent_skills():
         from core.inference.tools import READ_SKILL_TOOL
@@ -43452,6 +43501,8 @@ def _select_anthropic_server_tools(
     selected_names = set(requested_studio_tools)
     if enabled_tools is not None:
         selected_names.update(enabled_tools)
+    if self_training_on:
+        selected_names.update(STUDIO_ACCESS_TOOL_NAMES)
 
     return [tool for tool in available if tool["function"]["name"] in selected_names]
 

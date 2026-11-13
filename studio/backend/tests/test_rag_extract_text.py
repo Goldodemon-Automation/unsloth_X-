@@ -82,3 +82,30 @@ def test_cap_stops_at_the_page_that_crosses_it(rag_home, monkeypatch):
     monkeypatch.setattr(rag_routes, "_EXTRACT_TEXT_MAX_BYTES", 1024)
     result = rag_routes.extract_text(_upload("deck.ppt", b"x"), subject = "owner")
     assert (result["text"], result["truncated"]) == ("first\n\nsecond\n\nthird", False)
+
+
+def test_a_parser_failure_reports_no_host_path(rag_home):
+    """The parser names the absolute stored upload. The managed uploads root carries the install
+    layout and the account id, and a tunnel or LAN caller has neither, so the path is redacted
+    and the reason is kept."""
+    with pytest.raises(HTTPException) as exc:
+        rag_routes.extract_text(_upload("broken.docx", b"not a document"), subject = "owner")
+    assert exc.value.status_code == 422
+    assert "broken.docx could not be read" in exc.value.detail
+    assert str(rag_uploads_root()) not in exc.value.detail
+    assert "<path>" in exc.value.detail
+
+
+def test_a_missing_parser_dependency_reports_no_host_path(rag_home, monkeypatch):
+    """The 503 branch takes the same treatment: import errors name the module path too."""
+    from core.rag import parsers
+
+    def boom(path):
+        raise ImportError(f"no module for {path}")
+
+    monkeypatch.setattr(parsers, "parse", boom)
+    with pytest.raises(HTTPException) as exc:
+        rag_routes.extract_text(_upload("report.pdf", b"%PDF-1.7"), subject = "owner")
+    assert exc.value.status_code == 503
+    assert str(rag_uploads_root()) not in exc.value.detail
+    assert "<path>" in exc.value.detail and "no module for" in exc.value.detail

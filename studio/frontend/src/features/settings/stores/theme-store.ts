@@ -33,17 +33,23 @@ const STORED_PALETTE = Object.fromEntries(
   COLOR_THEME_IDS.map((id) => [id, id]),
 ) as Record<Palette, Palette>;
 
+// The app ships dark. A first run (nothing stored), a blocked localStorage, or an
+// unreadable value all resolve to "dark" rather than "system": the shipped look no
+// longer depends on what the OS happens to be set to. An explicit "system" (or
+// "light") is still honoured, so a user who chose either keeps it across reloads.
+// Keep in sync with the pre-bundle default in public/theme-boot.js, which decides
+// the class before this module loads.
 function readStoredTheme(): Theme {
-  if (typeof window === "undefined") return "system";
+  if (typeof window === "undefined") return "dark";
   let stored: string | null = null;
   try {
     stored = window.localStorage.getItem(STORAGE_KEY);
   } catch {
-    return "system";
+    return "dark";
   }
   if (stored === "light" || stored === "dark" || stored === "system")
     return stored;
-  return "system";
+  return "dark";
 }
 
 function readStoredPalette(): Palette {

@@ -97,7 +97,7 @@ except ImportError:
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from hub.dependencies import get_hf_token, get_request_hf_token
-from hub.utils.host_paths import redact_host_paths
+from hub.utils.host_paths import redact_host_paths, redact_paths_in_text
 from hub.utils.hf_tokens import HfTokenArg, cached_read_refused, hf_token_arg
 
 from utils.utils import (
@@ -1516,13 +1516,16 @@ def _apply_target_constraints(request: TrainingStartRequest, target: Any) -> Non
     the device the run already committed to; None (a caller that resolved
     nothing) is a no-op, as is every device that is not an integrated GPU.
     """
-    if target is None or target.kind != "igpu" or not request.load_in_4bit:
+    if target is None or target.kind not in ("igpu", "npu") or not request.load_in_4bit:
         return
     request.load_in_4bit = False
     # A warning, not info: the user asked for 4-bit and is getting 16-bit, which is a larger and
-    # slower run than the one they described.
+    # slower run than the one they described. The same gate covers an NPU: bitsandbytes has no
+    # kernels for either device, so a 4-bit load would dequantize on the CPU every step.
+    device = "integrated GPU" if target.kind == "igpu" else "NPU"
     logger.warning(
-        "4-bit training is unavailable on an integrated GPU (%s); training in 16-bit instead.",
+        "4-bit training is unavailable on an %s (%s); training in 16-bit instead.",
+        device,
         target.name,
     )
 
@@ -5907,7 +5910,11 @@ async def import_diffusion_dataset_example(
                 except Exception as e:  # noqa: BLE001 -- surface a readable fetch/parse failure
                     raise HTTPException(
                         status_code = 502,
-                        detail = f"Could not import '{entry['repo']}': {e}",
+                        # The staging tree is absolute; a tunnel caller does not own it.
+                        detail = (
+                            f"Could not import '{entry['repo']}': "
+                            f"{redact_paths_in_text(e).strip() or 'unknown error'}"
+                        ),
                     )
                 if imported == 0:
                     raise HTTPException(

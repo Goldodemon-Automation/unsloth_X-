@@ -3,7 +3,7 @@
 
 import { Link, createRouter, useRouterState } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
-import { MascotImg } from "@/components/mascot-img";
+import { XMark } from "@/components/x-mark";
 import { useT } from "@/i18n";
 import { Route as rootRoute } from "./routes/__root";
 import { Route as apiMonitorRoute } from "./routes/api";
@@ -54,7 +54,7 @@ function DefaultNotFound() {
 
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
-      <MascotImg src="Sloth emojis/sloth shy large.png" className="size-24" />
+      <XMark className="size-20 text-muted-foreground/70" />
       <div className="flex flex-col items-center gap-1">
         <h1 className="font-heading font-semibold text-2xl tracking-tight">
           {t("shell.notFound.title")}

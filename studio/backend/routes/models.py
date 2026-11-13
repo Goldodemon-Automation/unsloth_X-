@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import sys
+import threading
 import time
 import weakref
 from pathlib import Path
@@ -1209,6 +1210,72 @@ _compat_local_inventory_flights: dict[
 _COMPAT_LOCAL_INVENTORY_MAX_ATTEMPTS = 8
 
 
+# How long an unchanged local inventory may be reused.
+#
+# /api/models/local is polled by the model picker and walks every scan root (the models dir,
+# the HF cache, LM Studio, Hermes, Ollama) and re-reads GGUF headers; measured 260 ms per
+# call on a warm process, i.e. every poll paid a full rescan of an unchanged tree
+# (`shared_scan` only shields *concurrent* callers -- a sequential poll always rescans).
+#
+# The key already carries the HF cache epoch and the custom-folder set, so anything that
+# invalidates the underlying scans changes the key and misses this memo immediately; this
+# only decides how often an unchanged tree is re-walked. Three seconds is shorter than the
+# picker's own poll interval, so a just-finished download still shows up on the next tick.
+_COMPAT_LOCAL_INVENTORY_MEMO_TTL_SECONDS = 3.0
+_COMPAT_LOCAL_INVENTORY_MEMO_MAX = 16
+_compat_local_inventory_memo: dict[
+    _CompatLocalInventoryKey, tuple[float, List[LocalModelInfo]]
+] = {}
+_compat_local_inventory_memo_lock = threading.Lock()
+
+
+def _compat_local_inventory_memo_get(
+    key: _CompatLocalInventoryKey,
+) -> Optional[List[LocalModelInfo]]:
+    """The cached inventory for `key`, if one was measured inside the TTL.
+
+    Returns a fresh list: a caller (or the response model) that mutates the rows it was
+    handed must not reach back into what the next caller is about to be given.
+    """
+    now = time.monotonic()
+    with _compat_local_inventory_memo_lock:
+        remembered = _compat_local_inventory_memo.get(key)
+        if remembered is None:
+            return None
+        measured_at, models = remembered
+        if now - measured_at >= _COMPAT_LOCAL_INVENTORY_MEMO_TTL_SECONDS:
+            _compat_local_inventory_memo.pop(key, None)
+            return None
+        return list(models)
+
+
+def _compat_local_inventory_memo_put(
+    key: _CompatLocalInventoryKey, models: List[LocalModelInfo]
+) -> None:
+    """Remember one scan, dropping expired entries and keeping the map bounded."""
+    now = time.monotonic()
+    with _compat_local_inventory_memo_lock:
+        for stale in [
+            cached_key
+            for cached_key, (measured_at, _models) in _compat_local_inventory_memo.items()
+            if now - measured_at >= _COMPAT_LOCAL_INVENTORY_MEMO_TTL_SECONDS
+        ]:
+            _compat_local_inventory_memo.pop(stale, None)
+        while len(_compat_local_inventory_memo) >= _COMPAT_LOCAL_INVENTORY_MEMO_MAX:
+            oldest = min(
+                _compat_local_inventory_memo,
+                key = lambda cached_key: _compat_local_inventory_memo[cached_key][0],
+            )
+            _compat_local_inventory_memo.pop(oldest, None)
+        _compat_local_inventory_memo[key] = (now, list(models))
+
+
+def _compat_local_inventory_memo_clear() -> None:
+    """Forget every remembered scan. For tests, and for a caller that knows better."""
+    with _compat_local_inventory_memo_lock:
+        _compat_local_inventory_memo.clear()
+
+
 class _CompatLocalCacheChanged(RuntimeError):
     def __init__(self, models: List[LocalModelInfo]) -> None:
         super().__init__("local inventory sources changed during the scan")
@@ -1294,13 +1361,19 @@ async def _shared_compat_local_inventory_scan(
             epoch,
         )
         try:
-            return await hf_cache_scan.shared_scan(
+            memoised = _compat_local_inventory_memo_get(key)
+            if memoised is not None:
+                return memoised
+            scanned = await hf_cache_scan.shared_scan(
                 _compat_local_inventory_flights,
                 key,
                 lambda expected_epoch = epoch, folders = custom_folders, roots = scan_sources: collect(
                     expected_epoch, folders, roots
                 ),
             )
+            _compat_local_inventory_memo_put(key, scanned)
+            # A copy per caller, so one caller's row edits cannot reach the memo or the next caller.
+            return list(scanned)
         except _CompatLocalCacheChanged as changed:
             superseded = changed.models
             continue

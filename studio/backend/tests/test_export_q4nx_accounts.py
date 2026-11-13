@@ -116,3 +116,32 @@ def test_managed_account_and_owner_reach_the_converter_for_allowed_paths(convert
             _convert(account, path)
         assert exc.value.status_code == 400 and "stop before converting" in exc.value.detail
     assert len(converted) == 2
+
+
+def test_a_failed_conversion_reports_no_host_path(tmp_path, monkeypatch):
+    """The converter's failure names the absolute source and output paths; a tunnel caller owns
+    neither. The reason survives the redaction so the caller can still act on it."""
+    from core.export import q4nx
+
+    gguf = tmp_path / "model.Q4_1.gguf"
+    gguf.write_bytes(b"GGUF")
+    base = tmp_path / "base"
+    base.mkdir()
+    monkeypatch.setattr(q4nx, "require_converter_deps", lambda: None)
+
+    def boom(source, base_model, out_dir, token = None):
+        raise RuntimeError(f"{source} is not a readable GGUF, cannot write {out_dir}")
+
+    monkeypatch.setattr(q4nx, "convert_existing_gguf", boom)
+
+    request = ConvertQ4NXRequest(
+        save_directory = str(tmp_path / "out"), gguf_path = str(gguf), base_model = str(base)
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(export_routes.convert_q4nx(request, "subject", allow_ambient = False))
+    assert exc.value.status_code == 400
+    assert "Q4NX conversion failed" in exc.value.detail
+    assert "is not a readable GGUF" in exc.value.detail
+    assert str(tmp_path) not in exc.value.detail
+    # The two request paths survive as their own last component, so the reason still reads.
+    assert "model.Q4_1.gguf" in exc.value.detail and "out" in exc.value.detail

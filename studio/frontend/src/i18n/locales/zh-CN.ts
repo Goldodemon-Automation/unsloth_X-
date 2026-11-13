@@ -763,7 +763,7 @@ export const zhCN = {
       announce: "缩放 {percent}%",
     },
     beta: "BETA",
-    brand: "unsloth",
+    brand: "X-",
     product: "Unsloth",
     accountMenu: "{name} 账号菜单",
     updateAvailable: "有可用更新",
@@ -2340,6 +2340,21 @@ export const zhCN = {
         total: "共 {value}",
       },
       llamaBackend: {
+        modelSupport: {
+          label: "LLama.cpp architecture",
+          description: "Choose the llama.cpp architecture for GGUF models.",
+          hint: "Normal uses the bundled llama.cpp. Choosing another architecture downloads its build and uses it for the next model load. X- LLama.zig is coming soon.",
+          customBuildHint:
+            "Selected {profile}. Install that build before loading a model.",
+          profiles: {
+            normal: "Normal (llama.cpp)",
+            dory: "Dory (brianchmielNV/llama.cpp)",
+            bee: "Bee (BeeLlama.cpp)",
+            neurall: "Neuralls llama.cpp (neurall/llama.cpp)",
+            ik: "IK (ik_llama.cpp)",
+            x: "X- LLama.zig (coming soon)",
+          },
+        },
         title: "GGUF 推理引擎",
         label: "计算后端",
         description: "llama.cpp 运行 GGUF 模型所用的后端。",

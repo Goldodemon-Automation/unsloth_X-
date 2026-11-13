@@ -1,0 +1,50 @@
+{
+  "iterations_per_arm": 8,
+  "rounds": 2,
+  "before": {
+    "median_ms": 24.2,
+    "p95_ms": 518.86,
+    "mean_ms": 91.15,
+    "per_endpoint_median_ms": {
+      "/api/health": 16.58,
+      "/api/auth/status": 20.91,
+      "/api/liveness": 10.62,
+      "/api/settings/hub": 22.13,
+      "/api/settings/caches": 22.54,
+      "/api/settings/multi-model": 18.02,
+      "/api/settings/remote-access": 26.91,
+      "/api/llama/architectures": 35.82,
+      "/api/llama/backend": 71.89,
+      "/api/models/local": 505.27,
+      "/api/inference/status": 119.01,
+      "/api/sandbox/capability": 18.24,
+      "/api/profile/stats": 22.72
+    }
+  },
+  "after": {
+    "median_ms": 24.77,
+    "p95_ms": 152.83,
+    "mean_ms": 66.99,
+    "per_endpoint_median_ms": {
+      "/api/health": 17.77,
+      "/api/auth/status": 21.96,
+      "/api/liveness": 11.21,
+      "/api/settings/hub": 22.95,
+      "/api/settings/caches": 20.34,
+      "/api/settings/multi-model": 19.22,
+      "/api/settings/remote-access": 29.03,
+      "/api/llama/architectures": 36.33,
+      "/api/llama/backend": 75.45,
+      "/api/models/local": 80.06,
+      "/api/inference/status": 126.21,
+      "/api/sandbox/capability": 18.53,
+      "/api/profile/stats": 24.17
+    }
+  },
+  "p95_improvement_pct": 70.5,
+  "median_improvement_pct": -2.4,
+  "mean_improvement_pct": 26.5,
+  "poll_cycle_before_ms": 910.66,
+  "poll_cycle_after_ms": 503.23,
+  "poll_cycle_improvement_pct": 44.7
+}

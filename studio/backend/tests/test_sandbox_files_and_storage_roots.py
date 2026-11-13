@@ -5438,6 +5438,46 @@ def test_revealing_authenticates_before_it_touches_the_filesystem(tmp_path, monk
     assert resolved == [] and opened == []
 
 
+def test_revealing_a_sandbox_directory_is_refused_to_a_managed_account(tmp_path, monkeypatch):
+    """The no-``file`` form launches the host's file manager, so it takes the owner check
+    ``open`` and the ``file`` form already take: a managed account must be refused before the
+    sandbox is even resolved, and the owner must still get through."""
+    HTTPException, asyncio, inference = _shared_setup_14()
+    from utils.account_context import AccountContext, bind_account, reset_account
+
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+    resolved = []
+    opened = []
+
+    def resolve(session_id, create):
+        resolved.append(session_id)
+        return str(sandbox)
+
+    monkeypatch.setattr(inference, "_sandbox_dir_for", resolve)
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    from utils.paths import path_utils
+
+    monkeypatch.setattr(
+        path_utils, "reveal_in_file_manager", lambda path, expect_dir = False: opened.append(str(path))
+    )
+
+    token = bind_account(AccountContext("alice", "alice"))
+    try:
+        caught = _shared_setup_18(HTTPException, asyncio, inference)
+    finally:
+        reset_account(token)
+    assert caught.value.status_code == 403
+    assert resolved == [] and opened == [], "a refused account must reach neither"
+
+    # The owner: the default context, and the folder really is opened.
+    asyncio.new_event_loop().run_until_complete(
+        inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
+    )
+    assert resolved == ["thread-1"]
+    assert opened == [str(sandbox)]
+
+
 def test_a_traversal_id_stays_inside_the_sandbox_root_and_opens_nothing(tmp_path, monkeypatch):
     """The id is a name, not a path. Every one of these must derive a name
     inside the root, find nothing there, and launch nothing."""

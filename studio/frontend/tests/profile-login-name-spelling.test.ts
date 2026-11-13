@@ -42,7 +42,9 @@ const { loginDisplayName } = loadWithStubs<{
 test("the reserved owner id is the only subject whose spelling is mapped", () => {
   // Read from the shipped export, not a copy: a test pinned to its own literal
   // cannot notice the constant it is about drifting.
-  assert.equal(loginDisplayName(OWNER_USERNAME), "Unsloth");
+  // The wordmark is "X-" (the fork keeps Unsloth's mark, not its name), so the owner's
+  // reserved id maps to that and every other subject is still shown as chosen.
+  assert.equal(loginDisplayName(OWNER_USERNAME), "X-");
   for (const chosen of ["alice", "bob", "unsloth2", "Unsloth", "UNSLOTH", " unsloth "]) {
     assert.equal(loginDisplayName(chosen), chosen);
   }

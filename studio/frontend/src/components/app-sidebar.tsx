@@ -12,6 +12,7 @@ import { placeNavRows, resolveNavRowState } from "@/components/nav-row-state";
 import { ProgressiveRows } from "@/components/progressive-rows";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { createNavigationCoalescer } from "@/components/sidebar-navigation";
+import { XMark } from "@/components/x-mark";
 import {
   DesktopTitlebarNavigation,
   shouldUseCustomWindowTitlebar,
@@ -6468,15 +6469,15 @@ export function AppSidebar() {
                     aria-disabled={chatDisabled}
                     tabIndex={chatDisabled ? -1 : undefined}
                   >
-                    {/* Logo lockup follows the UI font size at half rate:
-                      base + (root scale - 1) * 8px. Exact base sizes at 16px. */}
-                    <img
-                      src="/circle-logo-small.png"
-                      alt="Unsloth"
-                      className="relative top-px -left-px h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
+                    {/* The mark follows the UI font size at half rate:
+                      base + (root scale - 1) * 8px. Exact base sizes at 16px.
+                      The sloth mascot is gone: `XMark` is a vector tile, so there is no
+                      bitmap to 404 and no fallback path to keep in sync. */}
+                    <XMark
+                      className="relative top-px -left-px h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))] text-primary"
                     />
-                    <span className="relative -top-px truncate font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-tight text-black dark:text-foreground dark:tracking-[0.02em]">
-                      unsloth
+                    <span className="relative -top-px truncate font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0.02em] leading-tight text-black dark:text-foreground dark:tracking-[0.06em]">
+                      X-
                     </span>
                     <span className="nav-badge ml-0.5 inline-flex shrink-0 items-center justify-center rounded-full border border-nav-beta-border px-[calc(5px*var(--ui-space-scale,1))] pt-[calc(3px*var(--ui-space-scale,1))] pb-[calc(2px*var(--ui-space-scale,1))] text-[calc(0.5rem*var(--ui-font-scale,1))] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_var(--background)]">
                       {t("shell.beta")}
@@ -7322,7 +7323,7 @@ export function AppSidebar() {
                           {displayTitle}
                         </span>
                         <span className="truncate text-ui-11p5 tracking-nav text-muted-foreground">
-                          Unsloth
+                          X-
                         </span>
                       </div>
                     </SidebarMenuButton>

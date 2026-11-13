@@ -627,10 +627,10 @@ def run_auto_scale(request: AutoScaleRequest) -> dict[str, Any]:
 def plan_surgery(request: SurgeryRequest) -> dict[str, Any]:
     """Owner-only: price the prune and the upcycle. Loads no weight, writes nothing.
 
-    A plan reads config and tensor headers from whatever local path the spec
-    names, so it is as much a filesystem reader as the run it precedes. It sits
-    behind the same owner gate for the same reason the other plans do: a guest
-    account cannot see another account's checkpoints through it.
+    A plan reads config and tensor headers from the checkpoint the spec names. A Hub id is
+    downloaded into the shared cache first, so the plan is as much a filesystem reader as the run
+    it precedes. It sits behind the same owner gate for the same reason the other plans do: a
+    guest account cannot see another account's checkpoints through it.
     """
     _gate("surgery")
     try:
@@ -681,9 +681,9 @@ def run_surgery(request: SurgeryRequest) -> dict[str, Any]:
 def plan_arch_swap(request: ArchSwapRequest) -> dict[str, Any]:
     """Owner-only: the role-by-role mapping a swap would perform, and its cost.
 
-    Both source and target are local paths in the spec, so the plan is a reader
-    of two folders that may not belong to the caller; the run is owner-only, and
-    the plan reaches the same folders.
+    A source or target may be a Hub id or a local path. A Hub id is downloaded into the shared
+    cache first; either way the plan reads two folders that may not belong to the caller, so the
+    owner gate applies to the plan as well as the run.
     """
     _gate("arch-swap")
     try:

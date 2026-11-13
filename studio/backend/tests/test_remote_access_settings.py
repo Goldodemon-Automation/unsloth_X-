@@ -363,6 +363,59 @@ def test_stop_response_middleware_holds_lease_through_body(monkeypatch):
     ).read_text(encoding = "utf-8")
 
 
+def _lease_scope(monkeypatch, scope):
+    """Run the middleware over ``scope`` and report whether it took the connector lease."""
+    leases = []
+
+    def _acquire():
+        leases.append(scope.get("path"))
+        return lambda: None
+
+    monkeypatch.setattr(remote_access, "acquire_remote_access_stop_response", _acquire)
+
+    async def _app(_scope, _receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    async def _send(_message):
+        return None
+
+    asyncio.run(remote_access.RemoteAccessStopResponseMiddleware(_app)(scope, None, _send))
+    return len(leases)
+
+
+_STOP = "/api/settings/remote-access/stop"
+
+
+@pytest.mark.parametrize(
+    "path, root_path, leased",
+    [
+        # The plain deploy, and the trailing slash a client may add.
+        (_STOP, "", 1),
+        (_STOP + "/", "", 1),
+        # Behind --root-path the prefix stays inside ``path``: the lease must still be taken, or
+        # the stale-preflight window ``max_age`` closes re-opens.
+        ("/x" + _STOP, "/x", 1),
+        ("/x" + _STOP + "/", "/x/", 1),
+        ("/a/b" + _STOP, "/a/b", 1),
+        # A root that is only a string prefix of the path is not stripped.
+        ("/xy" + _STOP, "/x", 0),
+        ("/api/settings/remote-access/start", "", 0),
+        ("/api/settings/remote-access/stopx", "", 0),
+    ],
+)
+def test_stop_response_lease_survives_a_root_path_and_a_trailing_slash(
+    monkeypatch, path, root_path, leased
+):
+    scope = {"type": "http", "method": "POST", "path": path, "root_path": root_path}
+    assert _lease_scope(monkeypatch, scope) == leased
+
+
+def test_the_stop_lease_is_post_only(monkeypatch):
+    scope = {"type": "http", "method": "GET", "path": _STOP, "root_path": ""}
+    assert _lease_scope(monkeypatch, scope) == 0
+
+
 def test_stop_worker_waits_for_every_concurrent_response(monkeypatch):
     remote_access._start_worker = remote_access._stop_worker = None
     remote_access._start_worker_admission = remote_access._stop_worker_admission = None

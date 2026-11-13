@@ -574,11 +574,19 @@ class KeylessToolPolicyMiddleware:
         if asgi_scope.get("type") != "http":
             await self.app(asgi_scope, receive, send)
             return
-        from starlette.concurrency import run_in_threadpool
-
         scope, tools, generation = await _settings_async()
         settings = (scope, tools)
-        admitted = await run_in_threadpool(asgi_request_is_keyless, asgi_scope, settings)
+        if scope == KEYLESS_SCOPE_OFF:
+            # Off is the default, and off is decided before anything needs the account counts, which
+            # is the only thing in `asgi_request_is_keyless` that can reach SQLite. So the common
+            # request does not pay a threadpool hop for an answer that cannot change -- measured at
+            # 3.59 ms of a 14 ms request in the middleware-removal profile. With keyless access on,
+            # the hop stays: an off-loop SQLite read is the reason it exists.
+            admitted = False
+        else:
+            from starlette.concurrency import run_in_threadpool
+
+            admitted = await run_in_threadpool(asgi_request_is_keyless, asgi_scope, settings)
         with _cache_lock:
             if _settings_write_inflight is not None or generation != _settings_generation:
                 settings = (KEYLESS_SCOPE_OFF, False)

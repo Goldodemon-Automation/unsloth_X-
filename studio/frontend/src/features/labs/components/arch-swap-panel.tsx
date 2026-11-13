@@ -43,9 +43,9 @@ export function ArchSwapPanel(): ReactElement {
     (state) => state.selectTrainingModel,
   );
   const [source, setSource] = useState("");
-  const [sourceMode, setSourceMode] = useState<PickerMode>("local");
+  const [sourceMode, setSourceMode] = useState<PickerMode>("hub");
   const [target, setTarget] = useState("");
-  const [targetMode, setTargetMode] = useState<PickerMode>("local");
+  const [targetMode, setTargetMode] = useState<PickerMode>("hub");
   const [extraLayers, setExtraLayers] = useState<"repeat" | "zeros">("repeat");
   const [plan, setPlan] = useState<ArchSwapPlan | null>(null);
   const [planning, setPlanning] = useState(false);

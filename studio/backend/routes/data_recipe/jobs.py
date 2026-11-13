@@ -173,7 +173,7 @@ async def _authorize_dataset_download(
         finally:
             reset_account(marker)
         return
-    await subject_for_header_or_query_token(request, None)
+    await subject_for_header_or_query_token(request)
     yield
 
 

@@ -143,7 +143,7 @@ import {
   useScrollThreadToBottom,
 } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { Button } from "@/components/ui/button";
-import { MascotImg } from "@/components/mascot-img";
+import { XMark } from "@/components/x-mark";
 import { Spinner } from "@/components/ui/spinner";
 import {
   DropdownMenu,
@@ -2769,7 +2769,6 @@ const ThreadWelcome: FC<{
     setWelcome(buildWelcome(new Date().getHours(), name));
   }, [displayName, nickname]);
 
-  const currentEmojiSrc = `Sloth emojis/${welcome.sloth}`;
 
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
@@ -2781,10 +2780,7 @@ const ThreadWelcome: FC<{
           <div className="unsloth-welcome-greeting flex flex-row items-center justify-center gap-[calc(15px*var(--ui-space-scale,1))]">
             {/* Temporary chat keeps the title on its own, no mascot. */}
             {showGreetingSloth && !incognito && (
-              <MascotImg
-                src={currentEmojiSrc}
-                className="unsloth-welcome-sloth size-[calc(44px*var(--ui-space-scale,1))] -translate-y-[2px]"
-              />
+              <XMark className="unsloth-welcome-mark size-[calc(38px*var(--ui-space-scale,1))] -translate-y-[2px] text-primary" />
             )}
             <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
               {incognito

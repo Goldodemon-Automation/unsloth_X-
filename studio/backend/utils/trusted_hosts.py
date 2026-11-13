@@ -1,23 +1,32 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Optional Host allow-list, off unless ``UNSLOTH_TRUSTED_HOSTS`` is set.
+"""Host allow-list, on by default and overridable with ``UNSLOTH_TRUSTED_HOSTS``.
 
 A page on ``evil.example`` rebound to ``127.0.0.1:8888`` is same-origin with the
-backend, so it can read every unauthenticated ``/api`` route. The narrower
-transport checks in ``keyless_api_access`` already refuse the serious versions
-(bootstrap-password injection, keyless admission), which is why this stays
-default-off: LAN, tunnel and Colab modes legitimately carry many Host values,
-and turning a host check on by default would break them for a smaller gap than
-it closes. Setting the variable opts in.
+backend, so it can read every unauthenticated ``/api`` route and drive the
+login/bootstrap ones. The narrower transport checks in ``keyless_api_access``
+already refuse the serious versions, but a Host check is cheap and this is the
+control that closes the rest, so it ships on rather than opt-in.
 
-``UNSLOTH_TRUSTED_HOSTS`` is a comma-separated list of ``host[:port]`` patterns.
+The default list is the set of hosts this backend legitimately answers to:
+loopback, ``localhost``, the documented Tauri desktop origins, a Cloudflare
+quick tunnel's own host and Colab's kernel proxy. Private and link-local
+address literals and mDNS ``*.local`` names pass too, so a LAN launch keeps
+working without configuration. The two in-process hosts stay listed as well:
+``testserver`` (Starlette's TestClient) and ``unsloth-mcp.invalid``, which every
+MCP tool call is replayed under through this very app.
+
+``UNSLOTH_TRUSTED_HOSTS`` overrides that list wholesale -- a reverse proxy on a
+real name sets it and the defaults stop applying. It is a comma-separated list
+of ``host[:port]`` patterns.
 A leading ``*`` matches subdomains (``*.example`` matches ``a.example`` and
 ``b.a.example`` but not ``example``); a bare ``*`` matches every host. A pattern
 with a port only matches that port; one without a port matches any port.
 Matching is case-insensitive and ignores a trailing root dot. Loopback literals
 and ``localhost`` names are always allowed, whatever the list says, so an
-operator cannot lock themselves out of their own machine.
+operator cannot lock themselves out of their own machine. A ``Host`` that
+matches nothing is refused with a 400 that names the host and the variable.
 
 Pure ASGI, not ``BaseHTTPMiddleware``, matching ``SecurityHeadersMiddleware``,
 so streaming responses are not wrapped in an anyio stream. WebSocket and other
@@ -30,6 +39,28 @@ import ipaddress
 import os
 
 TRUSTED_HOSTS_ENV = "UNSLOTH_TRUSTED_HOSTS"
+
+# Shipped in place of the variable being unset. ``localhost`` and the loopback literals are already
+# always allowed by ``_is_loopback_or_localhost``; they are repeated here so the list reads as the
+# whole policy. ``*.localhost`` also covers ``tauri.localhost`` (the Windows WebView2 origin, beside
+# ``tauri://localhost`` on macOS and Linux), but the exact name stays for the reader.
+_DEFAULT_PATTERNS = (
+    "localhost",
+    "*.localhost",
+    "tauri.localhost",
+    # Starlette's TestClient host, and the host the MCP forwarder replays its in-process requests
+    # under (studio_mcp/forward.py): every tool call reaches the routes through this app.
+    "testserver",
+    "unsloth-mcp.invalid",
+    # A quick tunnel is published under a random name in this domain and cloudflared forwards the
+    # original Host, so the tunnel URL is the Host the browser sends.
+    "*.trycloudflare.com",
+    # Colab serves the notebook's proxy port from this domain.
+    "*.googleusercontent.com",
+    # mDNS names (``macbook.local``) are how a LAN is browsed from macOS and from some routers; the
+    # suffix is mDNS-only, so an internet page cannot claim one.
+    "*.local",
+)
 
 
 def _split_authority(value: str) -> tuple[str, int | None] | None:
@@ -87,6 +118,12 @@ def _split_pattern(value: str) -> tuple[str, int | None, bool] | None:
     return host, port, wildcard
 
 
+# Parsed once: the defaults are a constant and ``_matches`` takes parsed entries.
+_DEFAULT_PARSED = tuple(
+    parsed for parsed in (_split_pattern(item) for item in _DEFAULT_PATTERNS) if parsed is not None
+)
+
+
 def _is_loopback_or_localhost(host: str) -> bool:
     """Whether ``host`` is a loopback literal or a ``localhost`` name."""
     if host == "localhost" or host.endswith(".localhost"):
@@ -97,6 +134,21 @@ def _is_loopback_or_localhost(host: str) -> bool:
         return False
     mapped = getattr(address, "ipv4_mapped", None)
     return address.is_loopback or (mapped is not None and mapped.is_loopback)
+
+
+def _is_lan_literal(host: str) -> bool:
+    """Whether ``host`` is a private or link-local address literal.
+
+    A LAN launch publishes the interface address and the browser then sends exactly that as the
+    Host, so refusing it would break the mode. Only literals: a name still has to be listed, which
+    is the rebinding case this list exists for.
+    """
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    mapped = getattr(address, "ipv4_mapped", None)
+    return (mapped if mapped is not None else address).is_private
 
 
 def _matches(
@@ -126,7 +178,7 @@ def _refusal(host_header: str | None) -> bytes:
 
 
 class TrustedHostsMiddleware:
-    """Refuse an unmatched Host with a plain 400, but only when the env var is set."""
+    """Refuse an unmatched Host with a plain 400, against the default list or the override."""
 
     def __init__(self, app):
         self.app = app
@@ -136,14 +188,15 @@ class TrustedHostsMiddleware:
             await self.app(scope, receive, send)
             return
         configured = os.environ.get(TRUSTED_HOSTS_ENV, "")
-        if not configured.strip():
-            await self.app(scope, receive, send)
-            return
-        patterns = tuple(
-            parsed
-            for parsed in (_split_pattern(item) for item in configured.split(","))
-            if parsed is not None
-        )
+        defaults_in_force = not configured.strip()
+        if defaults_in_force:
+            patterns = _DEFAULT_PARSED
+        else:
+            patterns = tuple(
+                parsed
+                for parsed in (_split_pattern(item) for item in configured.split(","))
+                if parsed is not None
+            )
 
         host_header = None
         for name, value in scope.get("headers") or ():
@@ -153,7 +206,13 @@ class TrustedHostsMiddleware:
         authority = _split_authority(host_header) if host_header is not None else None
         if authority is not None:
             host, port = authority
-            if _is_loopback_or_localhost(host) or _matches(host, port, patterns):
+            # A LAN literal only rides along with the defaults: an operator who set a list has named
+            # the addresses their backend answers to, and the list wins over the guess.
+            if (
+                _is_loopback_or_localhost(host)
+                or _matches(host, port, patterns)
+                or (defaults_in_force and _is_lan_literal(host))
+            ):
                 await self.app(scope, receive, send)
                 return
 

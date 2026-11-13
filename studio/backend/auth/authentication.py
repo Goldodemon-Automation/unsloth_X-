@@ -350,10 +350,14 @@ async def authenticated_via_api_key(
 async def credentials_for_token(
     request: Any, token: Optional[str]
 ) -> Optional[HTTPAuthorizationCredentials]:
-    """What ``security`` would resolve for a bearer the route read for itself. Routes that take the
-    token from somewhere the dependency cannot see, such as the ``?token=`` query param an ``<img
-    src>`` has to use, would otherwise miss keyless API access entirely and answer 401 on a scope
-    that covers them. None means no usable credential and no setting to stand in for one."""
+    """What ``security`` would resolve for a bearer the route read for itself. A caller that takes
+    the token from somewhere the dependency cannot see, such as the ``Authorization`` header it
+    reads on an endpoint built without one, would otherwise miss keyless API access entirely and
+    answer 401 on a scope that covers it. Its callers hand it a header bearer and nothing else: a
+    session bearer in a query string outlives the click in history, in a proxy's access log and in
+    the ``Referer`` of whatever the page links to, and the source pin in
+    ``tests/test_series_regressions_v2.py`` is what keeps a route from handing one over. None
+    means no usable credential and no setting to stand in for one."""
     from utils.keyless_api_access import APPROVED_DUMMY_BEARERS, keyless_request_allowed
 
     if token is not None and not token.strip():
@@ -371,13 +375,15 @@ async def credentials_for_token(
     return _KEYLESS_CREDENTIALS if keyless else None
 
 
-async def subject_for_header_or_query_token(request: Any, token: Optional[str]) -> str:
-    """The subject of the bearer in ``Authorization``, or failing that in a ``?token=`` the route
-    read for itself. An ``<img src>`` and the native save command fetch without a header."""
+async def subject_for_header_or_query_token(request: Any) -> str:
+    """The subject of the bearer in ``Authorization``, and of nothing else. There is no token
+    parameter to hand a ``?token=`` to: a session bearer in a URL outlives the click in history,
+    in a proxy's access log and in the ``Referer`` of whatever the page links to. The headerless
+    fetches this once enabled carry a short-lived ``?link=`` HMAC instead, which the routes resolve
+    before they get here; the name is kept from when the query string could carry a session."""
     header = request.headers.get("authorization") or ""
     header_token = header[7:] if header.lower().startswith("bearer ") else ""
-    # A blank header is the absent header, so the `?token=` such a caller sends is still owed.
-    credentials = await credentials_for_token(request, header_token.strip() or token or None)
+    credentials = await credentials_for_token(request, header_token.strip() or None)
     if credentials is None:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,

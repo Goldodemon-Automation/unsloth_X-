@@ -7,10 +7,14 @@
 try {
   // Storage reads get their own guards so a blocked localStorage (private
   // browsing) still resolves a mode from the OS preference.
-  var theme = "system";
+  // Dark is the shipped default: a first run, a blocked localStorage, or an unreadable
+  // value resolves to dark instead of following the OS. An explicit "system" or "light"
+  // is still honoured. Keep in sync with readStoredTheme in
+  // src/features/settings/stores/theme-store.ts.
+  var theme = "dark";
   var palette = null;
   try {
-    theme = localStorage.getItem("theme") || "system";
+    theme = localStorage.getItem("theme") || "dark";
     palette = localStorage.getItem("palette");
   } catch (e) {}
   var dark =

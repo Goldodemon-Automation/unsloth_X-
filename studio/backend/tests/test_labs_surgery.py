@@ -206,8 +206,40 @@ def test_upcycling_grows_the_projection_because_experts_are_copied(tmp_path):
     assert any("written 4 times" in warning for warning in report["warnings"])
 
 
-def test_a_hub_id_is_refused_because_surgery_edits_local_weights(tmp_path):
-    with pytest.raises(ValueError, match = "download the checkpoint first"):
+def test_a_hub_id_is_fetched_because_the_picker_hands_one_over(tmp_path, monkeypatch):
+    """Behaviour pinned: a Hub id is downloaded, not refused.
+
+    The Train wizard's checkpoint picker hands these engines the id the user selected, so refusing
+    an id would ask them to find the cache folder by hand. The download is stubbed here; what
+    matters is that the engine resolves an id to a local snapshot, and that it asks the Hub for
+    the files a weight reader needs rather than for the whole repository.
+    """
+    local = _checkpoint(tmp_path / "downloaded")
+    seen: dict = {}
+
+    def fake_download(repo_id, **kwargs):
+        seen["repo"] = repo_id
+        seen["allow_patterns"] = kwargs.get("allow_patterns")
+        return str(local)
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_download)
+    report = surgery.plan({"model": "unsloth/Llama-3.2-1B", "experts": 4})
+
+    assert seen["repo"] == "unsloth/Llama-3.2-1B", "the Hub id never reached snapshot_download"
+    assert seen["allow_patterns"], "the download is unbounded: it would fetch GGUF and optimiser state"
+    assert report["runnable"] is True
+
+
+def test_a_hub_id_that_cannot_be_fetched_reports_the_hub_reason(monkeypatch):
+    import huggingface_hub
+
+    def failing_download(repo_id, **kwargs):
+        raise RuntimeError("401 Client Error: gated repo")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", failing_download)
+    with pytest.raises(ValueError, match = "gated repo"):
         surgery.plan({"model": "unsloth/Llama-3.2-1B"})
 
 

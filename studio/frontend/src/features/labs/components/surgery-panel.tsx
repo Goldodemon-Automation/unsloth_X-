@@ -68,7 +68,7 @@ export function SurgeryPanel(): ReactElement {
     (state) => state.selectTrainingModel,
   );
   const [model, setModel] = useState("");
-  const [modelMode, setModelMode] = useState<PickerMode>("local");
+  const [modelMode, setModelMode] = useState<PickerMode>("hub");
   const [dropLayers, setDropLayers] = useState("0");
   const [layerStrategy, setLayerStrategy] = useState<"last" | "uniform">(
     "last",

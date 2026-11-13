@@ -10,11 +10,15 @@ import re
 import subprocess
 import sys
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Optional
 
 import structlog
+
+from utils import llama_cpp_architectures as _architectures
 
 from utils.llama_cpp_freshness import (
     _INSTALL_MARKER_NAME,
@@ -1503,3 +1507,299 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
 def _reset_job_for_tests() -> None:
     """Test-only: return the job tracker to idle."""
     _flow.reset_job(_job, _job_lock)
+
+
+# --- llama.cpp architecture status (Settings > llama.cpp > model support) -----
+#
+# GET /api/llama/architectures is the hot one: the panel reads it on open, every
+# 900 ms while an install runs, and any other surface may poll it. The payload
+# itself is not cheap -- utils.llama_cpp_architectures.get_status resolves up to
+# four GitHub releases and reads every architecture marker and llama-server off
+# disk -- so this layer caches the half of it that only changes when a local fact
+# changes, and always overlays a freshly read job. Progress therefore keeps
+# moving even when the rest of the payload came from the cache.
+
+# How long a computed payload may be served. Only the release-derived fields can
+# age inside this window: everything local is re-keyed on every call (see
+# _architecture_status_key). It is deliberately far below the 600 s success and
+# 45 s failure memos _latest_release keeps, so this cache never holds a release
+# answer past the point where that memo would have re-resolved it -- at worst a
+# new release is invisible for this many seconds longer than it already was.
+ARCHITECTURE_STATUS_CACHE_TTL_SECONDS = 10.0
+# Bounded like every cache here: one entry per (settings, marker, manifest)
+# combination, oldest expiry dropped first.
+_ARCHITECTURE_STATUS_CACHE_MAX_ENTRIES = 8
+# Wall-clock ceiling for one release lookup. The module reads GitHub with
+# timeout = 8.0, and urllib applies a timeout per address, so a host whose
+# leading addresses blackhole pays it once for each; the freshness path bounds
+# the same call with call_with_deadline for exactly that reason. A fetch that
+# hits this ceiling is recorded by _latest_release as a failed lookup (45 s
+# memo), so get_status then takes its degraded path -- installed facts intact,
+# reason = release_lookup_failed -- instead of blocking again on the next poll.
+ARCHITECTURE_RELEASE_DEADLINE_SECONDS = 3.0
+
+_architecture_status_cache: dict[tuple, tuple[float, dict]] = {}
+# Held only for a dict read/write. Never across a release lookup, a disk scan or
+# anything else that can be slow: two concurrent status reads must not queue
+# behind each other, and an install's progress polls must never wait on it.
+_architecture_status_lock = threading.Lock()
+# repo -> monotonic time this layer last saw its release lookup fail. Cleared by
+# the next successful resolve, so an outage stays reported between memoised
+# failures without becoming sticky.
+_architecture_release_failures: dict[str, float] = {}
+
+
+def _architecture_repos() -> tuple[str, ...]:
+    """The repos get_status resolves; the same filter it applies."""
+    return tuple(
+        profile.repo
+        for profile in _architectures.ARCHITECTURES
+        if profile.kind == "prebuilt" and profile.repo
+    )
+
+
+def _architecture_marker_signature(architecture: str) -> tuple:
+    """The installed marker as a cheap, exact identity.
+
+    mtime_ns + size change on every write of a marker, so a finished install, a
+    reinstall or a removal re-keys the payload instead of serving an old row.
+    Uses the module's own layout helper (its tests already treat _install_dir as
+    the layout seam) so a relocated install root also re-keys.
+    """
+    path = _architectures._install_dir(architecture) / _architectures.ARCHITECTURE_MARKER_NAME
+    try:
+        stat = path.stat()
+    except OSError:
+        return (str(path), None, None)
+    return (str(path), stat.st_mtime_ns, stat.st_size)
+
+
+def _architecture_status_key(*, active: str, job_state: str) -> tuple:
+    """Everything a status payload depends on that is cheap to observe.
+
+    What it can see: the active architecture setting, the job state (a running
+    job changes what get_status resolves at all), the three runtime-path env
+    overrides, whether this host can build from source, the manifest, and every
+    install marker's identity. What it cannot see: a marker edited in place
+    without changing its mtime or size, a release published since the last
+    resolve (bounded by ARCHITECTURE_STATUS_CACHE_TTL_SECONDS), or a binary
+    removed without touching its marker -- except that every cached binary path
+    is re-stat'ed on each read (see _architecture_payload_still_live).
+    """
+    env_override = tuple(
+        (os.environ.get(name) or "").strip()
+        for name in (
+            "LLAMA_SERVER_PATH",
+            "UNSLOTH_LLAMA_CPP_PATH",
+            "UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH",
+        )
+    )
+    return (
+        active,
+        job_state,
+        env_override,
+        _architectures._source_build_tools(),
+        tuple((profile.id, profile.repo, profile.kind) for profile in _architectures.ARCHITECTURES),
+        tuple(
+            (profile.id, _architecture_marker_signature(profile.id))
+            for profile in _architectures.ARCHITECTURES
+        ),
+    )
+
+
+def _architecture_payload_still_live(payload: dict) -> bool:
+    """Whether the binaries the payload reports still exist.
+
+    Deleting a llama-server changes nothing in its marker, so the marker
+    identity alone would keep reporting a working install. One stat per
+    installed architecture is the cheapest honest answer.
+    """
+    for profile in payload.get("profiles") or ():
+        binary = profile.get("binary_path")
+        if binary and not os.path.isfile(binary):
+            return False
+    return True
+
+
+def _read_architecture_cache(key: tuple) -> Optional[dict]:
+    """The cached payload for ``key``, or None when it is absent, expired or stale."""
+    now = time.monotonic()
+    with _architecture_status_lock:
+        entry = _architecture_status_cache.get(key)
+        if entry is None:
+            return None
+        expires_at, payload = entry
+        if expires_at <= now:
+            del _architecture_status_cache[key]
+            return None
+    # Outside the lock: the liveness check touches the disk.
+    if not _architecture_payload_still_live(payload):
+        with _architecture_status_lock:
+            entry = _architecture_status_cache.get(key)
+            if entry is not None and entry[1] is payload:
+                del _architecture_status_cache[key]
+        return None
+    return payload
+
+
+def _write_architecture_cache(key: tuple, payload: dict) -> None:
+    expires_at = time.monotonic() + ARCHITECTURE_STATUS_CACHE_TTL_SECONDS
+    with _architecture_status_lock:
+        _architecture_status_cache[key] = (expires_at, payload)
+        while len(_architecture_status_cache) > _ARCHITECTURE_STATUS_CACHE_MAX_ENTRIES:
+            oldest = min(
+                _architecture_status_cache,
+                key = lambda entry: _architecture_status_cache[entry][0],
+            )
+            del _architecture_status_cache[oldest]
+
+
+def reset_architecture_status_cache() -> None:
+    """Drop the cached status payloads and the remembered lookup failures.
+
+    Tests use this. Runtime paths do not need it: the key already changes when
+    the setting, a marker or the job does, so activation and installs invalidate
+    themselves rather than relying on another module to remember to call here.
+    """
+    with _architecture_status_lock:
+        _architecture_status_cache.clear()
+        _architecture_release_failures.clear()
+
+
+def _note_architecture_release_failure(repo: str) -> None:
+    with _architecture_status_lock:
+        _architecture_release_failures[repo] = time.monotonic()
+
+
+def _clear_architecture_release_failure(repo: str) -> None:
+    with _architecture_status_lock:
+        _architecture_release_failures.pop(repo, None)
+
+
+def _bounded_architecture_release_fetch(repo: str) -> Optional[dict]:
+    """One release lookup, bounded by a wall clock, for _latest_release's ``fetch``.
+
+    Reuses the module's own fetch (its headers, token handling and asset
+    parsing); only the wall clock is added. Re-raising matters: _latest_release
+    turns it into the 45 s failure memo and flags the repo, which is what makes
+    the following get_status both fast and honest about the failure.
+    """
+    from utils.utils import call_with_deadline
+
+    try:
+        release = call_with_deadline(
+            lambda: _architectures._fetch_release(repo),
+            ARCHITECTURE_RELEASE_DEADLINE_SECONDS,
+            name = f"llama-architecture-release-{repo}",
+        )
+    except Exception:
+        _note_architecture_release_failure(repo)
+        raise
+    _clear_architecture_release_failure(repo)
+    return release
+
+
+def _resolve_architecture_release(repo: str, *, force_refresh: bool) -> Optional[dict]:
+    """Resolve one repo through the module's release cache, bounding only the fetch.
+
+    A warm answer costs one lock and one dict lookup, no network, so calling
+    this on every compute is what keeps get_status from paying for the lookup
+    itself. _latest_release already swallows fetch failures.
+    """
+    try:
+        return _architectures._latest_release(
+            repo,
+            force_refresh = force_refresh,
+            fetch = _bounded_architecture_release_fetch,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("llama architecture release resolve failed", repo = repo, error = str(exc))
+        return None
+
+
+def _warm_architecture_releases(*, force_refresh: bool) -> None:
+    """Resolve every prebuilt repo's release before get_status reads them.
+
+    Parallel for the same reason get_status is: four serial deadlines would be
+    four times the wait on an unreachable GitHub. force_refresh is honoured here
+    and only here -- see _compute_architecture_status.
+    """
+    repos = _architecture_repos()
+    if len(repos) <= 1:
+        for repo in repos:
+            _resolve_architecture_release(repo, force_refresh = force_refresh)
+        return
+    with ThreadPoolExecutor(max_workers = min(4, len(repos))) as pool:
+        futures = [
+            pool.submit(_resolve_architecture_release, repo, force_refresh = force_refresh)
+            for repo in repos
+        ]
+        for future in futures:  # pragma: no branch - resolved for side effects
+            future.result()
+
+
+def _architecture_release_lookup_failed(status: dict) -> bool:
+    """Whether release facts are missing because the lookup failed.
+
+    Two sources, because neither covers the panel alone: this layer records the
+    failures its own bounded fetches saw, and get_status marks prebuilt rows
+    without a source fallback as release_lookup_failed. A failure memoised by
+    another caller's fetch (the install job's forced refresh) is only visible
+    through the second source, and an architecture that has a source fallback
+    reports source_build there instead of a lookup failure.
+    """
+    repos = _architecture_repos()
+    with _architecture_status_lock:
+        if any(repo in _architecture_release_failures for repo in repos):
+            return True
+    return any(
+        profile.get("reason") == "release_lookup_failed"
+        for profile in status.get("profiles") or ()
+    )
+
+
+def _compute_architecture_status(*, force_refresh: bool, job_state: str) -> dict:
+    # Mirrors get_status's own guard: while a job runs it answers from the job and
+    # resolves no releases, so warming them here would be work nothing reads.
+    if job_state != "running" and _architecture_repos():
+        _warm_architecture_releases(force_refresh = force_refresh)
+    # Resolve with the plain path: the warms above were the refresh, and a second
+    # forced resolve here would go back to the network with no deadline, which is
+    # the block this whole section exists to avoid.
+    status = _architectures.get_status(force_refresh = False)
+    status["release_lookup_failed"] = _architecture_release_lookup_failed(status)
+    return status
+
+
+def get_architecture_status(*, force_refresh: bool = False) -> dict:
+    """The architecture picker payload, cheap to poll.
+
+    Identical to utils.llama_cpp_architectures.get_status except that a repeated
+    call inside ARCHITECTURE_STATUS_CACHE_TTL_SECONDS reuses the resolved
+    release answers and the installed-tree scan whenever the key says nothing
+    local changed, and can never outlive them: force_refresh re-resolves the
+    releases (bounded by ARCHITECTURE_RELEASE_DEADLINE_SECONDS) and recomputes
+    the scan, exactly as the uncached call would.
+
+    What the cache cannot see is listed on _architecture_status_key. The job is
+    never cached: it is read per call so a progress poll still moves while an
+    install runs, and reading it takes the installer's job lock for one dict copy
+    only -- this path never touches the install operation lock.
+    """
+    job = _architectures.get_job()
+    job_state = str(job.get("state") or "idle")
+    active = _architectures.active_architecture_id()
+    key = _architecture_status_key(active = active, job_state = job_state)
+    if not force_refresh:
+        cached = _read_architecture_cache(key)
+        if cached is not None:
+            return {**cached, "job": job}
+    payload = _compute_architecture_status(
+        force_refresh = force_refresh,
+        job_state = job_state,
+    )
+    # A marker swapped mid-compute lands here under the pre-swap key, so the entry
+    # is simply unreachable for later calls (they key on the new stat) and gets
+    # evicted; serving a payload under a key it does not match is impossible.
+    _write_architecture_cache(key, payload)
+    return {**payload, "job": job}

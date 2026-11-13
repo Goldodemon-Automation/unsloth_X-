@@ -74,6 +74,8 @@ import {
 } from "../components/desktop-update-control";
 import { DocumentsRagSection } from "../components/documents-rag-section";
 import { LanguageSelect } from "../components/language-select";
+import { LlamaBackendSection } from "../components/llama-backend-section";
+import { ModelSelfTrainingSection } from "../components/model-self-training-section";
 import {
   DOWNLOAD_DIR_STORAGE_KEY,
   TRANSPORT_MODE_STORAGE_KEY,
@@ -501,6 +503,8 @@ export function GeneralTab() {
         ) : null}
       </StudioVersionSection>
 
+      {isOwner ? <LlamaBackendSection /> : null}
+
       <SettingsSection title={t("settings.general.account")}>
         <SettingsRow
           label={t("settings.general.huggingFaceToken")}
@@ -754,6 +758,8 @@ export function GeneralTab() {
           </Button>
         </SettingsRow>
       </SettingsSection>
+
+      <ModelSelfTrainingSection />
 
       <DocumentsRagSection />
 

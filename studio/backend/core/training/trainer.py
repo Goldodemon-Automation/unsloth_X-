@@ -66,8 +66,16 @@ except Exception as _unsloth_train_exc:  # noqa: BLE001 - a CPU host is an expec
 
 
 def cpu_training_host() -> bool:
-    """True when there is no torch accelerator, so CoRA trains through transformers + PEFT."""
+    """True when there is no torch accelerator, so CoRA trains through transformers + PEFT.
+
+    A pinned NPU is an accelerator even though the hardware module's DeviceType predates
+    torch.npu: returning through the CPU loader there would skip Unsloth's NPU kernels entirely.
+    """
     try:
+        import os
+
+        if os.environ.get("UNSLOTH_TRAINING_DEVICE", "").strip().lower() == "npu":
+            return False
         from utils.hardware import DeviceType, get_device
 
         return get_device() == DeviceType.CPU
@@ -1449,13 +1457,14 @@ class UnslothTrainer:
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
+        low_cpu_mem_usage = True
         load_kwargs = {
             "dtype": dtype,
             "token": hf_token,
             "trust_remote_code": trust_remote_code,
             "revision": revision,
             "local_files_only": local_files_only,
-            "low_cpu_mem_usage": True,
+            "low_cpu_mem_usage": low_cpu_mem_usage,
         }
         try:
             model = AutoModelForCausalLM.from_pretrained(lookup_name, **attn_kwargs, **load_kwargs)
@@ -5244,6 +5253,24 @@ class UnslothTrainer:
                 and sys.platform.startswith("linux")
             ):
                 config_args["dataloader_num_workers"] = int(cpu_plan.dataloader_workers)
+                if cpu_plan.dataloader_workers > 0:
+                    # Keep the workers warm across epochs and let each prefetch two batches. Both
+                    # are what turns the worker count into overlap instead of a respawn per epoch;
+                    # only enabled where the fork platform above makes workers safe.
+                    config_args["dataloader_persistent_workers"] = True
+                    config_args["dataloader_prefetch_factor"] = 2
+
+            # On a Linux accelerator run keep the loader processes alive between epochs when the
+            # caller already asked for workers. This is a no-op for the default worker count of 0,
+            # and it never enables multiprocessing on a spawn platform.
+            if (
+                not getattr(self, "_cpu_training", False)
+                and sys.platform.startswith("linux")
+                and int(config_args.get("dataloader_num_workers", 0) or 0) > 0
+            ):
+                config_args.setdefault("dataloader_persistent_workers", True)
+                config_args.setdefault("dataloader_prefetch_factor", 2)
+                config_args.setdefault("dataloader_pin_memory", True)
 
             # Disable DataLoader multiprocessing: a modified sys.path breaks spawned workers.
             if sys.platform in ("win32", "darwin"):

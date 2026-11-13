@@ -213,19 +213,46 @@ def _ratio(spec: Mapping[str, Any], key: str, default: float) -> float:
     return parsed
 
 
+def resolve_checkpoint(raw: str, *, label: str = "checkpoint") -> Path:
+    """A local snapshot folder for *raw*, downloading a Hub model when that is what it is.
+
+    Arch swap and surgery both read and write real safetensors, and the picker hands them the Hub
+    id the user selected. Downloading here keeps that choice intact instead of asking the user to
+    find the cache folder by hand. Only the files those readers need are fetched, so a repository
+    with GGUF or training checkpoints does not pull gigabytes the operation cannot use.
+    """
+    path = Path(raw).expanduser()
+    if path.is_dir():
+        return _checkpoint_dir(path)
+    repo_id = merge.hf_repo_id(raw)
+    if repo_id is None:
+        raise ValueError(f"No checkpoint folder at {raw!r}.")
+    try:
+        from huggingface_hub import snapshot_download
+
+        downloaded = snapshot_download(
+            repo_id = repo_id,
+            repo_type = "model",
+            allow_patterns = (
+                "*.json",
+                "*.safetensors",
+                "*.model",
+                "*.txt",
+                "*.tiktoken",
+            ),
+        )
+    except Exception as error:  # noqa: BLE001 - surface the Hub's reason in the plan
+        raise ValueError(
+            f"Could not download the {label} checkpoint {repo_id!r} from Hugging Face: {error}"
+        ) from error
+    return _checkpoint_dir(Path(downloaded))
+
+
 def _source(spec: Mapping[str, Any]) -> Path:
     raw = str(spec.get("model") or "").strip()
     if not raw:
         raise ValueError("A checkpoint is required: a local folder with safetensors weights.")
-    path = Path(raw).expanduser()
-    if not path.is_dir():
-        if merge.hf_repo_id(raw) is not None:
-            raise ValueError(
-                f"{raw!r} is a Hugging Face id. Surgery edits weights on disk, so download "
-                "the checkpoint first and point at the local folder."
-            )
-        raise ValueError(f"No checkpoint folder at {raw!r}.")
-    return path
+    return resolve_checkpoint(raw)
 
 
 def _dims(config: Mapping[str, Any], shapes: Mapping[str, tuple[int, ...]], layers: Sequence[int]) -> dict[str, Any]:

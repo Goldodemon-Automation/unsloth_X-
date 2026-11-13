@@ -1154,8 +1154,9 @@ logger = LogConfig.setup_logging(
 
 app.add_middleware(LoggingMiddleware)
 
-# Off unless UNSLOTH_TRUSTED_HOSTS is set (see the module docstring), but registered here so the
-# check runs before routing. Later middleware wraps this one, so a 400 still gets security headers.
+# On by default, with a shipped allow-list of every host this app answers to (see the module
+# docstring); UNSLOTH_TRUSTED_HOSTS replaces that list. Registered here so the check runs before
+# routing. Later middleware wraps this one, so a 400 still gets security headers.
 from utils.trusted_hosts import TrustedHostsMiddleware  # noqa: E402
 
 app.add_middleware(TrustedHostsMiddleware)
@@ -1326,6 +1327,14 @@ class SecurityHeadersMiddleware:
             await self.app(scope, receive, send)
             return
         path = scope.get("path", "")
+        # Under `--root-path /x` uvicorn keeps the prefix inside `path`, so every comparison
+        # below would miss behind a path-prefixed proxy and silently drop this middleware's
+        # guarantees: the docs CSP, the framed-shell X-Frame-Options exemption and the
+        # `/api/` no-store rule. Match on the route path the router itself sees, exactly as
+        # MaxBodyMiddleware already does.
+        root_path = scope.get("root_path") or ""
+        if root_path and path.startswith(root_path):
+            path = path[len(root_path) :] or "/"
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
@@ -2182,10 +2191,28 @@ async def _desktop_shell_subject(request: Request) -> Optional[str]:
     secret = request.headers.get("x-desktop-secret")
     if secret is None:
         return None
+    # Throttled BEFORE the KDF, not after. `validate_desktop_secret` spends 100_000 PBKDF2 rounds on
+    # whatever arrives and only a cheap shape check runs in front of it, so with no budget an
+    # unauthenticated caller buys unbounded CPU and a SQLite transaction per request. The budget is
+    # the shared credential one, so a guesser cannot rotate between this header and
+    # `/api/auth/desktop-login` to double their per-client allowance.
+    from auth.rate_limit import client_key, token_attempts
     from starlette.concurrency import run_in_threadpool
 
+    throttle_key = f"desktop-secret:{client_key(request)}"
+    allowed, retry_after = token_attempts.allow(throttle_key)
+    if not allowed:
+        wait_seconds = int(retry_after) + 1
+        raise HTTPException(
+            status_code = 429,
+            detail = f"Too many failed authentication attempts. Try again in {wait_seconds} seconds.",
+            headers = {"Retry-After": str(wait_seconds)},
+        )
+
     if await run_in_threadpool(storage.validate_desktop_secret, secret) is None:
+        token_attempts.record_failure(throttle_key)
         raise HTTPException(status_code = 401, detail = "Desktop authentication failed")
+    token_attempts.record_success(throttle_key)
     return storage.DEFAULT_ADMIN_USERNAME
 
 

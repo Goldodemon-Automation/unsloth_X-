@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Avatar">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fcd34d"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" fill="url(#g)"/>
+  <path d="M18 44V26l14-10 14 10v18" fill="none" stroke="#fff" stroke-opacity=".85" stroke-width="3.2" stroke-linejoin="round"/>
+</svg>

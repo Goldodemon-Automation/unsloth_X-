@@ -215,6 +215,28 @@ def test_asking_for_the_npu_explains_the_refusal():
     assert "UNSLOTH_STUDIO_ENABLE_NPU" in message
 
 
+def test_a_torch_npu_backend_is_a_supported_training_target():
+    probe = _probe(
+        npu = None,
+        npu_trainable = True,
+        npu_name = "Ascend 910B",
+        npu_memory_bytes = 32 * GB,
+        npu_bf16 = True,
+    )
+
+    target = resolve_training_target("npu", probe)
+
+    assert target.supported is True
+    assert target.reasons == ()
+    assert target.device == "npu:0"
+    assert target.capabilities["fp16"] is True
+    assert target.capabilities["bf16"] is True
+    assert target.capabilities["grad_checkpoint"] is True
+    assert target.recommended["dtype"] == "bfloat16"
+    # A working NPU is still not the automatic pick: a CPU-only plan must not move a run onto it.
+    assert default_training_target(probe).kind == "cpu"
+
+
 def test_an_absent_npu_is_not_listed_at_all():
     probe = _probe(npu = {"present": False, "enabled": True, "supported": False})
 

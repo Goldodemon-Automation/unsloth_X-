@@ -9,6 +9,26 @@ export type FineTuneAction = "train" | "recipes" | "export";
 
 export const SETTINGS_PANEL_PREFS_STORAGE_KEY = "unsloth_settings_panel_prefs";
 
+/** llama.cpp forks offered under Model support. Selecting one installs and uses its build. */
+export const LLAMA_MODEL_SUPPORT_VALUES = [
+  "normal",
+  "dory",
+  "bee",
+  "neurall",
+  "ik",
+  "x",
+] as const;
+export type LlamaModelSupport = (typeof LLAMA_MODEL_SUPPORT_VALUES)[number];
+
+export function isLlamaModelSupport(
+  value: unknown,
+): value is LlamaModelSupport {
+  return (
+    typeof value === "string" &&
+    (LLAMA_MODEL_SUPPORT_VALUES as readonly string[]).includes(value)
+  );
+}
+
 // settings dialog picks that renderTab() used to drop on every tab switch.
 export interface SettingsPanelPrefsState {
   // null model means "follow whichever model the server has resident".
@@ -45,6 +65,10 @@ export interface SettingsPanelPrefsState {
   resourcesLiveUpdates: boolean;
   setResourcesLiveUpdates: (enabled: boolean) => void;
 
+  // The active llama.cpp fork for GGUF support; the server owns the install state.
+  llamaModelSupport: LlamaModelSupport;
+  setLlamaModelSupport: (modelSupport: LlamaModelSupport) => void;
+
   // the driver version whose idle-eviction notice was dismissed, so a different bad driver shows again.
   dismissedDriverWarning: string | null;
   dismissDriverWarning: (driverVersion: string) => void;
@@ -63,8 +87,12 @@ function text(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function oneOf<T extends string>(value: unknown, allowed: T[], fallback: T): T {
-  return typeof value === "string" && (allowed as string[]).includes(value)
+function oneOf<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  return typeof value === "string" && (allowed as readonly string[]).includes(value)
     ? (value as T)
     : fallback;
 }
@@ -105,6 +133,11 @@ function sanitize(
       typeof raw.resourcesLiveUpdates === "boolean"
         ? raw.resourcesLiveUpdates
         : true,
+    llamaModelSupport: oneOf(
+      raw.llamaModelSupport,
+      LLAMA_MODEL_SUPPORT_VALUES,
+      "normal",
+    ),
     dismissedDriverWarning: text(raw.dismissedDriverWarning),
     fineTuneAction: oneOf(raw.fineTuneAction, FINE_TUNE_VALUES, "train"),
   };
@@ -143,6 +176,9 @@ export const useSettingsPanelPrefsStore = create<SettingsPanelPrefsState>()(
       resourcesLiveUpdates: true,
       setResourcesLiveUpdates: (resourcesLiveUpdates) =>
         set({ resourcesLiveUpdates }),
+
+      llamaModelSupport: "normal",
+      setLlamaModelSupport: (llamaModelSupport) => set({ llamaModelSupport }),
 
       dismissedDriverWarning: null,
       dismissDriverWarning: (dismissedDriverWarning) =>

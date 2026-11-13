@@ -244,7 +244,7 @@ def test_a_tampered_expired_or_other_scope_link_downloads_nothing(client, clock)
 
 
 def test_a_session_bearer_in_the_query_string_is_refused_by_name(client, monkeypatch):
-    async def no_credential(_request, _token):
+    async def no_credential(_request):
         raise HTTPException(status_code = 401, detail = "Missing authentication token")
 
     monkeypatch.setattr(library_routes, "subject_for_header_or_query_token", no_credential)
@@ -258,7 +258,7 @@ def test_a_session_bearer_in_the_query_string_is_refused_by_name(client, monkeyp
 
 
 def test_the_header_bearer_still_downloads(client, monkeypatch):
-    async def signed_in(_request, _token):
+    async def signed_in(_request):
         return "unsloth"
 
     monkeypatch.setattr(library_routes, "subject_for_header_or_query_token", signed_in)

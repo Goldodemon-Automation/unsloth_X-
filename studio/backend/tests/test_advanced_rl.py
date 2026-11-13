@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from core.advanced import rl
+from core.advanced.rl_trainer import _prepare_dpo_dataset, _prepare_grpo_dataset
 
 
 def test_dpo_loss_prefers_chosen_side():
@@ -83,6 +84,88 @@ def test_reward_presets():
     assert 0.0 <= weighted[0] <= 1.0
     with pytest.raises(ValueError):
         rl.score_completions(["x"], preset="nope")
+
+
+def test_dpo_accepts_chat_role_datasets_and_normalises_the_role_case():
+    from datasets import Dataset
+
+    prepared = _prepare_dpo_dataset(
+        Dataset.from_list(
+            [
+                {
+                    "prompt": [{"role": "User", "content": "2+2?"}],
+                    "chosen": [{"role": "Assistant", "content": "4"}],
+                    "rejected": [{"role": "Assistant", "content": "5"}],
+                }
+            ]
+        )
+    )
+
+    row = prepared[0]
+    assert prepared.column_names == ["prompt", "chosen", "rejected"]
+    assert row["prompt"][0]["role"] == "user"
+    assert row["chosen"][0]["role"] == "assistant"
+    assert row["rejected"][0]["role"] == "assistant"
+
+
+def test_dpo_maps_common_preference_column_aliases():
+    from datasets import Dataset
+
+    prepared = _prepare_dpo_dataset(
+        Dataset.from_dict(
+            {
+                "question": ["2+2?"],
+                "response_j": ["4"],
+                "response_k": ["5"],
+            }
+        )
+    )
+
+    assert prepared.column_names == ["prompt", "chosen", "rejected"]
+    assert prepared[0] == {"prompt": "2+2?", "chosen": "4", "rejected": "5"}
+
+
+def test_dpo_refuses_a_conversation_without_a_rejected_side():
+    from datasets import Dataset
+
+    with pytest.raises(ValueError, match = "rejected"):
+        _prepare_dpo_dataset(
+            Dataset.from_list(
+                [
+                    {
+                        "messages": [
+                            {"role": "User", "content": "hi"},
+                            {"role": "Assistant", "content": "hello"},
+                        ]
+                    }
+                ]
+            )
+        )
+
+
+def test_grpo_turns_a_chat_conversation_into_a_prompt_and_reference():
+    from datasets import Dataset
+
+    prepared = _prepare_grpo_dataset(
+        Dataset.from_list(
+            [
+                {
+                    "messages": [
+                        {"role": "System", "content": "be brief"},
+                        {"role": "User", "content": "2+2?"},
+                        {"role": "Assistant", "content": "4"},
+                    ]
+                }
+            ]
+        )
+    )
+
+    row = prepared[0]
+    assert row["prompt"] == [
+        {"role": "system", "content": "be brief"},
+        {"role": "user", "content": "2+2?"},
+    ]
+    assert row["reference"] == "4"
 
 
 def test_validate_rl_config():

@@ -59,7 +59,7 @@ def client(monkeypatch):
     return _app(lambda: "unsloth")
 
 
-async def _signed_in_subject(_request, _token):
+async def _signed_in_subject(_request):
     return "unsloth"
 
 
@@ -2877,3 +2877,47 @@ def test_a_chat_named_like_its_project_session_is_listed_once(
     ids = [item["id"] for item in body]
     assert ids.count("sandbox:project-p-lib:a.txt") == 1
     assert body[ids.index("sandbox:project-p-lib:a.txt")]["threadId"] == "project-p-lib"
+
+
+@pytest.mark.parametrize(
+    "supplied, label",
+    [
+        # A path of either separator, however deep.
+        (r"C:\Users\me\notes.txt", "notes.txt"),
+        ("../../etc/passwd", "passwd"),
+        ("a/../b.txt", "b.txt"),
+        # The reserved names: `.` and `..` stay in the label as a path would, so they go.
+        (".", "Untitled"),
+        ("..", "Untitled"),
+        ("...", "Untitled"),
+        ("", "Untitled"),
+        (None, "Untitled"),
+        # A leading dot makes a hidden-looking name; the extension's dot stays.
+        (".env", "env"),
+        # Control bytes (NUL, unit separator) become the space they read as.
+        ("a\x00b\x1fc.txt", "a b c.txt"),
+        # Windows drops a trailing dot, so the label must not show one.
+        ("trail.", "trail"),
+        ("  spaced  .txt", "spaced.txt"),
+        # A device name becomes unopenable on Windows.
+        ("CON", "_CON"),
+    ],
+)
+def test_the_display_name_is_a_label_not_a_path(supplied, label):
+    """The upload name reaches the DB as a display label only, so it must not keep the bytes a
+    path cannot hold: separators, ``..``, a leading dot, control characters."""
+    assert library_routes._base_name(supplied) == label
+
+
+def test_the_label_keeps_the_extension_and_stays_bounded():
+    long = "x" * 400 + ".txt"
+    label = library_routes._base_name(long)
+    assert len(label) <= 255
+    assert label.endswith(".txt")
+
+
+def test_an_upload_named_with_a_path_is_stored_and_listed_under_its_label(client):
+    ids = _upload(client, (r"C:\Users\me\reports\q3.txt", b"third quarter"))
+    item = _items(client)[0][ids[0]]
+    assert item["name"] == "q3.txt"
+    assert item["contentType"] == "text/plain"

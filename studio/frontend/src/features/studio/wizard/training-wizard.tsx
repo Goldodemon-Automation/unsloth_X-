@@ -80,14 +80,17 @@ function SectionBox({
   return (
     <section
       data-tour={dataTour}
-      className="@container/train-card elevated-card flex flex-col gap-7 bg-card p-5 pb-7"
+      className="@container/train-card elevated-card train-card flex flex-col bg-card p-4"
     >
       {title && (
-        <div className="flex flex-col items-stretch gap-3 @md/train-card:flex-row @md/train-card:items-center @md/train-card:justify-between">
+        // Header: a tinted square chip, the title in one line, the action on the far edge.
+        // The divider is what separates header from body now — the old card had neither,
+        // so every section read as one undifferentiated block of fields.
+        <div className="train-card-head -mx-4 flex flex-col items-stretch gap-3 px-4 pt-1 pb-3 @md/train-card:flex-row @md/train-card:items-center @md/train-card:justify-between">
           <div className="flex min-w-0 items-center gap-3">
             {icon && (
               <span
-                className="train-section-chip inline-flex size-9 shrink-0 items-center justify-center rounded-full"
+                className="train-section-chip inline-flex size-8 shrink-0 items-center justify-center rounded-[10px]"
                 style={
                   chipTint
                     ? ({ "--chip-tint": chipTint } as CSSProperties)
@@ -96,17 +99,17 @@ function SectionBox({
               >
                 <HugeiconsIcon
                   icon={icon}
-                  strokeWidth={1.5}
-                  className="size-[calc(18px*var(--ui-space-scale,1))]"
+                  strokeWidth={1.6}
+                  className="size-[calc(16px*var(--ui-space-scale,1))]"
                 />
               </span>
             )}
             <div className="min-w-0">
-              <h2 className="select-none text-ui-13p5 font-semibold leading-ui-18 tracking-[-0.012em] text-foreground">
+              <h2 className="select-none text-ui-13p5 font-semibold leading-ui-18 tracking-[-0.02em] text-foreground">
                 {title}
               </h2>
               {description && (
-                <p className="text-ui-11p5 leading-ui-15 text-muted-foreground/85">
+                <p className="mt-0.5 text-ui-11p5 leading-ui-15 text-muted-foreground">
                   {description}
                 </p>
               )}
@@ -119,7 +122,7 @@ function SectionBox({
           )}
         </div>
       )}
-      <div className="@container/train-section min-w-0">{children}</div>
+      <div className="@container/train-section train-card-body min-w-0 pt-4">{children}</div>
     </section>
   );
 }
@@ -520,7 +523,7 @@ export function TrainingWizard({
   const isCmt = trainingMethod === "cmt" && cmtFeatureOn;
   const autoScaleOn = useLabsFeature("auto-scale");
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-4">
       <SectionBox
         title={t("studio.wizard.modelTitle")}
         description={t("studio.wizard.modelDescription")}

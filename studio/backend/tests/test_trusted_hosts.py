@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the opt-in UNSLOTH_TRUSTED_HOSTS allow-list."""
+"""Tests for the shipped Host allow-list and the UNSLOTH_TRUSTED_HOSTS override."""
 
 import asyncio
 import sys
@@ -44,10 +44,53 @@ def _get(base_url, monkeypatch, allow = None):
     return TestClient(_app(), base_url = base_url).get("/ping")
 
 
-def test_unset_allows_a_foreign_host(monkeypatch):
+def test_a_foreign_host_is_refused_by_default(monkeypatch):
+    """The shipped default is a real check: a rebinding page's Host is not on the list."""
     response = _get("http://evil.example", monkeypatch)
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
+    assert response.status_code == 400
+    assert ENV in response.text and "evil.example" in response.text
+
+
+def test_the_default_list_admits_every_host_the_app_answers_to(monkeypatch):
+    """Loopback, localhost, the Tauri desktop origins, a quick tunnel and Colab's proxy, plus the
+    LAN literal a network launch publishes. Refusing any of these breaks a shipped mode."""
+    for base_url in (
+        "http://127.0.0.1:8888",
+        "http://localhost:8888",
+        "http://[::1]:8888",
+        "http://tauri.localhost",
+        "http://something.localhost:8888",
+        "http://quiet-river-1234.trycloudflare.com",
+        "http://8888-some-kernel.colab.googleusercontent.com",
+        "http://192.168.1.42:8888",
+        "http://10.0.0.7:8888",
+        "http://testserver",
+        # Every MCP tool call is replayed into this app under this host (studio_mcp/forward.py).
+        "http://unsloth-mcp.invalid",
+        # An mDNS name of a LAN machine.
+        "http://macbook.local:8888",
+    ):
+        response = _get(base_url, monkeypatch)
+        assert response.status_code == 200, base_url
+        assert response.json() == {"ok": True}, base_url
+
+
+def test_a_public_literal_still_has_to_be_listed(monkeypatch):
+    """Only private and link-local literals ride along with the defaults."""
+    assert _get("http://93.184.216.34:8888", monkeypatch).status_code == 400
+
+
+def test_the_variable_overrides_the_defaults_rather_than_extending_them(monkeypatch):
+    """An operator who names their hosts has said which ones the backend answers to: the tunnel
+    and the LAN literal fall out, and loopback stays in because it always does."""
+    assert _get("http://studio.example", monkeypatch, "studio.example").status_code == 200
+    for base_url in (
+        "http://quiet-river-1234.trycloudflare.com",
+        "http://192.168.1.42:8888",
+        # ``tauri.localhost`` stays: a ``*.localhost`` name is always allowed, override or not.
+    ):
+        assert _get(base_url, monkeypatch, "studio.example").status_code == 400, base_url
+    assert _get("http://127.0.0.1:8888", monkeypatch, "studio.example").status_code == 200
 
 
 def test_listed_host_passes(monkeypatch):

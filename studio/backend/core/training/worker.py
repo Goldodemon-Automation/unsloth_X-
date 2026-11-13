@@ -4067,13 +4067,17 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # can refuse: a config from any other writer (a resumed run, the CLI, a job queued by an older
     # build) would otherwise take the 4-bit load whose CPU dequant path is what an integrated target
     # cannot afford.
-    if _target_kind(config.get("compute_target")) == "igpu" and config.get("load_in_4bit"):
+    if (
+        _target_kind(config.get("compute_target")) in ("igpu", "npu")
+        and config.get("load_in_4bit")
+    ):
         config["load_in_4bit"] = False
+        device = "integrated GPU" if _target_kind(config.get("compute_target")) == "igpu" else "NPU"
         event_queue.put(
             {
                 "type": "warning",
                 "message": (
-                    "4-bit training is not available on an integrated GPU; this run uses 16-bit."
+                    f"4-bit training is not available on an {device}; this run uses 16-bit."
                 ),
                 "ts": time.time(),
             }
@@ -4207,6 +4211,20 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     from utils.hardware import hardware as _hw
 
     _hw.detect_hardware()
+    # Let fp32 matmuls use the accelerator's fast path (TF32 on NVIDIA, the vendor equivalent
+    # elsewhere) and benchmark cuDNN kernels once for this shape. Both are runtime hints, not
+    # model changes; a failed hint must never stop a run.
+    try:
+        import torch
+
+        if _hw.DEVICE == _hw.DeviceType.CUDA and not _hw.IS_ROCM:
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
+        if _hw.DEVICE in (_hw.DeviceType.CUDA, _hw.DeviceType.XPU):
+            torch.set_float32_matmul_precision("high")
+    except Exception as exc:  # noqa: BLE001 - a hint, not a precondition
+        print(f"Accelerator runtime tuning skipped: {exc}", file = sys.stderr, flush = True)
+
     if mlx_backend_requested or should_use_mlx_training_backend(device = _hw.DEVICE):
         diffusion_error = _mlx_diffusion_lm_error(config, model_load_target)
         if diffusion_error:

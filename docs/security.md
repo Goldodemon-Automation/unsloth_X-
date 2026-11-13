@@ -42,7 +42,7 @@ this file. Nothing here is aspirational — a control is either in the table bel
 | Credentials at rest are AES-GCM ciphertext with the kind and scope as authenticated data | `studio/backend/storage/credential_secrets.py:99`, `studio/backend/storage/credential_secrets.py:41`, `studio/backend/storage/credential_secrets.py:108` | A copied or swapped ciphertext row presenting one account's provider key as another's, and tampering that fails closed (`studio/backend/tests/test_credential_secrets.py:104`). The key lives in `auth.db`, separate from the rows it protects. |
 | Auth and settings databases are owner-only | `studio/backend/auth/storage.py:277`, `studio/backend/auth/storage.py:59`, `studio/backend/storage/credential_secrets.py:76` | Another account on the host, or a stray backup of the data directory, reading password hashes, refresh-token hashes, the JWT secret and the encryption key. |
 | One credential scheme on the wire: `x-api-key` is rewritten to `Authorization` before anything reads it | `studio/backend/auth/x_api_key.py:20`, mounted outermost at `studio/backend/main.py:1849` | A second scheme that some readers honour and others ignore — a Bearer always wins, and a non-`sk-unsloth` value is left alone. |
-| Callers are classifiable: UI session vs API key vs keyless | `studio/backend/auth/authentication.py:190`, `studio/backend/auth/authentication.py:341` | A route that treats every bearer as the local owner. Guards keyed on this: an API key cannot define a stdio MCP command (`studio/backend/auth/authentication.py:396`) and cannot reach the backend's ambient HF token (`studio/backend/auth/authentication.py:409`). |
+| Callers are classifiable: UI session vs API key vs keyless | `studio/backend/auth/authentication.py:190`, `studio/backend/auth/authentication.py:341` | A route that treats every bearer as the local owner. Guards keyed on this: an API key cannot define a stdio MCP command (`studio/backend/auth/authentication.py:402`) and cannot reach the backend's ambient HF token (`studio/backend/auth/authentication.py:415`). |
 | Keyless API access is off by default and bounded by transport facts | `studio/backend/utils/keyless_api_access.py:23`, `studio/backend/utils/keyless_api_access.py:480` | An owner who turns on "no key needed" for chat also opening training, or the setting surviving a public tunnel or Colab (`studio/backend/utils/keyless_api_access.py:367`, `studio/backend/utils/keyless_api_access.py:352`). |
 | Keyless admission reads `Sec-Fetch-Site` and the `Host` literal | `studio/backend/utils/keyless_api_access.py:405`, `studio/backend/utils/keyless_api_access.py:423` | A cross-site `no-cors` GET reaching loopback (`Origin` is absent on those), and DNS rebinding, which keeps the page's own origin and so reads as a local client to every socket check. Repeated `Host` or `Sec-Fetch-Site` is refused rather than resolved (`studio/backend/utils/keyless_api_access.py:396`). |
 | Server-side tools stay off for a keyless caller whatever the scope | `studio/backend/utils/keyless_api_access.py:567` | The `full`/`inference` grant silently becoming code execution in the python/terminal sandbox, which `/v1/chat/completions` runs on this machine. |
@@ -58,23 +58,27 @@ this file. Nothing here is aspirational — a control is either in the table bel
 | An exposed first-run install with the bootstrap password unchanged tears itself down | `studio/backend/auth/bootstrap_timeout.py:146`, `studio/backend/auth/bootstrap_timeout.py:23` | A fresh, unconfigured instance staying publicly reachable after `--secure` / `-H 0.0.0.0`. Default 3600 s, `0` disables, never armed for `--api-only` or Colab. |
 | A public launch prompts for the password before the server is reachable | `studio/backend/auth/terminal_prompt.py:240`, `studio/backend/auth/terminal_prompt.py:265` | The window between a bind on a public interface and the first login, where the seeded bootstrap password is a valid credential. Masked input, output on stderr. |
 | A pre-auth error message names no local fact | `studio/backend/routes/auth.py:468` | Handing the OS account name and install layout to any open page: the failure hint is a bare PATH form and does not echo the submitted username, because the browser-served default resolves CORS to `["*"]`. |
+| The query string never carries a session bearer, and the auth layer cannot resolve one from there | `studio/backend/auth/authentication.py:378`, `studio/backend/routes/library.py:407`, `studio/backend/routes/inference.py:4426`, `studio/backend/routes/data_recipe/jobs.py:142` | The session JWT outliving the click in history, a proxy's access log and the `Referer` of whatever the page links to. `subject_for_header_or_query_token` takes the request and no token parameter, so no route can hand it a `?token=` even if one starts reading the query again; the routes that must work headerless refuse `?token=` with a 400 that names `?link=` and accept only short-lived HMAC links. What does appear in a served URL is exactly such a link (`studio/backend/routes/rag.py:1172`, `studio/backend/routes/video.py:1068`, `studio/backend/routes/inference.py:53252`), never a session. Pinned by `studio/backend/tests/test_series_regressions_v2.py`. |
 
 ## Open items
 
-Three items were carried here, and two are cut: code in this checkout closes them, and a row that stops
+Three items were carried here, and all three are cut: code in this checkout closes them, and a row that stops
 describing the code is a bug in this file.
 
-- The Host allow-list is an opt-in control now — `studio/backend/utils/trusted_hosts.py`, off unless
-  `UNSLOTH_TRUSTED_HOSTS` is set, described in its own section below.
+- The Host allow-list is on by default now — `studio/backend/utils/trusted_hosts.py`, with a shipped
+  allow-list that `UNSLOTH_TRUSTED_HOSTS` replaces, described in its own section below.
 - The two client-IP trust models are one resolver — `studio/backend/utils/client_ip.py:152`, which
   `studio/backend/routes/auth.py:248` delegates to, so the login buckets and the shared credential lockout
   can no longer key on different clients. `studio/backend/tests/test_client_ip_agreement.py` pins it.
-
-What is left is the residue of the query-token finding rather than the finding itself:
-
-| Item | Why it is open | A fix touches |
-| --- | --- | --- |
-| The auth layer can still resolve a session bearer read from a query string, though no route asks it to. | Nothing on the surface hands one over any more: `studio/backend/routes/library.py:407` and `studio/backend/routes/inference.py:4426` refuse a `?token=` with a 400 that names `?link=`, `studio/backend/routes/data_recipe/jobs.py:142` never reads the session bearer from the query, and all three call the resolver with `None` (`studio/backend/routes/library.py:425`, `studio/backend/routes/inference.py:4444`, `studio/backend/routes/data_recipe/jobs.py:176`). The `?token=` that still appears in a served URL is an HMAC media link, not a session — `studio/backend/routes/rag.py:1176`, `studio/backend/routes/video.py:1072`, the gallery file routes. The canvas helper no longer takes a token parameter at all (`studio/backend/routes/inference.py`, `_authenticate_header_or_query` reads the header or `?link=`), so that surface is closed rather than merely unused. What remains is the primitive: `studio/backend/auth/authentication.py:374` still resolves a token handed to it, so the closure lives in the call sites and a new route that passes a query token re-opens the finding — the source-level pin under *Re-running the audit* is what would catch that. | `studio/backend/auth/authentication.py:374` and `:350`, by dropping the parameter so the header is the only read — or by a source-level pin in the style of `studio/backend/tests/test_series_regressions.py` that fails on a route passing a non-`None` second argument. No client builds a `?token=` URL in this checkout — `studio/frontend/src/features/library/api.ts` appends `link=` only when the server minted one, and `studio/frontend/src/components/assistant-ui/sandbox-files-view.tsx` reads through `authFetch` — but neither minting helper has a route behind it (`_sign_download_link` in `studio/backend/routes/library.py`, `_sign_canvas_link` in `studio/backend/routes/inference.py`, called from tests only), so a headerless native save has no credential to carry and the desktop save does not work. |
+- The query-token residue is cut with them — `studio/backend/auth/authentication.py:378` resolves
+  the `Authorization` header and takes no token parameter at all, and the three routes that call it
+  pass the request alone (`studio/backend/routes/library.py:425`, `studio/backend/routes/inference.py:4443`,
+  `studio/backend/routes/data_recipe/jobs.py:176`). `studio/backend/tests/test_series_regressions_v2.py`
+  pins both the resolver's shape and those call sites, so a route that hands over a query-derived
+  token fails the suite instead of re-opening the finding; the control itself is a row in the table
+  above. No client builds a `?token=` URL (`studio/frontend/tests/canvas-link-urls.test.ts`), and the
+  two minting helpers (`studio/backend/routes/library.py:364`, `studio/backend/routes/inference.py:4397`)
+  are called from tests only, so a headerless native save carries no credential.
 
 ## Re-running the audit
 
@@ -100,7 +104,8 @@ grep -rn "unsafe-inline" --include=*.py --include=*.json --include=*.html ..
 # The credentials flag. Exactly one production hit, and it reads False.
 grep -rn "allow_credentials" --include=*.py . | grep -v tests/
 
-# Session bearer in a URL. Each hit is the first open item, or a signed link.
+# Session bearer in a URL. Each hit is a route refusing the parameter by name, a signed
+# link, or a fixture; none hands a session bearer to the auth layer.
 grep -rn "?token=" --include=*.py --include=*.ts --include=*.tsx ..
 ```
 
@@ -134,19 +139,27 @@ The suites that pin the controls above:
 | Desktop secret and login-mode gating | `studio/backend/tests/test_desktop_auth.py` |
 | Bootstrap timeout and the terminal password prompt | `studio/backend/tests/test_bootstrap_timeout.py`, `studio/backend/tests/test_password_prompt.py` |
 | Credential encryption: tampering, key loss, restart | `studio/backend/tests/test_credential_secrets.py:104` |
+| Session bearer never resolved from a query string | `studio/backend/tests/test_series_regressions_v2.py` |
 
 ```bash
 cd studio/backend
 python -m pytest tests/test_security_hardening.py tests/test_cors_origins.py \
     tests/test_auth_rate_limit.py tests/test_login_rate_limit.py \
     tests/test_preview_routes.py tests/test_keyless_api_access_adversarial.py \
-    tests/test_file_security.py tests/test_consent_gate.py -q
+    tests/test_file_security.py tests/test_consent_gate.py \
+    tests/test_series_regressions_v2.py -q
 ```
 
 ## Host allow-list (`UNSLOTH_TRUSTED_HOSTS`)
 
-The audit's "no Host allow-list" item now has a control, off by default: set
-`UNSLOTH_TRUSTED_HOSTS=studio.example,*.internal` and any request whose `Host` matches none of the
-patterns is refused with 400. Loopback literals and `localhost` always pass, so enabling it cannot lock
-a user out of their own machine, and leaving it unset is the previous behaviour exactly — LAN, tunnel and
-Colab modes carry Host values a single list cannot know. WebSocket scopes pass through unchanged.
+The audit's "no Host allow-list" item now has a control, **on by default**: with nothing set, a
+request whose `Host` matches none of the shipped patterns is refused with 400. The default list is every
+host the app itself answers to — loopback literals, `localhost` and `*.localhost` (the Tauri origins),
+private and link-local literals, `*.local`, `*.trycloudflare.com`, `*.googleusercontent.com`, and the two
+in-process hosts (`testserver`, `unsloth-mcp.invalid`) — so DNS rebinding to a loopback backend from a
+page on another origin no longer reaches the unauthenticated surface.
+
+Set `UNSLOTH_TRUSTED_HOSTS=studio.example,*.internal` to replace the list entirely (it is an override,
+not an addition); a host outside the effective list is refused with 400. A custom tunnel hostname or a
+reverse proxy that rewrites `Host` therefore needs that name listed. WebSocket scopes pass through
+unchanged.

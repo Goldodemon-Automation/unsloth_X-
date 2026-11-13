@@ -19,7 +19,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 from . import rl as rl_math
 
@@ -89,13 +89,127 @@ def _load_rl_dataset(config: Mapping[str, Any]):
     raise ValueError("Policy Alignment needs a local or Hugging Face dataset.")
 
 
-def _prepare_dpo_dataset(dataset) -> Any:
+_ROLE_ALIASES = {
+    "system": "system",
+    "user": "user",
+    "human": "user",
+    "assistant": "assistant",
+    "gpt": "assistant",
+    "model": "assistant",
+    "bot": "assistant",
+    "tool": "tool",
+    "function": "function",
+}
+
+#: Names datasets in the wild use for the three preference columns. The first match wins, and the
+#: explicit prompt/chosen/rejected names always take precedence.
+_DPO_ALIASES = {
+    "prompt": ("prompt", "question", "instruction", "query", "context"),
+    "chosen": ("chosen", "response_j", "preferred", "good_response", "accepted"),
+    "rejected": ("rejected", "response_k", "dispreferred", "bad_response", "negative"),
+}
+
+
+def _normalise_messages(value: Any) -> Any:
+    """Lower-case chat roles without touching the message content.
+
+    Datasets exported from chat UIs commonly say ``Assistant``/``User``; TRL's chat template
+    compares against the lower-case role names and otherwise renders no assistant span. Only a
+    mapping with a role is rewritten, so plain strings and unrelated metadata pass through.
+    """
+    if isinstance(value, list):
+        return [_normalise_messages(item) for item in value]
+    if not isinstance(value, Mapping):
+        return value
+    role = value.get("role")
+    if not isinstance(role, str):
+        return value
+    normalised = _ROLE_ALIASES.get(role.strip().lower(), role.strip().lower())
+    if normalised == role:
+        return value
+    return {**value, "role": normalised}
+
+
+def _normalise_dataset_roles(dataset) -> Any:
+    columns = [
+        name
+        for name in ("prompt", "chosen", "rejected", "messages", "system", "user", "assistant")
+        if name in dataset.column_names
+    ]
+    if not columns:
+        return dataset
+
+    def normalise_row(row):
+        for name in columns:
+            row[name] = _normalise_messages(row.get(name))
+        return row
+
+    return dataset.map(normalise_row)
+
+
+def _first_column(columns: set[str], aliases: tuple[str, ...]) -> Optional[str]:
+    return next((name for name in aliases if name in columns), None)
+
+
+def _derive_dpo_columns(dataset) -> Any:
+    """Add prompt/chosen from a conversation only when that is unambiguous.
+
+    A conversation ending in an assistant turn supplies a prompt and a chosen answer. It cannot
+    supply the rejected side, so a dataset with no preference pair still gets a specific error
+    instead of a silently fabricated negative.
+    """
     columns = set(dataset.column_names)
-    missing = [name for name in ("prompt", "chosen", "rejected") if name not in columns]
+    if "messages" not in columns or ("prompt" in columns and "chosen" in columns):
+        return dataset
+
+    def derive(row):
+        messages = row.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return row
+        last = messages[-1]
+        if not isinstance(last, Mapping) or last.get("role") != "assistant":
+            return row
+        if "prompt" not in row:
+            row["prompt"] = messages[:-1]
+        if "chosen" not in row:
+            row["chosen"] = last.get("content")
+        return row
+
+    return dataset.map(derive)
+
+
+def _prepare_dpo_dataset(dataset) -> Any:
+    dataset = _normalise_dataset_roles(dataset)
+    columns = set(dataset.column_names)
+    sources = {name: _first_column(columns, aliases) for name, aliases in _DPO_ALIASES.items()}
+    if sources["prompt"] is None:
+        dataset = _derive_dpo_columns(dataset)
+        columns = set(dataset.column_names)
+        sources = {name: _first_column(columns, aliases) for name, aliases in _DPO_ALIASES.items()}
+
+    missing = [name for name, source in sources.items() if source is None]
     if missing:
         raise ValueError(
-            "DPO needs prompt, chosen, and rejected columns; missing: " + ", ".join(missing)
+            "DPO needs prompt, chosen, and rejected columns (or their common aliases: "
+            "question/response_j/response_k, instruction/accepted/negative); missing: "
+            + ", ".join(missing)
         )
+
+    # Keep the canonical names TRL expects, and retain a separate system/images column when the
+    # dataset has one. Renaming rather than copying avoids duplicating every row in memory.
+    renames = {
+        source: target
+        for target, source in sources.items()
+        if source is not None and source != target
+    }
+    if renames:
+        dataset = dataset.rename_columns(
+            {
+                column: renames.get(column, column)
+                for column in dataset.column_names
+            }
+        )
+    columns = set(dataset.column_names)
     keep = [
         name
         for name in ("prompt", "chosen", "rejected", "system", "images")
@@ -105,8 +219,40 @@ def _prepare_dpo_dataset(dataset) -> Any:
 
 
 def _prepare_grpo_dataset(dataset) -> Any:
-    if "prompt" not in dataset.column_names:
-        raise ValueError("GRPO needs a prompt column.")
+    dataset = _normalise_dataset_roles(dataset)
+    columns = set(dataset.column_names)
+    if "prompt" not in columns:
+        if "messages" in columns:
+            def conversation_prompt(row):
+                messages = row.get("messages")
+                if not isinstance(messages, list) or not messages:
+                    return row
+                last = messages[-1]
+                if isinstance(last, Mapping) and last.get("role") == "assistant":
+                    row["prompt"] = messages[:-1]
+                    row.setdefault("reference", last.get("content"))
+                else:
+                    row["prompt"] = messages
+                return row
+
+            dataset = dataset.map(conversation_prompt)
+        elif "user" in columns:
+            def role_prompt(row):
+                messages = []
+                if row.get("system"):
+                    messages.append({"role": "system", "content": row["system"]})
+                messages.append({"role": "user", "content": row.get("user") or ""})
+                row["prompt"] = messages
+                if row.get("assistant"):
+                    row["reference"] = row["assistant"]
+                return row
+
+            dataset = dataset.map(role_prompt)
+        else:
+            raise ValueError(
+                "GRPO needs a prompt column, or messages / system+user+assistant columns it can "
+                "turn into one."
+            )
     return dataset
 
 

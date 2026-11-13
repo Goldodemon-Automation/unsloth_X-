@@ -22,6 +22,7 @@ directory rather than from what was asked for. The rules, in order:
 
 from __future__ import annotations
 
+import copy
 import fnmatch
 import os
 import shutil
@@ -993,14 +994,41 @@ def _patterns_for(definition: CacheDefinition) -> Optional[tuple[str, ...]]:
 # long state a signature cannot see (an inode hardlinked from outside, a gate
 # answer) may go unrefreshed. It matches the hardware inventory's 60 s.
 _INVENTORY_TTL_SECONDS = 60.0
-# (when the walk began, when it was stored, the entry, root -> signature).
+# Proving "nothing changed" is itself one bounded stat-signature walk per root,
+# and on a measured 10.6 GB cache that proof — not the sizing walk — was what
+# every repeat read paid: ~1.4-1.9 s per read while the memo it guarded sat
+# warm and unused. So for a few seconds after the figures were produced, or
+# after a passing proof, the remembered figures are served WITHOUT re-proving
+# the trees. What the user can observe in that window: after a change made
+# outside this app (another process writing into or deleting from a cache) the
+# sizes card can show the old figures for up to this long. Why that is not
+# wrong: the figures are display-only metadata (bytes and entry counts),
+# nothing acts on them, and every acting path sits outside the window — a
+# purge drops the memo through invalidate_cache_size (epoch-guarded) no matter
+# how fresh the proof is, and the Recheck button passes refresh=True, which
+# walks unconditionally. The window throttles the PROOF, not the answer:
+# before any reuse past it the trees are proven exactly as before and
+# re-measured on mismatch, and a passing proof re-arms it so a steady poll
+# proves at most once per window instead of once per read. 5 s is a few times
+# the measured proof round (~1.5-2 s), so back-to-back reads hit even with
+# jitter — a window shorter than one round could never fire, because a root
+# proven at the start of a round is only revisited after the round — while
+# staying well under the human span of "I just changed the cache". If a proof
+# round ever outlives the window the throttle simply stops firing and every
+# read proves as before: the failure mode is the old cost, never a stale one.
+_SIGNATURE_CHECK_TTL_SECONDS = 5.0
+# (when the walk began, when it was stored, the entry, root -> signature,
+# when the entry was last proven current — produced at the walk, or re-proven
+# by a passing check since).
 # Both times: the store time is what the TTL is about, and the start time is
 # what tells a forced read whether the walk it waited for saw the cache before
 # the request was made. The signatures are taken BEFORE the walk and re-checked
-# before any reuse, so an entry is served only while the trees it measured
-# still fingerprint the same — a memo per (root, signature) in effect, kept in
-# this one dict rather than a second cache alongside it.
-_size_cache: dict[str, tuple[float, float, dict, dict[str, str]]] = {}
+# before any reuse past the signature-check window, so an entry is served only
+# while the trees it measured still fingerprint the same — a memo per
+# (root, signature) in effect, kept in this one dict rather than a second cache
+# alongside it. One entry per cache key, so this map is bounded by
+# CACHE_DEFINITIONS however long the process lives.
+_size_cache: dict[str, tuple[float, float, dict, dict[str, str], float]] = {}
 # Bumped by every invalidation, so a walk that began before one cannot store its
 # answer after it. Dropping the entry is not enough: a scan started in one tab
 # before a purge in another would install the pre-purge size for the window.
@@ -1067,16 +1095,45 @@ def _roots_unchanged(definition: CacheDefinition, signatures: dict[str, str]) ->
     return True
 
 
+def _served(entry: dict) -> dict:
+    """A copy of an entry on its way to a caller.
+
+    The memo hands the same dict to every reader, so one response model setting
+    a field (or touching the paths list) would poison every later read inside
+    the window. A copy per entry is pennies against either walk.
+    """
+    return copy.deepcopy(entry)
+
+
+def _reverified(key: str, remembered: tuple) -> dict:
+    """Serve a memo entry whose signatures were JUST proven unchanged.
+
+    The passing proof re-arms the signature-check window, so a steady poll
+    proves the trees at most once per window instead of once per read. Only a
+    real proof may re-arm (a window skip must never extend its own window), and
+    only a tuple still in the map: a purge landing mid-check drops the entry,
+    and re-installing it here would resurrect what the purge forgot.
+    """
+    with _size_cache_lock:
+        if _size_cache.get(key) is remembered:
+            _size_cache[key] = (*remembered[:4], time.monotonic())
+    return _served(remembered[2])
+
+
 def _described(definition: CacheDefinition, *, refresh: bool) -> dict:
     started = time.monotonic()
     if not refresh:
         with _size_cache_lock:
             remembered = _size_cache.get(definition.key)
         if remembered is not None and started - remembered[1] < _INVENTORY_TTL_SECONDS:
+            # Inside the signature-check window the trees were proven recently
+            # enough that proving them again is the cost, not the safety.
+            if started - remembered[4] < _SIGNATURE_CHECK_TTL_SECONDS:
+                return _served(remembered[2])
             # The TTL alone would serve a tree that changed a second ago; the
             # signature walk is bounded, the sizing walk is not.
             if _roots_unchanged(definition, remembered[3]):
-                return remembered[2]
+                return _reverified(definition.key, remembered)
     # One walk per cache at a time: simultaneous misses would each pay a cold
     # walk for the same answer, and two open tabs are enough to cause it.
     with _flight_for(definition.key):
@@ -1088,17 +1145,28 @@ def _described(definition: CacheDefinition, *, refresh: bool) -> dict:
         if remembered is not None:
             if refresh:
                 if remembered[0] >= started:
-                    return remembered[2]
+                    return _served(remembered[2])
             elif time.monotonic() - remembered[1] < _INVENTORY_TTL_SECONDS:
+                now = time.monotonic()
+                if now - remembered[4] < _SIGNATURE_CHECK_TTL_SECONDS:
+                    return _served(remembered[2])
                 if _roots_unchanged(definition, remembered[3]):
-                    return remembered[2]
+                    return _reverified(definition.key, remembered)
         begun = time.monotonic()
         signatures = _root_signatures(definition)
         entry = describe_cache(definition)
         with _size_cache_lock:
             if _size_epochs.get(definition.key, 0) == epoch:
-                _size_cache[definition.key] = (begun, time.monotonic(), entry, signatures)
-        return entry
+                # The window runs from when the FIGURES were produced (the
+                # walk), which is what the served numbers describe; the
+                # signatures were taken just before the walk, so anything
+                # changed since either is already inside the figures or shows
+                # as a mismatch at the first check past the window and
+                # re-measures. Anchoring before the walk would hand the window
+                # to a slow walk and leave nothing for the reads.
+                stored = time.monotonic()
+                _size_cache[definition.key] = (begun, stored, entry, signatures, stored)
+        return _served(entry)
 
 
 def cache_inventory(*, refresh: bool = False) -> dict:

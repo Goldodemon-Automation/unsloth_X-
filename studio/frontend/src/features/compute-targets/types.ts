@@ -57,8 +57,9 @@ export interface NpuProvider {
 }
 
 /**
- * What the NPU may do for a run. The NPU has no backward pass, so it assists
- * rather than trains; the backend may add modes, so `mode` stays text.
+ * What the NPU may do for a run. A vendor NPU without a backward pass assists rather than
+ * trains; a PyTorch `torch.npu` device reports its training capability on the target row. The
+ * backend may add modes, so `mode` stays text.
  */
 export interface NpuTrainingCapability {
   mode: string;
@@ -221,12 +222,14 @@ export function isNpuTarget(target: ComputeTarget): boolean {
 
 /**
  * Whether a row may be picked. Unsupported devices stay listed so the user can
- * see the machine has one; an unavailable NPU cannot even be assisted with.
+ * see the machine has one. An NPU is selectable when the target registry reports
+ * it as supported (a torch.npu training backend); an assist-only NPU stays
+ * listed and disabled.
  */
 export function isTargetSelectable(
   target: ComputeTarget,
   npu: NpuTrainingCapability | null | undefined,
 ): boolean {
-  if (!target.supported) return false;
-  return !(isNpuTarget(target) && npu?.mode === NPU_MODE_UNAVAILABLE);
+  void npu;
+  return target.supported;
 }

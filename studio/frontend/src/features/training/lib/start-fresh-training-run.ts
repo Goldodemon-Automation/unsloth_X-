@@ -738,6 +738,12 @@ function needsManualMapping(
   isVlm: boolean,
   isAudio: boolean,
 ): boolean {
+  // Policy Alignment has its own dataset contract: prompt/chosen/rejected (or the role-aware
+  // messages form the RL loader converts). The SFT role mapper only knows user/assistant, so
+  // asking for it here would block a valid preference dataset before the RL worker sees it.
+  if (config.trainingMethod === "rl") {
+    return false;
+  }
   return (
     !isRawTextDatasetFormat(config.datasetFormat) &&
     (check.requires_manual_mapping ||

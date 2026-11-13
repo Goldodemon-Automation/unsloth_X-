@@ -769,7 +769,7 @@ export const ja = {
       announce: "ズーム {percent}%",
     },
     beta: "BETA",
-    brand: "unsloth",
+    brand: "X-",
     product: "Unsloth",
     accountMenu: "{name} のアカウントメニュー",
     updateAvailable: "アップデートが利用可能です",
@@ -2352,6 +2352,21 @@ export const ja = {
         total: "{value} 合計",
       },
       llamaBackend: {
+        modelSupport: {
+          label: "LLama.cpp architecture",
+          description: "Choose the llama.cpp architecture for GGUF models.",
+          hint: "Normal uses the bundled llama.cpp. Choosing another architecture downloads its build and uses it for the next model load. X- LLama.zig is coming soon.",
+          customBuildHint:
+            "Selected {profile}. Install that build before loading a model.",
+          profiles: {
+            normal: "Normal (llama.cpp)",
+            dory: "Dory (brianchmielNV/llama.cpp)",
+            bee: "Bee (BeeLlama.cpp)",
+            neurall: "Neuralls llama.cpp (neurall/llama.cpp)",
+            ik: "IK (ik_llama.cpp)",
+            x: "X- LLama.zig (coming soon)",
+          },
+        },
         title: "GGUF 推論エンジン",
         label: "計算バックエンド",
         description: "llama.cpp が GGUF モデルの実行に使うバックエンドです。",

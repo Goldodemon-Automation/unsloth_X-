@@ -4,6 +4,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import { fetchJob } from "@/features/advanced/api/advanced-api";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
@@ -139,6 +140,8 @@ function scoreLabel(value: number | null | undefined): string {
 export function AutomatedTrainingPanel(): ReactElement {
   const t = useT();
   const [source, setSource] = useState("");
+  const [sourceMode, setSourceMode] = useState<PickerMode>("hub");
+  const [randomDatasets, setRandomDatasets] = useState(false);
   const [rows, setRows] = useState<DatasetRow[]>([newRow(), newRow()]);
   const [methods, setMethods] = useState<AutomatedMethod[]>(
     DEFAULT_SPEC.methods ?? ["cmt", "cpt"],
@@ -192,9 +195,11 @@ export function AutomatedTrainingPanel(): ReactElement {
   };
 
   const buildSpec = useCallback((): AutomatedTrainingSpec => {
-    const datasets = rows
-      .filter((row) => row.path.trim() !== "")
-      .map((row) => ({
+    const datasets = randomDatasets
+      ? []
+      : rows
+          .filter((row) => row.path.trim() !== "")
+          .map((row) => ({
         ...(row.mode === "hub"
           ? { path: "", repo_id: row.path.trim() }
           : { path: row.path.trim() }),
@@ -208,6 +213,7 @@ export function AutomatedTrainingPanel(): ReactElement {
     return {
       source: source.trim(),
       datasets,
+      random_datasets: randomDatasets,
       methods: [...methods],
       datasets_per_round: clampDatasetsPerRound(Number(datasetsPerRound)),
       runs_per_round: clampRunsPerRound(Number(runsPerRound)),
@@ -221,6 +227,7 @@ export function AutomatedTrainingPanel(): ReactElement {
     datasetsPerRound,
     methods,
     rounds,
+    randomDatasets,
     rows,
     runsPerRound,
     seed,
@@ -274,7 +281,7 @@ export function AutomatedTrainingPanel(): ReactElement {
     try {
       const spec = buildSpec();
       if (!spec.source) throw new Error(t("labs.automated.needSource"));
-      if (spec.datasets.length < 2) {
+      if (!spec.random_datasets && spec.datasets.length < 2) {
         throw new Error(t("labs.automated.needDatasets"));
       }
       const problems = validateAutomatedTrainingSpec(spec);
@@ -322,15 +329,17 @@ export function AutomatedTrainingPanel(): ReactElement {
       description={t("labs.automated.description")}
     >
       <div className="grid gap-3 @2xl/train-card:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-        <label className="flex min-w-0 flex-col gap-1.5">
+        <div className="flex min-w-0 flex-col gap-1.5">
           <span className="text-ui-10 uppercase tracking-[0.05em] text-muted-foreground">
             {t("labs.automated.source")}
           </span>
-          <input
-            className={INPUT_CLASS}
+          <HubPickerField
+            kind="model"
             value={source}
-            onChange={(event) => {
-              setSource(event.target.value);
+            mode={sourceMode}
+            onModeChange={setSourceMode}
+            onChange={(value) => {
+              setSource(value);
               setPlan(null);
             }}
             placeholder={t("labs.automated.sourcePlaceholder")}
@@ -338,7 +347,7 @@ export function AutomatedTrainingPanel(): ReactElement {
           <span className="text-ui-10 text-muted-foreground/70">
             {t("labs.automated.sourceHint")}
           </span>
-        </label>
+        </div>
 
         <div className="flex min-w-0 flex-col gap-1.5">
           <span className="text-ui-10 uppercase tracking-[0.05em] text-muted-foreground">
@@ -376,18 +385,36 @@ export function AutomatedTrainingPanel(): ReactElement {
           <span className="text-ui-10 uppercase tracking-[0.05em] text-muted-foreground">
             {t("labs.automated.datasets")}
           </span>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => setRows((current) => [...current, newRow()])}
-            disabled={rows.length >= 8}
-          >
-            <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
-            {t("labs.automated.addDataset")}
-          </Button>
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-1.5 text-ui-10 text-muted-foreground">
+              <Switch
+                checked={randomDatasets}
+                onCheckedChange={(checked) => {
+                  setRandomDatasets(checked);
+                  setPlan(null);
+                }}
+                size="sm"
+              />
+              {t("labs.automated.randomDatasets")}
+            </label>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setRows((current) => [...current, newRow()])}
+              disabled={randomDatasets || rows.length >= 8}
+            >
+              <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
+              {t("labs.automated.addDataset")}
+            </Button>
+          </div>
         </div>
         <div className="flex flex-col gap-2">
-          {rows.map((row) => (
+          {randomDatasets ? (
+            <p className="rounded-lg border border-border/70 bg-background/40 p-3 text-ui-11 text-muted-foreground">
+              {t("labs.automated.randomDatasetsHint")}
+            </p>
+          ) : (
+            rows.map((row) => (
             <div
               key={row.id}
               className="grid gap-2 rounded-lg border border-border/70 bg-background/40 p-2.5 @2xl/train-card:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_8rem_5rem_2rem]"
@@ -452,10 +479,13 @@ export function AutomatedTrainingPanel(): ReactElement {
                 <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
               </Button>
             </div>
-          ))}
+            ))
+          )}
         </div>
         <p className="text-ui-10 text-muted-foreground/70">
-          {t("labs.automated.datasetHint")}
+          {randomDatasets
+            ? t("labs.automated.randomDatasetsHint")
+            : t("labs.automated.datasetHint")}
         </p>
       </div>
 

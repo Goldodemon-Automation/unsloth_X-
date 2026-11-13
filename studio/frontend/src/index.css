@@ -224,6 +224,52 @@
 }
 
 :root {
+	/* ==========================================================================
+	   X- design baseline.
+
+	   One named value per step, so a component stops inventing `rounded-[11px]`
+	   next to `rounded-[14px]` (19 distinct arbitrary radii were counted in
+	   components/features; see UI_AUDIT.md). Additive only: nothing here renames
+	   or removes an existing token, so every current utility keeps working and
+	   the app looks identical except where a token already maps to one of these
+	   steps.
+
+	   Radii step by ~1.33x: 6 / 8 / 12 / 16 / 22, plus a pill. Control heights
+	   collapse the measured 30/32/33/34px cluster onto two steps. Icon sizes
+	   correspond to the Tailwind `size-3.5` / `size-4` / `size-5` classes that
+	   already carry the overwhelming majority of icon usage.
+	   ========================================================================== */
+	--x-radius-xs: 6px;
+	--x-radius-sm: 8px;
+	--x-radius-md: 12px;
+	--x-radius-lg: 16px;
+	--x-radius-xl: 22px;
+	--x-radius-pill: 9999px;
+
+	--x-control-height-sm: 30px;
+	--x-control-height-md: 34px;
+	--x-control-height-lg: 40px;
+
+	--x-icon-sm: 14px;
+	--x-icon-md: 16px;
+	--x-icon-lg: 20px;
+
+	--x-type-caption: 11px;
+	--x-type-body-sm: 12px;
+	--x-type-body: 13px;
+	--x-type-title: 15px;
+
+	/* The four spacing steps the shell actually uses, named so a row can say
+	   what it means instead of restating a pixel arithmetic expression. */
+	--x-space-tight: calc(4px * var(--ui-space-scale, 1));
+	--x-space-row: calc(8px * var(--ui-space-scale, 1));
+	--x-space-group: calc(12px * var(--ui-space-scale, 1));
+	--x-space-section: calc(20px * var(--ui-space-scale, 1));
+
+	/* One focus ring for the whole app: outer glow plus a 1px inner edge, so it
+	   reads on both a light page and the near-black one. */
+	--x-focus-ring: 0 0 0 1px var(--ring-soft), 0 0 0 3px color-mix(in oklab, var(--ring) 22%, transparent);
+
 	/* Every popup surface: a faint lift off the dimmed page. */
 	--popup-shadow: 0 12px 32px -12px rgb(0 0 0 / 0.16), 0 2px 6px -2px rgb(0 0 0 / 0.06);
 	/* Theme-following tooltips (#13997): borderless shadow in light, flat black in dark. */
@@ -285,7 +331,7 @@
 	--chart-3: oklch(0.7014 0.1193 197.5897);
 	--chart-4: oklch(0.6926 0.1112 346.5775);
 	--chart-5: oklch(0.7497 0.1003 85.0057);
-	--radius: 1.1rem;
+	--radius: var(--x-radius-lg);
 	/* White sidebar against the warm off-white page; the tone difference is
 	   the separator now that the right-edge divider is gone. */
 	--sidebar-base: #ffffff;
@@ -468,30 +514,30 @@
 	--tooltip-divider: rgb(255 255 255 / 0.12);
 	--tooltip-shadow: none;
 	--tooltip-shadow-rich: none;
-	/* Dark surfaces shared by ALL palettes: #181818 page, elevated #272727
+	/* Dark surfaces shared by ALL palettes: #0b0c0f page, elevated #14161a
 	   sidebar/cards, #3a3a3a hover, #fcfcfc ink. Palette dark blocks override
 	   only accent tokens so dark mode stays consistent across themes. */
-	--background: #181818;
+	--background: #0b0c0f;
 	--foreground-base: #fcfcfc;
-	--card-base: #272727;
+	--card-base: #14161a;
 	/* Page-coloured: sets the composer off the messages behind it. */
 	--composer-shadow: 0 4px 20px 4px var(--background);
 	--card-foreground-base: #fcfcfc;
-	--popover-base: #272727;
+	--popover-base: #14161a;
 	--popover-foreground-base: #fcfcfc;
 	/* Same accent and ink as light: the cyan is light enough that white text on
 	   it disappears, so the dark ink carries the contrast in both modes. */
 	--primary: #9ceaf0;
 	--primary-foreground: #0f1114;
-	--secondary-base: #303030;
+	--secondary-base: #1b1e23;
 	--secondary-foreground-base: #fcfcfc;
-	--muted-base: #303030;
+	--muted-base: #1b1e23;
 	/* Secondary text: settings descriptions, empty states, captions.
 	   Under the ink, still ~7:1 on the dialog surface. */
 	--muted-foreground: #b0b0b0;
 	--trace-fade: 13%;
 	/* Shared hover tone: one step over --popover. */
-	--accent-base: #3a3a3a;
+	--accent-base: #22262c;
 	--accent-foreground-base: #fcfcfc;
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
@@ -500,8 +546,8 @@
 	   borders stay visible on muted surfaces (right config panel, export
 	   tiles, quant chips) and keep subtle contrast on card. Matches the
 	   hover tone, so outlines and hovered fills share a step. */
-	--border-base: #3a3a3a;
-	--input-base: #3a3a3a;
+	--border-base: #2a2f37;
+	--input-base: #2a2f37;
 	--ring: #dfdfdf;
 	--chart-1: oklch(0.7511 0.1407 166.2284);
 	--chart-2: oklch(0.75 0.14 136.5572);
@@ -510,18 +556,18 @@
 	--chart-5: oklch(0.799 0.1196 84.6633);
 	/* A step over --background; the tone difference is the separator.
 	   Matches --card, so every elevated surface reads as one plane. */
-	--sidebar-base: #272727;
+	--sidebar-base: #14161a;
 	--sidebar-foreground-base: #fcfcfc;
 	--sidebar-primary: #9ceaf0;
 	--sidebar-primary-foreground: #0f1114;
-	--sidebar-accent-base: #3a3a3a;
+	--sidebar-accent-base: #22262c;
 	--sidebar-accent-foreground-base: #fcfcfc;
-	--tabs-line-indicator-base: #3a3a3a;
-	--sidebar-border-base: #3a3a3a;
+	--tabs-line-indicator-base: #22262c;
+	--sidebar-border-base: #262b32;
 	--sidebar-ring: #dfdfdf;
 	--destructive-foreground: oklch(1 0 0);
 	/* Match light's radius so every rounded-* element is the same in both themes. */
-	--radius: 1.1rem;
+	--radius: var(--x-radius-lg);
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-serif: Source Serif 4, serif;
 	--font-mono: JetBrains Mono, monospace;
@@ -545,11 +591,11 @@
 
 	--nav-fg-base: #fcfcfc;
 	--nav-fg-muted-base: #b0b0b0;
-	--nav-surface-hover-base: #3a3a3a;
-	/* Lifted with the surfaces: the sidebar is #272727, not #1f1f1f. */
-	--nav-icon-idle-base: #767676;
-	--nav-beta-border: #3a3a3a;
-	--panel-surface-hover-base: #3a3a3a;
+	--nav-surface-hover-base: #22262c;
+	/* Lifted with the surfaces: the sidebar is #14161a, two steps over the page. */
+	--nav-icon-idle-base: #7d858f;
+	--nav-beta-border: #262b32;
+	--panel-surface-hover-base: #22262c;
 	/* Right-side chat-parameters panel: matches the chat content
 	   surface in both themes — distinction from the left sidebar
 	   is handled by the left border alone. Tracks `--background` so
@@ -557,8 +603,8 @@
 	   automatically. */
 	--panel-surface: var(--background);
 	--panel-surface-fg: var(--foreground);
-	/* Translucent white so the same fill reads correctly on the #181818
-	   page AND on #272727 cards/dialogs. */
+	/* Translucent white so the same fill reads correctly on the #0b0c0f
+	   page AND on #14161a cards/dialogs. */
 	--panel-input-surface-base: rgba(255, 255, 255, 0.07);
 	--panel-input-surface-hover-base: rgba(255, 255, 255, 0.11);
 	/* Muted panel text and sliders: one step under the ink, uncolored. */
@@ -569,7 +615,7 @@
 	   Hover restores full --foreground. */
 	--chat-icon-fg-base: #c4c4c4;
 	--chat-icon-fg-hover: var(--foreground);
-	--chat-icon-bg-hover-base: #3a3a3a;
+	--chat-icon-bg-hover-base: #22262c;
 }
 
 /* ---------------------------------------------------------------------------
@@ -2062,7 +2108,7 @@ html[data-chat-font] .aui-root {
 	--color-chart-3: var(--chart-3);
 	--color-chart-2: var(--chart-2);
 	--color-chart-1: var(--chart-1);
-	--color-code-block: #181818;
+	--color-code-block: #0f1114;
 	/* Tailwind ring/border/outline "ring" utilities are focus indicators
 	   across the app, so they map to the soft derived shade; persistent
 	   selection styling uses ring-strong (the raw --ring). */
@@ -2098,7 +2144,7 @@ html[data-chat-font] .aui-root {
 	--radius-4xl: calc(var(--radius) + 16px);
 	--font-mono: var(--font-mono);
 	--font-serif: var(--font-serif);
-	--radius: 1.1rem;
+	--radius: var(--x-radius-lg);
 	--tracking-tighter: 0em;
 	--tracking-tight: 0em;
 	--tracking-wide: calc(var(--tracking-normal) + 0.025em);
@@ -6543,5 +6589,305 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	}
 	:where(.aui-reasoning-root, .aui-tool-fallback-root, .aui-tool-group-root) [data-slot="badge"] {
 		border-color: color-mix(in oklab, var(--border), var(--foreground) 15%);
+	}
+}
+
+/* ==========================================================================
+   X- macOS-style glass shell.
+
+   The look: one floating translucent panel for the sidebar and one for the content, both
+   separated from the page by a hairline and a wide soft shadow, over a blurred backdrop —
+   a Mac app window rather than a web page with a sidebar glued to the edge.
+
+   Scope: every rule below is `.dark`-only. Light mode and every palette keep exactly what
+   they had, so this cannot regress a light-theme user. Nothing here changes layout math:
+   the sidebar keeps the width the provider sets, and the inset keeps `flex-1` — only the
+   panel's own paint, radius and inset margin change.
+   ========================================================================== */
+@layer components {
+	.dark {
+		/* One place for the glass recipe. `--x-glass-tint` is what the panel is a tint OF, so a
+		   palette that repaints `--card` repaints the glass with it. */
+		--x-glass-blur: 30px;
+		--x-glass-saturate: 180%;
+		--x-glass-panel: color-mix(in oklab, var(--card) 50%, transparent);
+		--x-glass-raised: color-mix(in oklab, var(--card) 66%, transparent);
+		--x-glass-line: color-mix(in oklab, #ffffff 9%, transparent);
+		--x-glass-line-strong: color-mix(in oklab, #ffffff 14%, transparent);
+		--x-glass-highlight: inset 0 1px 0 0 color-mix(in oklab, #ffffff 7%, transparent);
+		--x-glass-shadow:
+			var(--x-glass-highlight), 0 1px 1px rgb(0 0 0 / 0.28), 0 18px 48px -24px rgb(0 0 0 / 0.9);
+		--x-glass-shadow-raised:
+			var(--x-glass-highlight), 0 1px 2px rgb(0 0 0 / 0.35), 0 28px 70px -32px rgb(0 0 0 / 0.95);
+	}
+
+	/* ------------------------------- sidebar ------------------------------- */
+	/* The floating panel. `size-full` becomes `size-auto` with a margin so the panel sits
+	   inside the width the provider reserved, instead of overhanging it. */
+	.dark [data-sidebar="sidebar"] {
+		margin: 12px;
+		width: calc(100% - 24px);
+		height: calc(100% - 24px);
+		border-radius: 20px;
+		border: 1px solid var(--x-glass-line);
+		background: var(--x-glass-raised);
+		-webkit-backdrop-filter: blur(var(--x-glass-blur)) saturate(var(--x-glass-saturate));
+		backdrop-filter: blur(var(--x-glass-blur)) saturate(var(--x-glass-saturate));
+		box-shadow: var(--x-glass-shadow);
+	}
+
+	/* The rail is painted for a panel flush to the window edge; inside a rounded, inset
+	   panel it must not draw its own edge or the corner clip. */
+	.dark [data-sidebar="rail"],
+	.dark [data-sidebar="rail"]::after {
+		background: transparent;
+	}
+
+	/* ------------------------------- content ------------------------------- */
+	.dark [data-slot="sidebar-inset"] {
+		margin: 12px 12px 12px 0;
+		border-radius: 20px;
+		border: 1px solid var(--x-glass-line);
+		background: color-mix(in oklab, var(--background) 72%, transparent);
+		-webkit-backdrop-filter: blur(26px) saturate(150%);
+		backdrop-filter: blur(26px) saturate(150%);
+		box-shadow: var(--x-glass-highlight), 0 18px 48px -30px rgb(0 0 0 / 0.8);
+	}
+
+	/* ------------------------- dialogs, menus, sheets ---------------------- */
+	.dark [data-slot="dialog-content"],
+	.dark [data-slot="alert-dialog-content"],
+	.dark [data-slot="popover-content"],
+	.dark [data-slot="dropdown-menu-content"],
+	.dark [data-slot="context-menu-content"],
+	.dark [data-slot="select-content"],
+	.dark [data-slot="command-dialog-content"],
+	.dark [data-slot="sheet-content"] {
+		background: var(--x-glass-raised);
+		-webkit-backdrop-filter: blur(var(--x-glass-blur)) saturate(var(--x-glass-saturate));
+		backdrop-filter: blur(var(--x-glass-blur)) saturate(var(--x-glass-saturate));
+		border-color: var(--x-glass-line);
+		box-shadow: var(--x-glass-shadow-raised);
+	}
+
+	/* Palette popups painted their own opaque surface; let them be glass too rather than a
+	   flat rectangle sitting on a blur. */
+	.dark .app-user-menu.sidebar-menu[data-slot],
+	.dark .unsloth-plus-menu.sidebar-menu[data-slot] {
+		background: var(--x-glass-raised);
+		-webkit-backdrop-filter: blur(var(--x-glass-blur)) saturate(var(--x-glass-saturate));
+		backdrop-filter: blur(var(--x-glass-blur)) saturate(var(--x-glass-saturate));
+		border: 1px solid var(--x-glass-line);
+		box-shadow: var(--x-glass-shadow-raised);
+	}
+
+	/* ------------------------------ key findings --------------------------- */
+	/* Cards and rows get the same hairline-and-highlight treatment the panels do, so a card
+	   on the content surface reads as an inset plate rather than a second page. */
+	.dark [data-slot="card"] {
+		border-color: var(--x-glass-line);
+		box-shadow: var(--x-glass-highlight);
+	}
+
+	/* ------------------------------ controls ------------------------------- */
+	/* Mac controls are inner-shadowed, not outlined: a 1px inner highlight on top, a barely
+	   there line, and a full-radius pill for buttons and inputs. */
+	.dark input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+	.dark textarea {
+		border-color: var(--x-glass-line);
+		background: color-mix(in oklab, var(--card) 42%, transparent);
+		box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.28);
+	}
+
+	.dark input:focus-visible,
+	.dark textarea:focus-visible {
+		border-color: var(--x-glass-line-strong);
+		box-shadow: var(--x-focus-ring);
+	}
+
+	/* Windows/Linux titlebar: glass instead of a solid band. */
+	.dark [data-slot="window-titlebar"] {
+		background: color-mix(in oklab, var(--background) 62%, transparent);
+		-webkit-backdrop-filter: blur(20px) saturate(170%);
+		backdrop-filter: blur(20px) saturate(170%);
+		border-bottom: 1px solid var(--x-glass-line);
+	}
+}
+
+/* ==========================================================================
+   Typography: one modern grotesque, tighter display sizes.
+
+   The old stack ran a custom display face (Hellix) into Space Grotesk for headings over
+   Inter for body. Three families, three sets of metrics, and a heading face with a wider
+   default tracking than the body it sat on. Inter now carries both roles, with optical
+   sizing on and negative tracking on the large sizes, which is what makes a modern app
+   title read as a title rather than as bold body text.
+   ========================================================================== */
+@layer base {
+	:root {
+		/* Hellix and Space Grotesk stay loaded (a user's saved appearance may still name
+		   them) but the default heading role is the body family, so text set in
+		   `font-heading` and text set in `font-sans` agree. */
+		--font-heading: var(--font-sans);
+		--x-tracking-display: -0.028em;
+		--x-tracking-title: -0.02em;
+		--x-tracking-body: -0.011em;
+	}
+
+	html {
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+		text-rendering: optimizeLegibility;
+		font-optical-sizing: auto;
+		letter-spacing: var(--x-tracking-body);
+	}
+
+	/* Display sizes get the optical + tracking treatment; small text keeps the UI rhythm. */
+	h1,
+	[data-slot="dialog-title"],
+	[data-slot="alert-dialog-title"] {
+		letter-spacing: var(--x-tracking-display);
+	}
+
+	h2,
+	h3 {
+		letter-spacing: var(--x-tracking-title);
+	}
+
+	/* Data and identifiers line up in columns. */
+	[data-slot="table"],
+	.font-mono,
+	.tabular-nums {
+		font-variant-numeric: tabular-nums;
+	}
+}
+
+/* ==========================================================================
+   Ambient desktop behind the glass.
+
+   Glass needs something behind it to refract, and the app fills its own window, so the
+   only thing a floating panel had to blur was a flat colour — which reads as opaque. Two
+   wide, low-alpha washes give the panels something to pick up (and make the 8px gap and
+   the titlebar read as the desktop), without tinting text or touching any surface token.
+   Dark only: light mode keeps its plain page.
+   ========================================================================== */
+@layer base {
+	.dark body {
+		background-color: #07080a;
+		background-image:
+			radial-gradient(
+				1200px 680px at 10% -14%,
+				color-mix(in oklab, var(--primary) 26%, transparent),
+				transparent 64%
+			),
+			radial-gradient(1000px 560px at 92% 4%, rgb(122 92 255 / 0.2), transparent 68%),
+			radial-gradient(820px 760px at 74% 112%, rgb(0 170 200 / 0.14), transparent 72%);
+		background-attachment: fixed;
+		background-repeat: no-repeat;
+	}
+}
+
+/* ==========================================================================
+   Training menus — Mac card + segmented control.
+
+   The Train page had one card style for every section, an underline tab rail, and a circular
+   icon chip, so nine sections stacked into one undifferentiated column. This gives the card a
+   header/body split (one hairline), the tabs a real container, and the section chips a square
+   tint that matches the app's tiles.
+   ========================================================================== */
+@layer components {
+	/* Card: keep the 1px border `.elevated-card` (and the border-math test) relies on, but
+	   replace the large blur halo and the 20/28/32px radius ramp with one radius and a
+	   hairline-plus-highlight, so a stack of them reads as a list of plates. */
+	.elevated-card {
+		border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+		border-radius: 18px;
+		box-shadow: none;
+	}
+
+	@media (min-width: 640px) {
+		.elevated-card {
+			border-radius: 18px;
+		}
+	}
+
+	@media (min-width: 1024px) {
+		.elevated-card {
+			border-radius: 18px;
+		}
+	}
+
+	.dark .elevated-card {
+		border-color: var(--x-glass-line);
+		background: color-mix(in oklab, var(--card) 62%, transparent);
+		-webkit-backdrop-filter: blur(18px) saturate(150%);
+		backdrop-filter: blur(18px) saturate(150%);
+		box-shadow: var(--x-glass-highlight);
+	}
+
+	.dark .elevated-card.elevated-card-dark-border {
+		border-color: var(--x-glass-line);
+	}
+
+	/* Header/body split. The body keeps the card's padding, the header carries its own so the
+	   divider runs edge to edge. */
+	/* Only the divider lives here: the card keeps a base `p-4` so its horizontal inset is
+	   still readable from the markup (a layout test measures it), and the header bleeds its
+	   divider edge to edge with matching negative margins. */
+	.train-card-head {
+		border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+	}
+
+	.dark .train-card-head {
+		border-bottom-color: var(--x-glass-line);
+	}
+
+
+
+	/* Section chip: a tinted rounded square, the same geometry as the X- mark and the avatar
+	   tiles, instead of a coloured circle. */
+	.train-section-chip {
+		background: color-mix(in oklab, var(--chip-tint, var(--primary)) 16%, transparent);
+		color: color-mix(in oklab, var(--chip-tint, var(--foreground)) 78%, var(--foreground));
+		border: 1px solid color-mix(in oklab, var(--chip-tint, var(--border)) 26%, transparent);
+	}
+
+	.dark .train-section-chip {
+		background: color-mix(in oklab, var(--chip-tint, var(--primary)) 20%, transparent);
+		color: color-mix(in oklab, var(--chip-tint, #fff) 62%, #fff);
+		border-color: color-mix(in oklab, var(--chip-tint, #fff) 18%, transparent);
+	}
+
+	/* Segmented control (Train sub-nav). */
+	.train-segmented {
+		gap: 2px;
+		padding: 3px;
+		border-radius: 9999px;
+		border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+		background: color-mix(in oklab, var(--muted) 55%, transparent);
+	}
+
+	.dark .train-segmented {
+		border-color: var(--x-glass-line);
+		background: color-mix(in oklab, #ffffff 6%, transparent);
+	}
+
+	.train-segment-active {
+		background: var(--foreground);
+		box-shadow: 0 1px 2px rgb(0 0 0 / 0.28);
+	}
+
+	/* The trigger also carries `text-background` from the markup, and Tabs' own active-state
+	   colour outranks a plain class here, so the active segment states its ink with the
+	   specificity to win: a light pill needs dark type, in both themes. */
+	.train-segment-active,
+	.dark .train-segment-active {
+		background: var(--foreground);
+		color: var(--background) !important;
+	}
+
+	.dark .train-segment-active {
+		background: color-mix(in oklab, #ffffff 92%, transparent);
+		color: #0b0c0f !important;
 	}
 }

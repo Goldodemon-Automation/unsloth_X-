@@ -769,7 +769,7 @@ export const de = {
       announce: "Zoom {percent} %",
     },
     beta: "BETA",
-    brand: "unsloth",
+    brand: "X-",
     product: "Unsloth",
     accountMenu: "Kontomenü von {name}",
     updateAvailable: "Update verfügbar",
@@ -2402,6 +2402,21 @@ export const de = {
         total: "{value} gesamt",
       },
       llamaBackend: {
+        modelSupport: {
+          label: "LLama.cpp architecture",
+          description: "Choose the llama.cpp architecture for GGUF models.",
+          hint: "Normal uses the bundled llama.cpp. Choosing another architecture downloads its build and uses it for the next model load. X- LLama.zig is coming soon.",
+          customBuildHint:
+            "Selected {profile}. Install that build before loading a model.",
+          profiles: {
+            normal: "Normal (llama.cpp)",
+            dory: "Dory (brianchmielNV/llama.cpp)",
+            bee: "Bee (BeeLlama.cpp)",
+            neurall: "Neuralls llama.cpp (neurall/llama.cpp)",
+            ik: "IK (ik_llama.cpp)",
+            x: "X- LLama.zig (coming soon)",
+          },
+        },
         title: "GGUF-Inferenz-Engine",
         label: "Compute-Backend",
         description: "Das Backend, mit dem llama.cpp GGUF-Modelle ausführt.",

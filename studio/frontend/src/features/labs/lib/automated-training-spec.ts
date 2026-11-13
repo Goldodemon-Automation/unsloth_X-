@@ -112,6 +112,7 @@ export function defaultAutomatedTrainingSpec(): AutomatedTrainingSpec {
       { path: "", name: "", category: "general", eval_fraction: 0.1 },
       { path: "", name: "", category: "general", eval_fraction: 0.1 },
     ],
+    random_datasets: false,
     methods: ["cmt", "cpt"],
     datasets_per_round: 2,
     runs_per_round: 4,
@@ -128,6 +129,7 @@ export function normalizeAutomatedTrainingSpec(
 ): AutomatedTrainingSpec {
   return {
     ...spec,
+    random_datasets: spec.random_datasets ?? false,
     datasets: (spec.datasets ?? []).map((dataset) => ({
       ...dataset,
       category: isAutomatedCategory(dataset.category)
@@ -158,25 +160,27 @@ export function validateAutomatedTrainingSpec(
   }
 
   const datasets = spec.datasets ?? [];
-  if (datasets.length < AUTOMATED_LIMITS.datasetsPerRound.min) {
-    errors.push("Automated training needs at least two datasets.");
-  }
-  if (datasets.length > AUTOMATED_LIMITS.datasetsPerRound.max) {
-    errors.push("Automated training accepts at most eight datasets.");
-  }
-  datasets.forEach((dataset, index) => {
-    const hasPath = Boolean(dataset.path && dataset.path.trim() !== "");
-    const hasRepo = Boolean(dataset.repo_id && dataset.repo_id.trim() !== "");
-    if (!hasPath && !hasRepo) {
-      errors.push(`Dataset ${index + 1} needs a path or a Hub repo id.`);
+  if (!spec.random_datasets) {
+    if (datasets.length < AUTOMATED_LIMITS.datasetsPerRound.min) {
+      errors.push("Automated training needs at least two datasets.");
     }
-    if (
-      dataset.category !== undefined &&
-      !isAutomatedCategory(dataset.category)
-    ) {
-      errors.push(`Dataset ${index + 1} has an unknown category.`);
+    if (datasets.length > AUTOMATED_LIMITS.datasetsPerRound.max) {
+      errors.push("Automated training accepts at most eight datasets.");
     }
-  });
+    datasets.forEach((dataset, index) => {
+      const hasPath = Boolean(dataset.path && dataset.path.trim() !== "");
+      const hasRepo = Boolean(dataset.repo_id && dataset.repo_id.trim() !== "");
+      if (!hasPath && !hasRepo) {
+        errors.push(`Dataset ${index + 1} needs a path or a Hub repo id.`);
+      }
+      if (
+        dataset.category !== undefined &&
+        !isAutomatedCategory(dataset.category)
+      ) {
+        errors.push(`Dataset ${index + 1} has an unknown category.`);
+      }
+    });
+  }
 
   const methods = spec.methods ?? [];
   if (methods.length === 0) {

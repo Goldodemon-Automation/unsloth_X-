@@ -8,6 +8,8 @@ from __future__ import annotations
 import ipaddress
 import os
 import socket
+import threading
+import time
 
 # Only the exact aliases the rest of the stack hard-codes for loopback (health checks, banner URLs and run.py all hard-code 127.0.0.1); other 127.0.0.0/8 addresses are deliberately left out, since they are not supported launch hosts.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -63,12 +65,53 @@ def _resolved_host_ip_addresses(host: str):
     return tuple(resolved)
 
 
+# Resolution cache. The resolver is consulted from the request path: ResearchPortMiddleware ->
+# note_server_address -> scope_request_host -> wildcard_loopback_host, on EVERY HTTP request, for
+# any ASGI server host that is not an IP literal (a `--host <name>` bind, a container hostname, or
+# TestClient's "testserver"). An uncached getaddrinfo there is a cold DNS round trip per request,
+# resolved synchronously on the event loop: measured at 2.29s per request on a host whose resolver
+# had to time out, during which no other request could run.
+#
+# A wildcard bind's reachability cannot change faster than the OS resolver's own caching, so a short
+# TTL loses nothing a caller already had, and failures are cached too: a name that does not resolve
+# must not cost a timeout on every request. Bounded, because the key is a host string that a caller
+# could vary.
+_RESOLUTION_TTL_SECONDS = 60.0
+_RESOLUTION_CACHE_MAX = 64
+_resolution_cache: "dict[str, tuple[float, tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]]]" = {}
+_resolution_cache_lock = threading.Lock()
+
+
+def clear_resolution_cache() -> None:
+    """Forget every cached resolution. For tests and for a host change in-process."""
+    with _resolution_cache_lock:
+        _resolution_cache.clear()
+
+
+def _cached_resolved_host_ip_addresses(host: str):
+    """`_resolved_host_ip_addresses`, memoised for `_RESOLUTION_TTL_SECONDS`."""
+    now = time.monotonic()
+    with _resolution_cache_lock:
+        remembered = _resolution_cache.get(host)
+        if remembered is not None and now - remembered[0] < _RESOLUTION_TTL_SECONDS:
+            return remembered[1]
+    resolved = _resolved_host_ip_addresses(host)
+    with _resolution_cache_lock:
+        if len(_resolution_cache) >= _RESOLUTION_CACHE_MAX:
+            oldest = min(_resolution_cache, key = lambda key: _resolution_cache[key][0])
+            _resolution_cache.pop(oldest, None)
+        _resolution_cache[host] = (now, resolved)
+    return resolved
+
+
 def _resolved_ip_addresses(host: str):
     literal = _literal_ip_address(host)
     if literal is not None:
         return (literal,)
+    if not isinstance(host, str) or not host:
+        return ()
     resolved = []
-    for parsed in _resolved_host_ip_addresses(host):
+    for parsed in _cached_resolved_host_ip_addresses(host):
         if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
             parsed = parsed.ipv4_mapped
         if parsed not in resolved:

@@ -1005,6 +1005,15 @@ def folder_job_events(
 _EXTRACT_TEXT_MAX_BYTES = 20 * 1024 * 1024
 
 
+def _parse_failure_detail(filename: str, error: Exception) -> str:
+    """The parser's own reason, with any host path in it redacted: the managed uploads root
+    carries the install layout and the account id, and a tunnel or LAN caller has neither."""
+    from hub.utils.host_paths import redact_paths_in_text
+
+    reason = redact_paths_in_text(error).strip()
+    return f"{filename} could not be read: {reason}" if reason else f"{filename} could not be read"
+
+
 # Not gated on sqlite-vec: the composer inlines the text of files its browser readers cannot open.
 @router.post("/extract-text")
 def extract_text(file: UploadFile = File(...), subject: str = Depends(get_current_subject)) -> dict:
@@ -1014,10 +1023,14 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
     try:
         pages = parsers.parse(stored_path)
     except ImportError as exc:
-        raise HTTPException(status_code = 503, detail = f"{filename} could not be read: {exc}") from exc
+        raise HTTPException(
+            status_code = 503, detail = _parse_failure_detail(filename, exc)
+        ) from exc
     # Not only ValueError: python-docx raises its own errors for a damaged .docm/.dotx.
     except Exception as exc:
-        raise HTTPException(status_code = 422, detail = f"{filename} could not be read: {exc}") from exc
+        raise HTTPException(
+            status_code = 422, detail = _parse_failure_detail(filename, exc)
+        ) from exc
     finally:
         _remove_stored_upload(stored_path)
     # Capped page by page: joining everything first would hold a huge extraction several times over.

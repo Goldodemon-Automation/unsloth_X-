@@ -422,7 +422,7 @@ async def download_item(
             raise HTTPException(status_code = 401, detail = "Invalid or expired download link.")
     else:
         # The bearer the request carries, keyless access, or the 401 this route has always given.
-        await subject_for_header_or_query_token(request, None)
+        await subject_for_header_or_query_token(request)
     try:
         if account is None:
             item = await run_in_threadpool(library.open_item, id)
@@ -678,7 +678,12 @@ def _chunks(stream, name: str):
 
 
 def _base_name(name: Optional[str]) -> str:
-    return re.split(r"[\\/]", name or "")[-1][:255] or "Untitled"
+    """The display label for an upload, never a path: the bytes are stored under a uuid name and
+    only this label reaches the DB. The client chooses it, so it may carry a path, ``..``, a
+    leading dot, control bytes or a Windows device name -- ``safe_file_name`` is the rule the rest
+    of the library already applies to a client-supplied name, and it keeps the extension the type
+    check reads."""
+    return library.safe_file_name(name, fallback = "Untitled")[:255]
 
 
 @router.post("/uploads")

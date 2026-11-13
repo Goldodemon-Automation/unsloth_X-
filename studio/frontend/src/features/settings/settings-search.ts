@@ -21,6 +21,10 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.account",
     "settings.general.password",
     "settings.general.huggingFaceToken",
+    "settings.resources.llamaBackend.title",
+    "settings.resources.llamaBackend.label",
+    "settings.resources.llamaBackend.modelSupport.label",
+    "settings.resources.llamaBackend.customPath.label",
     "settings.appearance.language.title",
     "settings.appearance.language.label",
     "settings.appearance.language.spellCheck",
@@ -32,6 +36,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.previewSharing.sectionTitle",
     "settings.general.previewSharing.enableLabel",
     "settings.general.previewSharing.revokeLabel",
+    "settings.general.modelSelfTraining.sectionTitle",
+    "settings.general.modelSelfTraining.enableLabel",
     "settings.general.rag.sectionTitle",
     "settings.general.rag.embeddingModel",
     "settings.general.helperLlm.sectionTitle",
@@ -424,6 +430,11 @@ const OWNER_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
   "settings.general.modelAutoSwitch.keepKv",
   "settings.chat.toolResultLimit",
   "settings.chat.firstTokenLabel",
+  // The GGUF runtime block and its custom path are owner-only in General.
+  "settings.resources.llamaBackend.title",
+  "settings.resources.llamaBackend.label",
+  "settings.resources.llamaBackend.modelSupport.label",
+  "settings.resources.llamaBackend.customPath.label",
 ]);
 
 export function renderedSearchEntries(

@@ -226,9 +226,26 @@ def test_a_conv1d_transpose_swaps_the_axes_rather_than_permuting_them():
     np.testing.assert_array_equal(swapped, value.T)
 
 
-def test_a_hub_id_is_refused_because_a_swap_writes_local_weights(tmp_path):
-    with pytest.raises(ValueError, match = "download the checkpoint first"):
-        arch_swap.plan({"source": "unsloth/Llama-3.2-1B", "target": str(_llama(tmp_path / "t"))})
+def test_a_hub_id_is_downloaded_to_a_local_snapshot(tmp_path, monkeypatch):
+    local = _llama(tmp_path / "hub")
+    calls: list[dict] = []
+
+    def fake_download(**kwargs):
+        calls.append(kwargs)
+        return str(local)
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_download)
+
+    report = arch_swap.plan(
+        {"source": "unsloth/Llama-3.2-1B", "target": str(_llama(tmp_path / "t"))}
+    )
+
+    assert calls and calls[0]["repo_id"] == "unsloth/Llama-3.2-1B"
+    assert calls[0]["repo_type"] == "model"
+    assert report["source_family"] == "llama"
+    assert report["runnable"] is True
 
 
 def test_plan_closes_the_source_readers_when_the_target_cannot_be_opened(tmp_path, monkeypatch):

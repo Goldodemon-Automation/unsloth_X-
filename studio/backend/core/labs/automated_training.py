@@ -39,6 +39,24 @@ MAX_ROUNDS = 12
 METHODS = ("cmt", "cpt", "fft")
 CATEGORIES = ("code", "syntax", "reasoning", "general")
 
+#: A curated, public Hub pool for ``random_datasets``. Planning stays offline and seeded, so a
+#: round is reproducible and never has to trust an arbitrary search result; every entry is a real
+#: dataset id that the training adapters already know how to load.
+RANDOM_DATASET_CATALOG: tuple[tuple[str, str, str], ...] = (
+    ("tatsu-lab/alpaca", "alpaca", "general"),
+    ("databricks/databricks-dolly-15k", "dolly-15k", "general"),
+    ("teknium/OpenHermes-2.5", "openhermes-2.5", "general"),
+    ("HuggingFaceH4/CodeAlpaca_20K", "codealpaca-20k", "code"),
+    ("bigcode/the-stack-smol", "the-stack-smol", "code"),
+    ("codeparrot/codeparrot-clean", "codeparrot-clean", "code"),
+    ("openai/gsm8k", "gsm8k", "reasoning"),
+    ("MetaMathAI/MetaMathQA", "metamathqa", "reasoning"),
+    ("microsoft/orca-math-word-problems-200k", "orca-math-200k", "reasoning"),
+    ("philschmid/glaive-function-calling-v2", "glaive-function-calling", "syntax"),
+    ("Salesforce/xlam-function-calling-60k", "xlam-function-calling", "syntax"),
+    ("NousResearch/hermes-function-calling-v1", "hermes-function-calling", "syntax"),
+)
+
 DEFAULT_DATASETS_PER_ROUND = 4
 DEFAULT_RUNS_PER_ROUND = 8
 DEFAULT_ROUNDS = 2
@@ -197,6 +215,20 @@ def _dataset_name(raw: Mapping[str, Any], path: str, repo_id: str, index: int) -
     return repo_id.split("/")[-1] or f"dataset-{index}"
 
 
+def _random_catalog() -> list[dict[str, Any]]:
+    """Fresh catalog rows in the same shape ``_datasets`` returns."""
+    return [
+        {
+            "path": "",
+            "repo_id": repo_id,
+            "name": name,
+            "category": category,
+            "eval_fraction": DEFAULT_EVAL_FRACTION,
+        }
+        for repo_id, name, category in RANDOM_DATASET_CATALOG
+    ]
+
+
 def _datasets(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         raise AutomatedTrainingError("datasets must be a list of 2 to 8 dataset entries.")
@@ -284,9 +316,13 @@ def normalise(spec: Mapping[str, Any]) -> dict[str, Any]:
     if not source:
         raise AutomatedTrainingError("Automated training needs a base checkpoint path or Hub id.")
 
+    random_datasets = bool(raw.get("random_datasets", False))
     return {
         "source": source,
-        "datasets": _datasets(raw.get("datasets")),
+        # Random mode ignores a hand-written pool: each round draws from the curated Hub catalog,
+        # which is what makes the toggle repeatable and keeps an untrusted repo out of the loop.
+        "datasets": _random_catalog() if random_datasets else _datasets(raw.get("datasets")),
+        "random_datasets": random_datasets,
         "methods": _methods(raw.get("methods")),
         "datasets_per_round": _integer(
             raw.get("datasets_per_round"),
@@ -469,6 +505,12 @@ def _plan_from(normalised: Mapping[str, Any]) -> dict[str, Any]:
     if len(categories) == 1:
         warnings.append(
             f"The pool only has the {categories[0]!r} category, so balancing has nothing to mix."
+        )
+    if normalised.get("random_datasets"):
+        warnings.append(
+            "Random Hub datasets are on: each round samples from the "
+            f"{len(pool)}-dataset curated public catalog in the app, not from arbitrary Hub search "
+            "results, and the seed reproduces the picks."
         )
     missing_adapters = [method for method in normalised["methods"] if method != "cmt"]
     if missing_adapters:

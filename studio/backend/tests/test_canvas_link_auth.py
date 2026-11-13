@@ -20,7 +20,12 @@ if str(_BACKEND) not in sys.path:
 
 import auth.authentication as auth_module  # noqa: E402
 import routes.inference as inf_mod  # noqa: E402
+from auth import storage as auth_storage  # noqa: E402
 from utils import scoped_link  # noqa: E402
+from utils.account_context import AccountContext, bind_account, reset_account  # noqa: E402
+from utils.paths.storage_roots import account_path  # noqa: E402
+
+ALICE = AccountContext("a" * 32, "alice")
 
 
 @pytest.fixture
@@ -42,18 +47,22 @@ def sandbox(tmp_path, monkeypatch):
     return root
 
 
-@pytest.fixture
-def client(sandbox):
+def _app():
     app = FastAPI()
     app.include_router(inf_mod.router)
-    return TestClient(app)
+    return app
+
+
+@pytest.fixture
+def client(sandbox):
+    return TestClient(_app())
 
 
 @pytest.fixture
 def signed_in(monkeypatch):
     """What the bearer path resolves to, so no test mints a real session JWT."""
 
-    async def resolve(_request, _token):
+    async def resolve(_request):
         return "unsloth"
 
     monkeypatch.setattr(auth_module, "subject_for_header_or_query_token", resolve)
@@ -63,7 +72,7 @@ def signed_in(monkeypatch):
 def no_credential(monkeypatch):
     """The bearer path with nothing to resolve: then only a link can authenticate."""
 
-    async def refuse(_request, _token):
+    async def refuse(_request):
         raise HTTPException(status_code = 401, detail = "Missing authentication token")
 
     monkeypatch.setattr(auth_module, "subject_for_header_or_query_token", refuse)
@@ -100,8 +109,74 @@ def test_a_link_resolves_to_the_subject_it_was_minted_for():
     assert subject == "unsloth"
 
 
+def test_a_managed_accounts_link_resolves_inside_that_accounts_sandbox(tmp_path, monkeypatch, no_credential):
+    """The link carries its account, and following it binds that account. Without the binding
+    ``current_account()`` stayed on its OWNER default and the listing answered with the owner's
+    root, so a managed account's link opened another workspace's tree."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth.db")
+    monkeypatch.setattr(auth_storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
+    monkeypatch.setattr(auth_storage, "_bootstrap_password", None)
+    connection = auth_storage.get_connection()
+    with connection:
+        connection.execute(
+            "INSERT INTO auth_user (username, password_salt, password_hash, jwt_secret,"
+            " account_id, role, is_active) VALUES (?, 'salt', 'hash', 'secret', ?, 'user', 1)",
+            (ALICE.username, ALICE.account_id),
+        )
+    connection.close()
+
+    # The real resolver, so the assertion is about where the path lands, not about a stub.
+    monkeypatch.setattr(
+        inf_mod,
+        "_sandbox_dir_for",
+        lambda session_id, create = True: str(account_path("sandbox") / session_id),
+    )
+
+    account_token = bind_account(ALICE)
+    try:
+        link = inf_mod._sign_canvas_link(ALICE.username)
+    finally:
+        reset_account(account_token)
+
+    owner_minted = inf_mod._sign_canvas_link("unsloth")
+    client = TestClient(app = _app())
+
+    response = client.get("/sandbox/chat-1", params = {"link": link})
+    assert response.status_code == 200, response.text
+    managed_root = tmp_path / "accounts" / ALICE.account_id / "sandbox" / "chat-1"
+    assert response.json()["path"] == str(managed_root)
+    assert str(managed_root).startswith(str(tmp_path / "accounts"))
+
+    # An owner-minted link keeps the owner root, so the bearer path stays what it was.
+    owner_response = client.get("/sandbox/chat-1", params = {"link": owner_minted})
+    assert owner_response.json()["path"] == str(tmp_path / "sandbox" / "chat-1")
+
+
+def test_a_link_naming_an_account_that_no_longer_exists_is_refused(monkeypatch):
+    """A deleted account's link resolves to nothing rather than to the owner's tree."""
+    import hub.services.models.account_access as account_access
+
+    # ``_signed_link_account`` imports the lookup in its own body, so the module it resolves in is
+    # what has to answer. The cache is cleared first or an earlier test's row would stand in.
+    account_access._link_accounts.clear()
+    monkeypatch.setattr(auth_storage, "get_account_by_id", lambda account_id: None)
+    link = scoped_link.mint(
+        inf_mod._CANVAS_LINK_SECRET, inf_mod._CANVAS_LINK_SCOPE, f"{'c' * 32}:gone"
+    )
+    request = _request(link = link)
+
+    async def resolve(_request):
+        raise HTTPException(status_code = 401, detail = "Missing authentication token")
+
+    monkeypatch.setattr(auth_module, "subject_for_header_or_query_token", resolve)
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(inf_mod._authenticate_header_or_query(request, None))
+    assert refused.value.status_code == 401
+
+
 def test_the_header_bearer_wins_over_a_link(monkeypatch):
-    async def resolve(_request, _token):
+    async def resolve(_request):
         return "signed-in"
 
     monkeypatch.setattr(auth_module, "subject_for_header_or_query_token", resolve)

@@ -7,7 +7,7 @@ import { normalizeAccountUsername, transitionBrowserAccount } from "@/lib/accoun
 import { sessionAccount, useLoginMode } from "../account-session";
 import { fetchAuthStatus, loginFromForm, loginWithPassword, setLoginMode, type TokenResponse } from "../login-client";
 import { Button } from "@/components/ui/button";
-import { MascotImg } from "@/components/mascot-img";
+import { XMark } from "@/components/x-mark";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -356,10 +356,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   return (
     <div className="w-full max-w-sm space-y-6">
       <div className="space-y-1.5 text-center">
-        <MascotImg
-          src="Sloth emojis/large sloth wave.png"
-          className="mx-auto mb-2 h-20 w-20 object-contain"
-        />
+        <XMark className="mx-auto mb-2 size-16 text-primary" />
         <h2 className="text-2xl font-semibold text-foreground">{title}</h2>
         <p className="text-muted-foreground">{subtitle}</p>
       </div>

@@ -90,6 +90,11 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
+from utils.self_training_settings import (
+    DEFAULT_SELF_TRAINING_ENABLED,
+    get_self_training_enabled,
+    set_self_training_enabled,
+)
 from utils.webhook_settings import get_webhook_settings, set_webhook_settings
 from utils import first_token_timeout, sandbox_memory_limit, systemone_settings, tool_result_limit
 from utils.download_transport_settings import (
@@ -762,6 +767,15 @@ class HelperPrecacheResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_HELPER_PRECACHE_ENABLED
     disabled_by_env: bool
+
+
+class SelfTrainingPayload(BaseModel):
+    enabled: bool
+
+
+class SelfTrainingResponse(BaseModel):
+    enabled: bool
+    default_enabled: bool = DEFAULT_SELF_TRAINING_ENABLED
 
 
 class WebhookSignatureInfo(BaseModel):
@@ -1674,6 +1688,31 @@ def update_helper_precache(
             log = logger,
         ) from exc
     return _helper_precache_response(enabled)
+
+
+@_owner_settings_router.get("/self-training", response_model = SelfTrainingResponse)
+def get_self_training(
+    current_subject: str = Depends(get_current_subject),
+) -> SelfTrainingResponse:
+    return SelfTrainingResponse(enabled = get_self_training_enabled())
+
+
+@_owner_settings_router.put("/self-training", response_model = SelfTrainingResponse)
+def update_self_training(
+    payload: SelfTrainingPayload, current_subject: str = Depends(get_current_subject)
+) -> SelfTrainingResponse:
+    try:
+        enabled = set_self_training_enabled(payload.enabled)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid model self-training setting."),
+            event = "settings.update_self_training_failed",
+            log = logger,
+        ) from exc
+    logger.info("settings.self_training_updated subject=%s enabled=%s", current_subject, enabled)
+    return SelfTrainingResponse(enabled = enabled)
 
 
 def _webhook_settings_response() -> WebhookSettingsResponse:

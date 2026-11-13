@@ -200,15 +200,11 @@ def _source(spec: Mapping[str, Any], key: str, label: str) -> Path:
     raw = str(spec.get(key) or "").strip()
     if not raw:
         raise ValueError(f"A {label} checkpoint is required.")
-    path = Path(raw).expanduser()
-    if not path.is_dir():
-        if merge.hf_repo_id(raw) is not None:
-            raise ValueError(
-                f"{raw!r} is a Hugging Face id. An arch swap reads and writes local weights, "
-                "so download the checkpoint first."
-            )
+    if not Path(raw).expanduser().is_dir() and merge.hf_repo_id(raw) is None:
         raise ValueError(f"No checkpoint folder at {raw!r}.")
-    return surgery._checkpoint_dir(path)
+    # A picker selection is a Hub id, not a demand that the user go find its cache folder. The
+    # helper downloads the snapshot and returns the directory with config.json and the shards.
+    return surgery.resolve_checkpoint(raw, label = label)
 
 
 def _layer_count(inventory: Mapping[tuple[Optional[int], str, str], Any]) -> int:

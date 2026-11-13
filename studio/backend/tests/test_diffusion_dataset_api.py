@@ -1084,3 +1084,21 @@ def test_upload_refuses_while_an_import_holds_the_same_folder(client, ds_root):
         lock.release()
     # Released: the same upload now goes through.
     assert _upload(client, "shared-name", [("sample.png", _png_bytes())]).status_code == 200
+
+
+def test_a_failed_import_reports_no_host_path(client, ds_root, monkeypatch):
+    """The loader fails on the absolute staging tree, which a tunnel caller does not own: the
+    reason survives, the layout does not. The curated repo stays named, so the message is still
+    actionable."""
+    import datasets
+
+    def boom(repo, **_kwargs):
+        raise OSError(f"[Errno 2] No such file or directory: '{ds_root}/dataset.parquet'")
+
+    monkeypatch.setattr(datasets, "load_dataset", boom)
+    response = client.post("/api/train/diffusion/dataset/import-example", json = {"id": "tuxemon"})
+    assert response.status_code == 502, response.text
+    detail = response.json()["detail"]
+    assert "linoyts/Tuxemon" in detail
+    assert str(ds_root) not in detail
+    assert "No such file or directory" in detail

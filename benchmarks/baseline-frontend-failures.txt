@@ -1,0 +1,55 @@
+About Unsloth uses the info icon Studio uses everywhere else
+Back and Forward follow page history, and zoom steps the interface scale
+Go > Settings lists every Settings page, in the dialog's order
+More opens Audio's workflows in a submenu that keeps the flyout open on the way in
+Move to lists at most the 12 most recently active projects and sections
+Move to names what a row leaves, and its lists scroll inside the window
+Recents draws an end strip, and the empty sidebar below it aims there
+a blurred edit relinquishes the draft to later remote updates
+a chat can be dropped after a folder that ends the Pinned list
+a chat filed from its menu while its drop into a folder is in flight keeps that filing
+a chat moved into a project from its menu leaves its section, as a drop does
+a chat's Move to submenu groups projects and sections, New first and Remove last
+a drop that moves writes its slot and takes the pin off after the move
+a drop's filing is committed with its slot
+a failed save retains the edited draft and retries it on close
+a hidden Projects section's chats are not walked or selected
+a hover preview leaves focus where it was
+a later drop of a chat supersedes its earlier drop's pending move
+a line under a folder's last chat says whether the row lands in the folder or below it
+a locally edited token remains authoritative across a remote update
+a pinned folder in one list is a way in, not a second copy of its chats
+a pinned row can be filed back into the section it kept while pinned
+a remote update after failure cannot masquerade as the failed save
+a row's section menu offers Remove from section only when it is in one
+a section's header starts a chat that is filed there on its first send
+a settled save adopts the newer token reconciled from another tab
+a sort picked while a move is in flight is not overwritten
+alt and an arrow reorder a row without a pointer
+an empty Projects section still shows where a folder would land
+an empty open folder says it is empty
+an unavailable NPU cannot be picked, and blocks nothing else
+an untouched General Settings tab adopts a token changed in another tab
+blur before the remote sync effect cannot commit an untouched stale draft
+clicking Audio in More opens the page, and the open page keeps the row out of More
+closed-chat forks leave tip selection to the server
+closing before the settled-save effect cannot repost the submitted draft
+custom TTS explains the strict voice default
+custom titlebar branding centers on the chat header's model picker
+desktop branding keeps an 11px gap above New chat
+each list header's menu carries only what that list is about, as in ChatGPT
+every action is handled in the app shell
+every chat row offers the pin without opening a menu
+every locale overlay carries the shortcut strings
+every row and section is wired to the planner
+failing tests:
+list header actions end where a hovered row's action does
+navigation rows align while the profile footer ignores the scroll rail
+no hand-set length above a hairline skips the scale
+sidebar and account submenus open clear of their menu, first rows level
+tests\export-hub-repo-required.test.ts
+the More flyout keeps its tooltip hidden while open (#12216)
+the collapsed rail opens the Images and Audio workflows from their icons
+the rail flyout lists every workflow and greys out what the model cannot do
+the sidebar More flyout previews on mouse hover and pins on a press
+typing after submit keeps the newer draft through save reconciliation

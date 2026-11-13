@@ -11,6 +11,7 @@ thing a contributor has to know before changing it.
 | [theming.md](theming.md) | Palettes, accent tokens, and how to change the UI color |
 | [compute-targets.md](compute-targets.md) | CPU, integrated-GPU and NPU training: the device registry, the shared-memory budget, the environment each target sets, and troubleshooting |
 | [ui-performance.md](ui-performance.md) | The frontend perf layer: turning it on, what it measures, the bounds that keep it from leaking |
+| [llama-architectures.md](llama-architectures.md) | Installing and switching llama.cpp forks in Settings: what each install verifies, the Dory source build, and which runtime wins |
 | [releases/](releases/) | The fork's release notes, one file per tag |
 
 ## What is in this repository

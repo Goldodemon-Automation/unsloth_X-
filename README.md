@@ -5,7 +5,7 @@ Studio: the Scaler can grow **or** shrink a checkpoint, Labs is working engines 
 and a run can train on a CPU, an integrated GPU or a discrete one.
 
 > **Branch:** `x8-main`, where this fork is developed. `main` mirrors the imported upstream tree.
-> **Releases:** [v1.0.0 … v1.4.1](https://github.com/Goldodemon-Automation/unsloth_X-/releases)
+> **Releases:** [v1.0.0 … v1.5.0](https://github.com/Goldodemon-Automation/unsloth_X-/releases)
 
 ---
 
@@ -14,6 +14,26 @@ and a run can train on a CPU, an integrated GPU or a discrete one.
 Blue is this fork, green is upstream Unsloth. The mark is
 [`images/logo-x-minus-icon.svg`](images/logo-x-minus-icon.svg) — X in blue, dash in a lighter blue, on a
 black plate. Alternates and the palette are in [images/logo-options.html](images/logo-options.html).
+
+---
+
+## Screenshots
+
+The Studio ships dark, in a macOS-style glass shell: the sidebar and the content are two floating
+translucent panels (12px inset, 20px radius, hairline border, backdrop blur) over a soft ambient
+wash, with one modern grotesque for both display and body text. The sloth mascot is gone — the mark
+is a vector `X-` tile, and the wordmark reads **X-**. These are captures of the built app served by
+`studio/backend`, taken at 1440×900 — not mockups. Regenerate them with
+`node studio/frontend/scripts/capture-screenshots.mjs --base <url> --token <jwt> --out docs/screenshots`.
+
+| | |
+| --- | --- |
+| ![Chat in the dark theme](docs/screenshots/01-chat-dark.png) | ![Settings dialog](docs/screenshots/05-settings-dark.png) |
+| **Chat** — the shell, the composer and the sidebar, wordmark reading **X-**. | **Settings** — the full tab rail (General, Profile, Appearance, System, Chat, Sandbox, API, Remote & LAN, Connections, Accounts, Agents, Voice, Browser, Shortcuts, Data, Library, Logs, Telemetry, Labs, About). |
+| ![Model hub](docs/screenshots/03-hub-dark.png) | ![Train](docs/screenshots/04-studio-dark.png) |
+| **Model hub** — discovery, quant picker and model cards. | **Train** — the training workspace on the same dark tokens. |
+| ![Library](docs/screenshots/02-library-dark.png) | ![Sign in](docs/screenshots/06-login-dark.png) |
+| **Library** — saved chats and projects. | **Sign in** — the first screen, same identity. |
 
 ---
 
@@ -82,6 +102,7 @@ one backend.
 | **Fit check** | Sizes a run from the card before anything starts, so an out-of-memory job is caught at plan time |
 | **Failures explained** | A failed run names the likely cause and the setting to change, with the raw error kept one click away |
 | **Devices** | CPU, integrated GPU, discrete GPU and NPU in one registry, with honest capability per device and a picker in the Train wizard |
+| **llama.cpp architectures** | Install and switch an inference runtime fork — Dory, Bee, Neuralls, IK — from Settings. Assets are host-matched, digest-checked when GitHub reports one, extracted through a validating reader, size-capped, and pinned to GitHub hosts; a failed install never leaves a half-tree marked installed. Owner-only, because it replaces the runtime for everyone |
 | **Optional host allow-list** | `UNSLOTH_TRUSTED_HOSTS` refuses a foreign `Host` when you set it, and changes nothing when you do not |
 | **Caches that earn it** | Device probes, NPU runtime scans, Hub metadata and dataset fingerprints are cached on a key that changes when the answer would — bounded, self-expiring, never a different answer |
 | **Labs** | CMT, Scale-before-training, Benchmarks, Artifacts, Pipelines, the shrink repair preset and Cleanup — each an engine with tests, behind one switch |
@@ -165,7 +186,8 @@ under `studio/frontend/`, `core.autocrlf=true` checks out CRLF, and several test
 | [docs/compute-targets.md](docs/compute-targets.md) | CPU, integrated-GPU and NPU training, the budget, and troubleshooting |
 | [docs/igpu.md](docs/igpu.md) | Intel iGPUs: the XPU wheel, pinning one GPU, symptom-first fixes |
 | [docs/ui-performance.md](docs/ui-performance.md) | The perf layer: what it measures and how to read it |
-| [docs/security.md](docs/security.md) | Threat model, the controls that exist, and the three open items |
+| [docs/llama-architectures.md](docs/llama-architectures.md) | The architecture picker and installer: what is verified, what a row's status means, and the runtime resolution order |
+| [docs/security.md](docs/security.md) | Threat model and the controls that exist |
 | [docs/theming.md](docs/theming.md) | Palettes and accent tokens |
 | [docs/README.md](docs/README.md) | Repository map and the local CRLF trap |
 

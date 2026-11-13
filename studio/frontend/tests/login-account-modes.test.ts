@@ -125,6 +125,9 @@ function mountForm(
     "../login-client": client,
     "@/components/ui/button": { Button: "Button" },
     "@/components/mascot-img": { MascotImg: "MascotImg" },
+    // The sign-in card now renders the X- mark instead of the mascot image; the stub
+    // loader refuses an import it was not told about, so name it here too.
+    "@/components/x-mark": { XMark: "XMark" },
     "@/components/ui/input": { Input: "Input" },
     "@/components/ui/label": { Label: "Label" },
     "@tanstack/react-router": {

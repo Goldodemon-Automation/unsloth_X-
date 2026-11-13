@@ -13514,6 +13514,8 @@ CREATE_SKILL_TOOL = {
 
 
 from .view_image import VIEW_IMAGE_TOOL
+from .self_training import SELF_TRAINING_TOOL
+from .studio_access import STUDIO_ACCESS_TOOLS
 
 
 ALL_TOOLS = [
@@ -13525,6 +13527,8 @@ ALL_TOOLS = [
     RENDER_HTML_TOOL,
     SEARCH_KNOWLEDGE_BASE_TOOL,
     SEARCH_CONVERSATION_TOOL,
+    SELF_TRAINING_TOOL,
+    *STUDIO_ACCESS_TOOLS,
 ]
 
 # Deliberately an ordinary tool with an ordinary result. Studio runs three tool loops (llama.cpp, safetensors,
@@ -14499,6 +14503,20 @@ def execute_tool(
             website_policy = website_policy,
             timeout = effective_timeout,
         )
+    if name == "train_model":
+        from .self_training import SelfTrainingError, execute_self_training_tool
+
+        try:
+            return execute_self_training_tool(arguments)
+        except SelfTrainingError as exc:
+            return f"Error: {exc}"
+    if name in {"labs", "automated_training", "merge_models", "training"}:
+        from .studio_access import StudioAccessError, execute_studio_access_tool
+
+        try:
+            return execute_studio_access_tool(name, arguments)
+        except StudioAccessError as exc:
+            return f"Error: {exc}"
     if name == "create_skill":
         from .skills import SkillError, create_skill
 

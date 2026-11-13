@@ -268,6 +268,28 @@ def test_plan_samples_every_category_and_is_seed_deterministic(tmp_path):
         assert set(sampled) == pool_categories
 
 
+def test_random_datasets_use_the_curated_hub_catalog_for_each_round(tmp_path):
+    spec = _spec(
+        tmp_path,
+        datasets = [],
+        random_datasets = True,
+        datasets_per_round = 4,
+        rounds = 2,
+        methods = ["cmt"],
+        runs_per_round = 2,
+    )
+
+    normalised = at.normalise(spec)
+    report = at.plan(spec)
+
+    assert normalised["random_datasets"] is True
+    assert len(normalised["datasets"]) == len(at.RANDOM_DATASET_CATALOG)
+    assert all(entry["repo_id"] for entry in normalised["datasets"])
+    assert report["runnable"] is True
+    assert any("Random Hub datasets" in warning for warning in report["warnings"])
+    assert at.plan(spec)["rounds"] == report["rounds"]
+
+
 def test_plan_warns_but_does_not_block_on_missing_adapters(tmp_path):
     report = at.plan(_spec(tmp_path, datasets=2, datasets_per_round=2, methods=["cpt", "fft"]))
     assert report["runnable"] is True

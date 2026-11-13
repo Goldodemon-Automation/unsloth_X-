@@ -27,6 +27,28 @@ _stop_response_condition = threading.Condition()
 _stop_responses_pending = 0
 _stop_response_admission_open = True
 
+_STOP_PATH = "/api/settings/remote-access/stop"
+
+
+def _is_stop_request(scope) -> bool:
+    """Whether this scope is the Stop request: under a deploy's ``--root-path`` prefix, and with or
+    without a trailing slash. uvicorn leaves the prefix inside ``path`` (main.py's MaxBodyMiddleware
+    says so too), so an exact compare misses the lease on a prefixed deploy and re-opens the
+    stale-preflight window ``max_age`` exists to close."""
+    if scope.get("type") != "http" or scope.get("method") != "POST":
+        return False
+    path = scope.get("path")
+    if not isinstance(path, str) or not path.startswith("/"):
+        return False
+    root = scope.get("root_path")
+    root = root.rstrip("/") if isinstance(root, str) else ""
+    if root.startswith("/"):
+        if path == root:
+            path = "/"
+        elif path.startswith(f"{root}/"):
+            path = path[len(root) :]
+    return path.rstrip("/") == _STOP_PATH
+
 
 class RemoteAccessStopResponseMiddleware:
     """Lease the connector for every Stop request from ASGI admission through response."""
@@ -35,11 +57,7 @@ class RemoteAccessStopResponseMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if not (
-            scope.get("type") == "http"
-            and scope.get("method") == "POST"
-            and scope.get("path") == "/api/settings/remote-access/stop"
-        ):
+        if not _is_stop_request(scope):
             await self.app(scope, receive, send)
             return
 
